@@ -1,0 +1,37 @@
+{
+  "$comment": "CFG-004 已保存配置快照样本（合成）。条目只带 credentialRef，绝不带明文 key（fixtures/README.md 卫生规则 3）。顺序即搜索顺序。",
+  "entries": [
+    {
+      "id": "e-openai-main",
+      "type": "openai",
+      "name": "合成 OpenAI 主线",
+      "enabled": true,
+      "credentialRef": "synthetic-ref:search-chain:e-openai-main",
+      "proxy": "http://syn-proxy.invalid:8080",
+      "model": "gpt-5.6-luna"
+    },
+    {
+      "id": "e-tavily-pac",
+      "type": "tavily",
+      "name": "合成 Tavily PAC 线",
+      "enabled": true,
+      "credentialRef": "synthetic-ref:search-chain:e-tavily-pac",
+      "proxy": { "pac": "http://syn-pac.invalid:8765/acceleration.pac?v=3" }
+    },
+    {
+      "id": "e-bing-off",
+      "type": "bing",
+      "name": "合成 Bing RSS（停用）",
+      "enabled": false
+    },
+    {
+      "id": "e-deepseek-search",
+      "type": "deepseek-search",
+      "name": "合成 DeepSeek Search",
+      "enabled": true,
+      "credentialRef": "synthetic-ref:search-chain:e-deepseek-search"
+    }
+  ],
+  "useOfficialDeepSeekSearch": true,
+  "timeoutMs": 25000
+}

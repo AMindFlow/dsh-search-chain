@@ -1,0 +1,47 @@
+{
+  "$comment": "FB-005 上游结局分类样本（合成，非真实响应）。expect 是 oracle 期望的条目级分类码（ENTRY_CODES，见 helpers/contract.js）。适配规格的细分映射由各 WP 测试引用。",
+  "outcomes": [
+    {
+      "id": "auth-401",
+      "describe": "鉴权失败：无效或缺失 key",
+      "response": { "status": 401, "contentType": "application/json", "body": { "error": { "type": "authentication_error", "message": "Incorrect API key provided. (synthetic)" } } },
+      "expect": { "code": "ENTRY_CREDENTIALS", "degradable": true }
+    },
+    {
+      "id": "quota-402",
+      "describe": "额度：HTTP 402（FB-005 明文规则）",
+      "response": { "status": 402, "contentType": "application/json", "body": { "error": { "type": "insufficient_balance", "message": "synthetic quota message" } } },
+      "expect": { "code": "ENTRY_QUOTA", "degradable": true }
+    },
+    {
+      "id": "quota-code-insufficient",
+      "describe": "额度：非 402 状态但上游 code=insufficient_quota（FB-005 明文规则）",
+      "response": { "status": 429, "contentType": "application/json", "body": { "error": { "code": "insufficient_quota", "message": "synthetic quota message" } } },
+      "expect": { "code": "ENTRY_QUOTA", "degradable": true }
+    },
+    {
+      "id": "rate-429",
+      "describe": "限流：其他 429（无 insufficient_quota 语义）",
+      "response": { "status": 429, "contentType": "application/json", "body": { "error": { "type": "rate_limit_exceeded", "message": "synthetic rate limit" } } },
+      "expect": { "code": "ENTRY_RATE_LIMITED", "degradable": true }
+    },
+    {
+      "id": "blocked-403-html",
+      "describe": "访问受限/拦截页：403 + HTML（脱敏：原始体不得进入错误文本，CFG-003）",
+      "response": { "status": 403, "contentType": "text/html", "body": "<html><body>synthetic block page</body></html>" },
+      "expect": { "code": "ENTRY_CREDENTIALS", "degradable": true, "note": "Bing 通道的 403/拦截分类细分归 BING-002；其他供应商按 FB-005 归类" }
+    },
+    {
+      "id": "malformed-200",
+      "describe": "异常响应：200 但 JSON 无法解析",
+      "response": { "status": 200, "contentType": "application/json", "body": "{ this is not json (synthetic)" },
+      "expect": { "code": "ENTRY_BAD_RESPONSE", "degradable": true }
+    },
+    {
+      "id": "channel-limit-tavily-432",
+      "describe": "通道限制示例：Tavily 432 用量超限（TAV-002 归额度）",
+      "response": { "status": 432, "contentType": "application/json", "body": { "detail": "synthetic usage limit exceeded" } },
+      "expect": { "code": "ENTRY_QUOTA", "degradable": true, "note": "细分依据 TAV-002；通用分类器只保证可定位条目" }
+    }
+  ]
+}

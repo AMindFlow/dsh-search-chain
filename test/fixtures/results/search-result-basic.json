@@ -1,0 +1,22 @@
+{
+  "$comment": "归一化 WebSearchResult 形状样本（FB-002/A1/A2）。顺序即合同：sources 严格按成功条目供应商顺序。合成内容。",
+  "scenario": "首条目失败后第二条目接管，结果被 maxResults=2 截断",
+  "request": { "query": "合成查询 openai 文档", "maxResults": 2, "llmProvider": "deepseek-official" },
+  "result": {
+    "content": "已由「Tavily 备线」返回结果（首条目合成主线条网络失败）",
+    "sources": [
+      {
+        "url": "https://docs-one.host.test/api/reference?src=result-fixture",
+        "title": "合成来源 1",
+        "snippet": "合成片段 1"
+      },
+      {
+        "url": "https://docs-two.host.test/guide/getting-started?src=result-fixture",
+        "title": "合成来源 2",
+        "snippet": "合成片段 2",
+        "publishedAt": "2025-11-04T09:30:00Z"
+      }
+    ],
+    "truncated": true
+  }
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 合成 Bing RSS 空样本（BING-002）：可解析 feed，零 item = 明确无结果。 -->
+<rss version="2.0">
+  <channel>
+    <title>synthetic bing results (fixture, empty)</title>
+    <link>https://www.bing.synthetic.invalid/search?format=rss&amp;q=%E6%97%A0%E7%BB%93%E6%9E%9C</link>
+    <description>fixture - synthetic empty feed</description>
+  </channel>
+</rss>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 合成畸形 XML 样本（BING-002）：标签不闭合 = XML 结构异常 = 响应失败分类输入。 -->
+<rss version="2.0">
+  <channel>
+    <title>synthetic malformed feed (fixture)</title>
+    <item>
+      <title>unclosed title
+      <link>https://malformed.host.test/never-parsed</link>
+    </item>
+  <!-- intentionally broken: unbalanced tags below -->
+  </channeL>
