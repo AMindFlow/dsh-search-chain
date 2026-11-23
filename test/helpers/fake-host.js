@@ -157,7 +157,13 @@ export function createFakeHost(opts = {}) {
     traps,
     editor,
     entry,
-    /** A4 配置端口：readConfig/writeConfig(settings) 消费的最小面。 */
+    /**
+     * A4 配置端口：readConfig/writeConfig(settings) 消费的最小面。
+     * 接线语义（PR#14 B1 教训）：current() 读【活 saved】——宿主语义是保存后下一次读取即新配置
+     * （CFG-004「后续保存只影响下一次查询」）。生产 src/index.js 的 apply 内 settings.current 必须同样
+     * 读实时宿主配置；若绑死 apply 装载入参 config（装载快照永不更新），本替身无法代查该缺陷——
+     * 生产形状甄别测试见 dsh-official-routing.test.js 尾部（真实 apply + 真实 writeConfig 接线）。
+     */
     get settingsPort() {
       return { editor, entry, current: () => structuredClone(saved) };
     },

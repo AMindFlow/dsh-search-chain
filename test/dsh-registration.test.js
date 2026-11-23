@@ -117,7 +117,7 @@ test("DSH-001/DSH-003 配套：配置行声明存在且 id=search-chain（cordis
     text = readFileSync(new URL("../src/cordis.patch.yml", import.meta.url), "utf8");
   } catch {
     t.diagnostic("[WP0 oracle] 等待 WP6：src/cordis.patch.yml 配置行声明（id: search-chain）");
-    t.fail("src/cordis.patch.yml 缺失：DSH-001 要求插件声明配置行（模块不存在即红，勿改 skip）");
+    assert.fail("src/cordis.patch.yml 缺失：DSH-001 要求插件声明配置行（模块不存在即红，勿改 skip）");
     return;
   }
   assert.match(text, /^\s*-?\s*id:\s*search-chain\s*$/m, "配置行 id 必须为 search-chain");

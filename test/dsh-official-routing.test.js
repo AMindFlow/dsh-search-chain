@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import * as C from "./helpers/contract.js";
 import { createProviderHarness, DEFAULT_QUERY } from "./helpers/chain-harness.js";
 import { tryImportSrc, failIfUnimplemented } from "./helpers/impl.js";
+import { createFakeHost } from "./helpers/fake-host.js";
 
 const WP = "WP6 src/index.js";
 
@@ -126,4 +127,69 @@ test("DSH-005：官方缺席（宿主无该 provider）时官方路由回落自�
   const out = await h.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
   assert.equal(typeof out, "object", "官方缺席时必须可由自定义链接管（链自己按 FB-004 报终态）");
   assert.equal(h.chainRequestCount(), 1);
+});
+
+// ── PR#14 B1：生产接线面 ────────────────────────────────────────────────────────────────
+// 上面的矩阵走 createProviderHarness（直连 createSearchProvider 注入），测不出「生产 apply 与
+// 配置端口的接线」错误；而 fake-host.settingsPort.current 本身读活 saved，替身也复现不了该缺陷。
+// 本测试刻意绕开两条捷径：真实 src/index.js apply(ctx, 装载快照, testDeps) + 真实 src/config.js
+// writeConfig 落盘，断言保存成功后【下一次查询】读到新快照——官方开关翻转即时生效（CFG-004，
+// config-network.md:27「搜索开始时使用已保存快照，后续保存只影响下一次查询」）。
+test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快照（官方开关即时生效）", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const cfgRes = await tryImportSrc("config.js");
+  if (failIfUnimplemented(t, cfgRes, "WP1 src/config.js", "CFG-004")) return;
+  const cfgMod = cfgRes.module;
+
+  const OLD = C.makeSavedConfig(ENTRIES, { useOfficialDeepSeekSearch: false });
+  // 真实宿主只把装载时刻快照交给 apply 且不随保存更新；活配置的唯一来源是 settings 端口的 current()。
+  const loadSnapshot = structuredClone(OLD);
+  const host = createFakeHost({ config: structuredClone(OLD) });
+
+  const chainCalls = [];
+  const officialCalls = [];
+  await Promise.resolve(mod.apply(host.ctx, loadSnapshot, {
+    chain: {
+      async search(request) {
+        chainCalls.push(request);
+        return { sources: C.makeSources(1), truncated: false };
+      },
+      release() {},
+    },
+    official: {
+      async search(request) {
+        officialCalls.push(request);
+        return officialOk();
+      },
+    },
+  }));
+  const provider = host.searchRegistrations()[0];
+  assert.ok(provider && provider.id === C.PROVIDER_ID, "provider 必须已经注册（DSH-001）");
+
+  // 台架自检：保存确实落到宿主侧（若这条红，是台架问题，不是接线问题——排除假红来源）。
+  await cfgMod.writeConfig(host.settingsPort, { ...structuredClone(OLD), useOfficialDeepSeekSearch: true });
+  assert.equal(
+    (await cfgMod.readConfig(host.settingsPort)).useOfficialDeepSeekSearch,
+    true,
+    "fake-host 侧保存应已生效（台架自检）",
+  );
+
+  // CFG-004 甄别点：这次 search 必须读【保存后】的快照 → 官方路由 + 开关开 → 官方通道。
+  await provider.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
+  assert.equal(
+    officialCalls.length,
+    1,
+    "CFG-004：保存成功后，下一次 search 必须读新快照走官方通道。若仍走旧快照（自定义链），" +
+      "说明生产接线把 settings.current() 绑死为 apply 装载入参 config（src/index.js）——这是接线缺陷（PR#14 B1），不是新增契约断言",
+  );
+  assert.equal(chainCalls.length, 0, "开关开 + 官方路由生效时自定义链零调用（DSH-005）");
+
+  // 反向翻转 ON→OFF：第三条查询应回到自定义链——证明每次查询都实时读，而非任一方向缓存。
+  await cfgMod.writeConfig(host.settingsPort, { ...structuredClone(OLD), useOfficialDeepSeekSearch: false });
+  await provider.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
+  assert.equal(officialCalls.length, 1, "开关保存为 OFF 后的查询不得再走官方通道（CFG-004/SET-005）");
+  assert.equal(chainCalls.length, 1, "第二次保存应作用于下一次查询：回到自定义链（CFG-004）");
+
+  await host.disposeAll();
 });
