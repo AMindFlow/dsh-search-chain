@@ -203,10 +203,16 @@ test("impl：缺失模块报 missing，越界拒绝（红/绿策略基础）", a
   const res = await tryImportSrc("definitely-not-implemented-xyz.js");
   assert.deepEqual(res, { ok: false, reason: "missing" });
   assert.throws(() => srcPath("../outside.js"), /越界/);
-  const fakeT = { diagnostics: [], skips: 0, failures: [], diagnostic(m) { this.diagnostics.push(m); }, skip() { this.skips++; }, fail(m) { this.failures.push(m); } };
-  assert.equal(failIfUnimplemented(fakeT, res, "WP5 src/search.js", "FB-003"), true);
+  // TestContext 无 .fail：记红走 t.diagnostic + assert.fail（抛 AssertionError，非 skip）
+  const fakeT = { diagnostics: [], skips: 0, diagnostic(m) { this.diagnostics.push(m); }, skip() { this.skips++; } };
+  assert.throws(
+    () => failIfUnimplemented(fakeT, res, "WP5 src/search.js", "FB-003"),
+    (e) => e instanceof assert.AssertionError && /等待实现 WP5 src\/search\.js/.test(e.message),
+    "缺失须记红：抛 AssertionError，且失败原因可定位到工作包",
+  );
+  assert.equal(fakeT.diagnostics.length, 1, "必须输出 [WP0 oracle] 条款诊断");
+  assert.match(fakeT.diagnostics[0], /\[WP0 oracle\] FB-003: 等待实现 WP5 src\/search\.js/);
   assert.equal(fakeT.skips, 0, "缺失实现不得 skip，必须红");
-  assert.equal(fakeT.failures.length, 1);
 });
 
 test("chain-harness：toyChain 满足 A4/A5/A6 接缝，观测面全部可用（FB-001/002/004 面）", async () => {
