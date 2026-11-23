@@ -1,0 +1,38 @@
+name: 缺陷报告
+description: 报告可复现的搜索、配置或安装问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请移除 API key、代理地址、账号信息和私人查询。使用可公开的最小复现。
+  - type: input
+    id: versions
+    attributes:
+      label: dsh 和插件版本
+      description: 写版本号或安装的提交。安装失败时注明。
+    validations:
+      required: true
+  - type: dropdown
+    id: proxy
+    attributes:
+      label: 代理模式
+      options:
+        - 直连
+        - 使用代理
+        - 不确定或不适用
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 怎样触发问题，并说明预期行为。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 如有，附搜索通道、错误分类或脱敏提示。
+    validations:
+      required: true

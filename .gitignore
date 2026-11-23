@@ -1,0 +1,7 @@
+.DS_Store
+.env
+.env.*
+.credentials.yaml
+node_modules/
+dist/
+artifacts/

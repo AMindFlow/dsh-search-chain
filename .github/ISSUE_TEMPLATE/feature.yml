@@ -1,0 +1,18 @@
+name: 功能建议
+description: 描述希望插件解决的使用问题
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: 使用场景
+      description: 说明你要完成什么，以及在哪里遇到限制。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 描述你希望看到的结果。请使用脱敏示例。
+    validations:
+      required: true
