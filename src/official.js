@@ -1,20 +1,25 @@
 // DSH-005 官方 DeepSeek 搜索的宿主复用（dsh-integration.md 设计决定：复用宿主导出的
 // DeepSeekSearchProvider 与官方凭据/路由配置，不得经 ctx.web.search 回流到本插件）。
 //
-// 配置来源（B2）：宿主 web-search-deepseek 行的活配置，经 configEditor.configuration() 读取
-// （该 API 返回全部活行的 inherited/override 值；本插件以 inject: configEditor 声明依赖）。
-// 装配语义逐条对齐宿主 web-search-deepseek apply()/resolveOptions()：
-//   baseURL：行配置 ?? 环境变量 DEEPSEEK_SEARCH_BASE_URL ?? 宿主默认常量；
-//   凭据：行内字面 apiKey（非空）→ resolveDeepSeekApiKey(ctx, apiKeyEnv)；账号令牌仅当会话
-//         requestContext.provider === deepseek-account（官方路由的会话不走账号令牌）；
-//   model / apiVersion / maxTokens / maxUses：行配置 ?? 宿主默认常量。
-// 仅使用宿主包的公开导出；这些包由宿主以 peer 提供（见根目录 package.json peerDependencies）。
+// 配置来源（B2′）：宿主 web-search-deepseek 行的活配置，经 configEditor.configuration() 读取。
+// 行的识别：r.entry.options.id === "web-search-deepseek"（宿主 Entry 形态，见 PR 正文 E4）。
+// 行读取位于 resolveOptions 等价的 thunk 内：宿主 DeepSeekSearchProvider 每次操作调用一次
+// options()，因此行内 baseURL/apiKey 等改动从下一次搜索起即生效（不在装载时固化）。
+// 装配语义逐条对齐宿主 web-search-deepseek apply()/resolveOptions()（asar 源码实证）：
+//   baseURL：行 ?? 环境变量 DEEPSEEK_SEARCH_BASE_URL ?? 宿主默认常量（?? 语义，空串保留）；
+//   apiKey：行内字面值 !== undefined 且 length > 0 时使用，否则 resolveDeepSeekApiKey(ctx, apiKeyEnv)；
+//   账号令牌：仅当会话 requestContext.provider === deepseek-account（官方路由会话不走账号令牌）；
+//   apiKeyEnv / model / apiVersion / maxTokens / maxUses：行 ?? 宿主默认常量。
+// 读不到宿主行（未挂载、配置端口不可用）时抛 WEB_PROVIDER_UNAVAILABLE：不使用默认值，
+// 不降级为「仅 llm 层凭据」，也不回退自定义链（显式失败，见 PR 正文决定 D-B2）。
+// 仅使用宿主包的公开导出；四个宿主包以精确版本作为 dependencies 安装（见 package.json）。
 
 const SEARCH_PKG = "@deepseek-ai/dsh-web-search-deepseek";
 const LLM_PKG = "@deepseek-ai/dsh-llm-deepseek";
 const CREDENTIALS_PKG = "@deepseek-ai/dsh-credentials";
 const LAUNCH_ENV_PKG = "@deepseek-ai/dsh-launch-environment";
 
+const SEARCH_ROW_ID = "web-search-deepseek";
 const ACCOUNT_PROVIDER = "deepseek-account";
 const DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY";
 const SEARCH_BASE_URL_ENV = "DEEPSEEK_SEARCH_BASE_URL";
@@ -32,25 +37,33 @@ function unavailableOfficial(cause) {
     async search() {
       throw webError(
         "WEB_PROVIDER_UNAVAILABLE",
-        "官方 DeepSeek 搜索组件无法加载（宿主需提供 dsh-web-search-deepseek 等 peer 包），未回退自定义链",
+        "官方 DeepSeek 搜索组件无法加载（宿主需提供 dsh-web-search-deepseek 等依赖包），未回退自定义链",
         cause,
       );
     },
   };
 }
 
-function nonblank(value) {
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
-}
-
-/** 宿主 web-search-deepseek 行的活配置（inherited 与 override 合并）；读不到时为空对象。 */
-export function hostSearchRowConfig(ctx) {
+/** 宿主 web-search-deepseek 行的活配置（inherited ⊕ override）。读不到即抛 WEB_PROVIDER_UNAVAILABLE。 */
+export function requireHostSearchRow(ctx) {
   const editor = ctx.configEditor;
-  if (typeof editor?.configuration !== "function") return {};
-  const row = editor
-    .configuration()
-    .find((r) => r.entry?.name === SEARCH_PKG || r.entry?.id === "web-search-deepseek");
-  return row ? { ...row.inherited, ...row.override } : {};
+  if (typeof editor?.configuration !== "function") {
+    throw webError("WEB_PROVIDER_UNAVAILABLE", "宿主配置端口不可用，无法读取 web-search-deepseek 行配置");
+  }
+  let rows;
+  try {
+    rows = editor.configuration();
+  } catch (cause) {
+    throw webError("WEB_PROVIDER_UNAVAILABLE", "读取宿主活配置失败，无法读取 web-search-deepseek 行配置", cause);
+  }
+  const row = rows.find((r) => r.entry?.options?.id === SEARCH_ROW_ID);
+  if (!row) {
+    throw webError(
+      "WEB_PROVIDER_UNAVAILABLE",
+      "宿主 web-search-deepseek 配置行未挂载，官方 DeepSeek 搜索不可用（请在插件设置中启用该行）",
+    );
+  }
+  return { ...row.inherited, ...row.override };
 }
 
 /**
@@ -78,29 +91,33 @@ async function loadHostOfficial(ctx) {
     import(LAUNCH_ENV_PKG),
   ]);
 
-  const row = hostSearchRowConfig(ctx);
-  const apiKeyEnv = credentials.credentialRef(nonblank(row.apiKeyEnv) ?? DEFAULT_API_KEY_ENV);
-  const literalApiKey = nonblank(row.apiKey);
   const currentAgent = () => ctx.get("agents")?.currentInitiator();
 
-  return new search.DeepSeekSearchProvider(() => ({
-    ...(literalApiKey === undefined ? {} : { apiKey: literalApiKey }),
-    resolveAccountToken: async (endpoint) => {
-      const provider = currentAgent()?.session.requestContext()?.provider;
-      if (provider !== ACCOUNT_PROVIDER) return undefined;
-      return await llm.resolveDeepSeekAccountToken(ctx, endpoint);
-    },
-    rejectAccountToken: (token) => llm.rejectDeepSeekAccountToken(ctx, token),
-    resolveApiKey: () => llm.resolveDeepSeekApiKey(ctx, apiKeyEnv),
-    apiKeyEnv,
-    baseURL:
-      nonblank(row.baseURL) ??
-      launchEnv.launchEnvironmentOf(ctx).get(SEARCH_BASE_URL_ENV)?.value ??
-      search.DEEPSEEK_DEFAULT_BASE_URL,
-    model: nonblank(row.model) ?? search.DEEPSEEK_DEFAULT_MODEL,
-    apiVersion: nonblank(row.apiVersion) ?? search.DEEPSEEK_DEFAULT_API_VERSION,
-    maxTokens: row.maxTokens ?? search.DEEPSEEK_DEFAULT_MAX_TOKENS,
-    maxUses: row.maxUses ?? search.DEEPSEEK_DEFAULT_MAX_USES,
-    recordRequest: (request) => currentAgent()?.session.append("web/deepseek-search-llm-request", request),
-  }));
+  // 与宿主 resolveOptions 同构：每次搜索调用一次 thunk，读取当下的行配置。
+  return new search.DeepSeekSearchProvider(() => {
+    const row = requireHostSearchRow(ctx);
+    const apiKeyEnv = credentials.credentialRef(row.apiKeyEnv ?? DEFAULT_API_KEY_ENV);
+    const literalApiKey =
+      row.apiKey !== undefined && row.apiKey.length > 0 ? row.apiKey : undefined;
+    return {
+      ...(literalApiKey === undefined ? {} : { apiKey: literalApiKey }),
+      resolveAccountToken: async (endpoint) => {
+        const provider = currentAgent()?.session.requestContext()?.provider;
+        if (provider !== ACCOUNT_PROVIDER) return undefined;
+        return await llm.resolveDeepSeekAccountToken(ctx, endpoint);
+      },
+      rejectAccountToken: (token) => llm.rejectDeepSeekAccountToken(ctx, token),
+      resolveApiKey: () => llm.resolveDeepSeekApiKey(ctx, apiKeyEnv),
+      apiKeyEnv,
+      baseURL:
+        row.baseURL ??
+        launchEnv.launchEnvironmentOf(ctx).get(SEARCH_BASE_URL_ENV)?.value ??
+        search.DEEPSEEK_DEFAULT_BASE_URL,
+      model: row.model ?? search.DEEPSEEK_DEFAULT_MODEL,
+      apiVersion: row.apiVersion ?? search.DEEPSEEK_DEFAULT_API_VERSION,
+      maxTokens: row.maxTokens ?? search.DEEPSEEK_DEFAULT_MAX_TOKENS,
+      maxUses: row.maxUses ?? search.DEEPSEEK_DEFAULT_MAX_USES,
+      recordRequest: (request) => currentAgent()?.session.append("web/deepseek-search-llm-request", request),
+    };
+  });
 }

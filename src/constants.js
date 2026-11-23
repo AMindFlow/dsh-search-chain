@@ -79,6 +79,8 @@ export const CONFIG_CODES = Object.freeze({
   PAC_FETCH_FAILED: "PAC_FETCH_FAILED",
   PAC_EVAL_FAILED: "PAC_EVAL_FAILED",
   PAC_ROUTE_FAILED: "PAC_ROUTE_FAILED",
+  // B1′：宿主配置端口不可用或本行不在活行中——显式失败，禁止回退装载快照（回退即恢复 B1）。
+  ROW_UNAVAILABLE: "CONFIG_ROW_UNAVAILABLE",
 });
 
 /** FB-003 默认总预算（毫秒）。 */

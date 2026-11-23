@@ -1,8 +1,8 @@
 // dsh-search-chain bundle 入口（DSH-001..003、DSH-005）。
 // 只注册一个 WebSearchProvider（id=search-chain）；卸载时反注册并释放链资源。
 // 搜索链编排（WP5）与设置面板（WP12）不在本文件内实现。
-import { CHAIN_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID } from "./constants.js";
-import { readConfig } from "./config.js";
+import { CHAIN_CODES, CONFIG_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID } from "./constants.js";
+import { ConfigError, readConfig } from "./config.js";
 import { createLazyHostOfficial } from "./official.js";
 
 export { PROVIDER_ID };
@@ -11,19 +11,28 @@ export { PROVIDER_ID };
 export const inject = ["web", "configEditor"];
 
 /**
- * 读取本插件行的活配置（B1）。真实宿主经 configEditor.configuration() 读取全部活行的
- * inherited/override 值。台架替身（test/helpers/fake-host.js）只暴露 editor.saved()，
- * 此分支仅服务于替身；WP6 装配时若替身改为 configuration()，应删除该分支。
- * 无法读到时回退到装载快照。
+ * 读取本插件行的活配置（B1′）。匹配依据为 Entry 对象同一性：ctx.fiber.entry 与
+ * configEditor.configuration() 返回的 r.entry 必为同一对象（宿主 Entry.id 带前缀，Fiber 无 id，
+ * 按 id 匹配恒假）。行缺失或配置端口不可用时抛 CONFIG_ROW_UNAVAILABLE，禁止静默回退到装载快照——
+ * 回退即恢复 B1（保存后下一次查询读不到新值）。
  */
-export function liveOwnConfig(ctx, loadSnapshot) {
+export function liveOwnConfig(ctx) {
   const editor = ctx.configEditor;
-  if (typeof editor?.configuration === "function") {
-    const row = editor.configuration().find((r) => r.entry?.id === ctx.fiber?.id);
-    return row ? { ...row.inherited, ...row.override } : loadSnapshot;
+  const entry = ctx.fiber?.entry;
+  if (typeof editor?.configuration !== "function" || entry === undefined) {
+    throw new ConfigError(CONFIG_CODES.ROW_UNAVAILABLE, "宿主配置端口不可用，无法读取本插件行的活配置");
   }
-  if (typeof editor?.saved === "function") return editor.saved();
-  return loadSnapshot;
+  let rows;
+  try {
+    rows = editor.configuration();
+  } catch (cause) {
+    throw new ConfigError(CONFIG_CODES.ROW_UNAVAILABLE, "读取宿主活配置失败", { cause });
+  }
+  const row = rows.find((r) => r.entry === entry);
+  if (!row) {
+    throw new ConfigError(CONFIG_CODES.ROW_UNAVAILABLE, "本插件配置行不在宿主活行中（未挂载或已卸载）");
+  }
+  return { ...row.inherited, ...row.override };
 }
 
 /** 行配置声明（JSON Schema 形态；宿主 Config 投影校验的实机形态见 PR「未验证项」）。 */
@@ -101,14 +110,15 @@ export function createSearchProvider(deps) {
  * bundle 入口。在 ctx.effect 内注册 provider；cleanup 反注册并释放链（DSH-001）。
  * testDeps 仅供测试注入：{ chain, official, officialRouteId }。生产调用只有两参。
  */
-export function apply(ctx, config, testDeps = {}) {
+export function apply(ctx, _loadSnapshot, testDeps = {}) {
   const chain = testDeps.chain ?? unwiredChain();
   const official = "official" in testDeps ? testDeps.official : createLazyHostOfficial(ctx);
-  // B1：每次查询实时读取已保存配置（CFG-004：保存成功后下一次查询生效），不绑死装载入参。
+  // B1′：每次查询实时读取活配置（CFG-004：保存成功后下一次查询生效）；装载入参不参与读取。
+  // B3：写入目标必须是宿主 Entry（ctx.fiber.entry），传 Fiber 会被宿主 edit() 拒绝。
   const settings = {
     editor: ctx.configEditor,
-    entry: ctx.fiber,
-    current: () => liveOwnConfig(ctx, config),
+    entry: ctx.fiber?.entry,
+    current: () => liveOwnConfig(ctx),
   };
   const provider = createSearchProvider({
     getConfig: () => readConfig(settings),
