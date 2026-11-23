@@ -1,0 +1,4 @@
+- insert:
+    - id: search-chain
+      name: 'dsh-search-chain'
+      config: {}
