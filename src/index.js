@@ -3,6 +3,7 @@
 // 搜索链编排（WP5）与设置面板（WP12）不在本文件内实现。
 import { CHAIN_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID } from "./constants.js";
 import { readConfig } from "./config.js";
+import { createLazyHostOfficial } from "./official.js";
 
 export { PROVIDER_ID };
 
@@ -41,7 +42,8 @@ function unwiredChain() {
 /**
  * 创建 search-chain provider。
  * deps = { getConfig, chain, official?, routeOf?, officialRouteId? }
- *   - official：宿主 DeepSeek 官方搜索 provider（须暴露 search(request, signal)）；缺席时官方路由回落自定义链。
+ *   - official：宿主 DeepSeek 官方搜索 provider（须暴露 search(request, signal)），或返回它的惰性函数；
+ *     为 null 时官方路由回落自定义链（测试替身语义）。
  *   - routeOf：从请求取路由 id，默认 request.llmProvider。
  */
 export function createSearchProvider(deps) {
@@ -64,7 +66,9 @@ export function createSearchProvider(deps) {
       const cfg = getConfig();
       const useOfficial = cfg?.useOfficialDeepSeekSearch !== false;
       if (official && useOfficial && routeOf(request) === officialRouteId) {
-        return official.search(request, signal);
+        // 官方分支不经 ctx.web.search（会因配置 id=search-chain 选回本插件）。
+        const target = typeof official === "function" ? await official() : official;
+        if (target) return target.search(request, signal);
       }
       return chain.search(request, signal);
     },
@@ -80,7 +84,7 @@ export function createSearchProvider(deps) {
  */
 export function apply(ctx, config, testDeps = {}) {
   const chain = testDeps.chain ?? unwiredChain();
-  const official = testDeps.official ?? null;
+  const official = "official" in testDeps ? testDeps.official : createLazyHostOfficial(ctx);
   const settings = {
     editor: ctx.configEditor,
     entry: ctx.fiber,
