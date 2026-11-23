@@ -44,7 +44,7 @@ function unavailableOfficial(cause) {
   };
 }
 
-/** 宿主 web-search-deepseek 行的活配置（inherited ⊕ override）。读不到即抛 WEB_PROVIDER_UNAVAILABLE。 */
+/** 宿主 web-search-deepseek 行的活配置（configuration() 行的 config 字段，宿主形态 {entry, config}）。读不到即抛 WEB_PROVIDER_UNAVAILABLE。 */
 export function requireHostSearchRow(ctx) {
   const editor = ctx.configEditor;
   if (typeof editor?.configuration !== "function") {
@@ -63,7 +63,7 @@ export function requireHostSearchRow(ctx) {
       "宿主 web-search-deepseek 配置行未挂载，官方 DeepSeek 搜索不可用（请在插件设置中启用该行）",
     );
   }
-  return { ...row.inherited, ...row.override };
+  return { ...row.config };
 }
 
 /**

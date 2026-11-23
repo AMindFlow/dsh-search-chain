@@ -32,7 +32,7 @@ export function liveOwnConfig(ctx) {
   if (!row) {
     throw new ConfigError(CONFIG_CODES.ROW_UNAVAILABLE, "本插件配置行不在宿主活行中（未挂载或已卸载）");
   }
-  return { ...row.inherited, ...row.override };
+  return { ...row.config };
 }
 
 /** 行配置声明（JSON Schema 形态；宿主 Config 投影校验的实机形态见 PR「未验证项」）。 */
