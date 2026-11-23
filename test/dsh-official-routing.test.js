@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import * as C from "./helpers/contract.js";
 import { createProviderHarness, DEFAULT_QUERY } from "./helpers/chain-harness.js";
 import { tryImportSrc, failIfUnimplemented } from "./helpers/impl.js";
-import { createFakeHost } from "./helpers/fake-host.js";
+import { createHostShapeFakeHost } from "./helpers/fake-host.js";
 
 const WP = "WP6 src/index.js";
 
@@ -143,9 +143,15 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
   const cfgMod = cfgRes.module;
 
   const OLD = C.makeSavedConfig(ENTRIES, { useOfficialDeepSeekSearch: false });
-  // 真实宿主只把装载时刻快照交给 apply 且不随保存更新；活配置的唯一来源是 settings 端口的 current()。
+  // 真实宿主只把装载时刻快照交给 apply 且不随保存更新；活配置的唯一来源是 configuration() 行
+  // （宿主实证：行 {entry, config}，entry 与 ctx.fiber.entry 同一对象，行集合无 saved() 捷径）。
+  // 台架同时挂一行 web-search-deepseek（B2′ 的「行匹配按 options.id」台架就位；B2 行读取断言
+  // 属 src/official 实机核对面，本测试经 testDeps 注入 official，不在此钉）。
   const loadSnapshot = structuredClone(OLD);
-  const host = createFakeHost({ config: structuredClone(OLD) });
+  const host = createHostShapeFakeHost({
+    config: structuredClone(OLD),
+    extraRows: [{ entryId: "web-search-deepseek", config: { baseURL: "https://row.example/v1" } }],
+  });
 
   const chainCalls = [];
   const officialCalls = [];
@@ -167,6 +173,18 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
   const provider = host.searchRegistrations()[0];
   assert.ok(provider && provider.id === C.PROVIDER_ID, "provider 必须已经注册（DSH-001）");
 
+  // 初始基线：装载态开关为 OFF——官方路由的查询必须走自定义链。此步消除 provider 活读坏成
+  // 空配置（行形态错读成 {}）时靠 useOfficial 缺省 true 「空过」甄别点的假绿：活读必须读到
+  // 宿主行里的真实值 false，而不是 {}、装载快照缺省或任何缓存。
+  await provider.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
+  assert.equal(
+    officialCalls.length,
+    0,
+    "初始配置开关为 OFF：官方路由查询必须走自定义链。走了官方 = 活读没读到宿主行真实值" +
+      "（读成 {}：行形态假设错误 / 读成装载快照缺省：B1 复发）——PR#14 B1' 复现点",
+  );
+  assert.equal(chainCalls.length, 1, "初始状态官方路由查询走自定义链（SET-005 尊重已保存的显式 OFF）");
+
   // 台架自检：保存确实落到宿主侧（若这条红，是台架问题，不是接线问题——排除假红来源）。
   await cfgMod.writeConfig(host.settingsPort, { ...structuredClone(OLD), useOfficialDeepSeekSearch: true });
   assert.equal(
@@ -183,13 +201,13 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
     "CFG-004：保存成功后，下一次 search 必须读新快照走官方通道。若仍走旧快照（自定义链），" +
       "说明生产接线把 settings.current() 绑死为 apply 装载入参 config（src/index.js）——这是接线缺陷（PR#14 B1），不是新增契约断言",
   );
-  assert.equal(chainCalls.length, 0, "开关开 + 官方路由生效时自定义链零调用（DSH-005）");
+  assert.equal(chainCalls.length, 1, "开关开 + 官方路由生效：本条查询零新增链调用（DSH-005；1 为初始基线那次）");
 
   // 反向翻转 ON→OFF：第三条查询应回到自定义链——证明每次查询都实时读，而非任一方向缓存。
   await cfgMod.writeConfig(host.settingsPort, { ...structuredClone(OLD), useOfficialDeepSeekSearch: false });
   await provider.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
   assert.equal(officialCalls.length, 1, "开关保存为 OFF 后的查询不得再走官方通道（CFG-004/SET-005）");
-  assert.equal(chainCalls.length, 1, "第二次保存应作用于下一次查询：回到自定义链（CFG-004）");
+  assert.equal(chainCalls.length, 2, "第二次保存应作用于下一次查询：回到自定义链（CFG-004）");
 
   await host.disposeAll();
 });

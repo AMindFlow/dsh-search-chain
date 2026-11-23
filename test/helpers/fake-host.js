@@ -4,8 +4,16 @@
 //     返回同步 () => void 反注册函数；反注册再注册 = 重新装载路径。
 //   - web.registerFetchProvider / web.search / web.fetch / tools.register：陷阱计数。
 //     DSH-001「只注册搜索 provider」与 设计决定「不得经 ctx.web.search 回流」用这些计数断言为零。
-//   - configEditor + fiber.entry（configuration.md 实证）：插件保存自身配置的唯一入口；
-//     支持注入保存失败（SET-004/CFG-004：失败后已生效快照保持一致）。
+//   - configEditor + Entry/Fiber（configuration.md + PR#14 复审宿主实证）：
+//       * Entry 对象：entry.options.id 为裸 id；entry.id 是带父路径前缀的 getter（include:<id>）；
+//         Entry 携带 fiber。Fiber 无 id 属性，只有 uid（+entry）。
+//       * editor.edit(target, change) 首行身份校验（复刻宿主）：target 必须是当前 entries() 内的
+//         Entry 对象且 target.fiber !== undefined，否则抛 "Configuration entry is no longer available"。
+//         ——「把 ctx.fiber 当写入目标」的接线（旧 B3）在宿主上必拒，本替身同样必拒。
+//       * 宿主形态（hostShape，经 createHostShapeFakeHost）：configEditor.configuration() 返回行数组
+//         [{entry, config}]（entry 与 fiber.entry 为同一对象；行集合【不含 saved()】）；编辑器不再暴露
+//         saved()。旧默认形态保留（含 editor.saved()），仅供既有纯 config 面测试使用。
+//   - configEditor 支持注入保存失败（SET-004/CFG-004：失败后已生效快照保持一致）。
 //   - ctx.effect/ctx.on/ctx.get + fakeHost.disposeAll()：模拟装载→卸载生命周期（DSH-001 release）。
 import { createFakeCredentials } from "./fake-credentials.js";
 
@@ -16,16 +24,40 @@ function webError(code, message) {
   return err;
 }
 
+/** 宿主实证 Entry 形态：裸 id 在 options.id；顶层 id 是带前缀的 getter；携带 fiber。 */
+function makeEntryForm(id, name, fiberUid) {
+  const entry = {
+    name,
+    options: { id },
+    uid: `entry-uid-${fiberUid}`,
+    get id() {
+      return `include:${this.options.id}`;
+    },
+    fiber: undefined,
+  };
+  // 宿主 Fiber：无 id 属性，只有 uid（+entry）。曾有替身把 Fiber 当 Entry（有 id）用，掩盖 B3。
+  const fiber = { uid: `fiber-uid-${fiberUid}`, entry };
+  entry.fiber = fiber;
+  return { entry, fiber };
+}
+
 /**
  * @param {{
  *   entry?: { id?: string, name?: string },            // 插件配置行（cordis.patch.yml 装载产物）
  *   config?: Record<string, any>,                       // 行初始 config
  *   credentials?: any,                                  // 默认 createFakeCredentials()
  *   validate?: (candidate: any) => void,                // 模拟宿主 Config 校验（抛错=保存拒绝）
+ *   hostShape?: boolean,                                // true：宿主形态 configuration()，无 editor.saved()
+ *   extraRows?: Array<{ entryId: string, config: Record<string, any> }>, // 宿主形态：其它挂载行
  * }} [opts]
  */
 export function createFakeHost(opts = {}) {
-  const entry = { id: "search-chain", name: "dsh-search-chain", ...opts.entry };
+  const hostShape = opts.hostShape === true;
+  const { entry, fiber } = makeEntryForm(
+    opts.entry?.id ?? "search-chain",
+    opts.entry?.name ?? "dsh-search-chain",
+    "search-chain",
+  );
   const services = {
     credentials: opts.credentials ?? createFakeCredentials(),
   };
@@ -94,11 +126,25 @@ export function createFakeHost(opts = {}) {
   // —— 配置编辑（插件保存自身配置的唯一入口）——
   let saved = structuredClone(opts.config ?? {});
   const editorCalls = [];
+  // 宿主形态的其它挂载行（如官方 web-search-deepseek）：行 entry 也是宿主形态 Entry。
+  const extraRows = (opts.extraRows ?? []).map((r, i) => {
+    const row = makeEntryForm(r.entryId, r.entryId, `extra-${i}-${r.entryId}`);
+    return { entry: row.entry, config: structuredClone(r.config ?? {}) };
+  });
+  const configuration = () => [
+    { entry, config: structuredClone(saved) }, // 活 saved：保存后下一次读取即新配置（CFG-004）
+    ...extraRows.map((r) => ({ entry: r.entry, config: structuredClone(r.config) })),
+  ];
+  const entries = () => [entry, ...extraRows.map((r) => r.entry)];
   const editor = {
     calls: editorCalls,
     failNext: null, // 注入保存失败：Error 实例；消费一次后清空
-    saved: () => saved,
+    entries,
+    // 宿主首行身份校验：目标必须仍是当前挂载的 Entry 且携带 fiber（Fiber 无 fiber 属性 → 拒）。
     async edit(target, change) {
+      if (!entries().includes(target) || target.fiber === undefined) {
+        throw new Error("Configuration entry is no longer available");
+      }
       editorCalls.push({ target, at: editorCalls.length });
       if (editor.failNext) {
         const err = editor.failNext;
@@ -111,8 +157,15 @@ export function createFakeHost(opts = {}) {
       saved = candidate;
     },
   };
+  if (hostShape) {
+    // 宿主实证形态：活配置的唯一读取面是 configuration()（行 {entry, config}）；不暴露 saved()。
+    editor.configuration = configuration;
+  } else {
+    // 旧默认形态保留：仅供既有纯 config 面测试与断言 saved() 的自测使用。
+    editor.saved = () => saved;
+  }
   services.configEditor = editor;
-  services.fiber = entry;
+  services.fiber = fiber;
 
   // —— 生命周期 ——
   const effects = [];
@@ -128,7 +181,7 @@ export function createFakeHost(opts = {}) {
       return editor;
     },
     get fiber() {
-      return entry;
+      return fiber;
     },
     get(name) {
       return services[name];
@@ -157,14 +210,29 @@ export function createFakeHost(opts = {}) {
     traps,
     editor,
     entry,
+    fiber,
+    /** 宿主形态才有的活行数组便捷面（等价 editor.configuration()）。 */
+    configuration: hostShape ? () => editor.configuration() : undefined,
     /**
      * A4 配置端口：readConfig/writeConfig(settings) 消费的最小面。
-     * 接线语义（PR#14 B1 教训）：current() 读【活 saved】——宿主语义是保存后下一次读取即新配置
+     * 接线语义（PR#14 B1 教训）：current() 读【活配置】——宿主语义是保存后下一次读取即新配置
      * （CFG-004「后续保存只影响下一次查询」）。生产 src/index.js 的 apply 内 settings.current 必须同样
      * 读实时宿主配置；若绑死 apply 装载入参 config（装载快照永不更新），本替身无法代查该缺陷——
      * 生产形状甄别测试见 dsh-official-routing.test.js 尾部（真实 apply + 真实 writeConfig 接线）。
+     * 宿主形态下 current() 经由 configuration() 的行读取本行（没有 saved() 捷径可走）。
      */
     get settingsPort() {
+      if (hostShape) {
+        return {
+          editor,
+          entry,
+          current: () => {
+            const row = editor.configuration().find((r) => r.entry === entry);
+            if (!row) throw new Error("own configuration row missing");
+            return structuredClone(row.config);
+          },
+        };
+      }
       return { editor, entry, current: () => structuredClone(saved) };
     },
     /** 模拟卸载/停用：按登记逆序执行全部 effect cleanup（宿主语义级近似，可观察即可）。 */
@@ -175,4 +243,14 @@ export function createFakeHost(opts = {}) {
       }
     },
   };
+}
+
+/**
+ * 宿主形态替身（PR#14 复审实证语义）：configEditor.configuration() 返回 [{entry, config}] 行数组
+ * （entry.options.id 裸 id；entry.id 前缀 getter；Fiber 无 id 只有 uid），行集合不含 saved()，
+ * editor.edit 带宿主身份校验。生产接线甄别测试必须用本形态。
+ * @param {Parameters<typeof createFakeHost>[0] & { extraRows?: Array<{ entryId: string, config: any }> }} [opts]
+ */
+export function createHostShapeFakeHost(opts = {}) {
+  return createFakeHost({ ...opts, hostShape: true });
 }

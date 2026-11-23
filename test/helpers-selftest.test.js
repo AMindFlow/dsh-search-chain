@@ -9,7 +9,7 @@ import { createControlledClock, flush } from "./helpers/clock.js";
 import { createFakeFetch, SYNTHETIC_KEY, SYNTHETIC_PROXY, SYNTHETIC_PAC } from "./helpers/fake-fetch.js";
 import { createFakeTransportFactory } from "./helpers/fake-transport.js";
 import { createFakeCredentials } from "./helpers/fake-credentials.js";
-import { createFakeHost } from "./helpers/fake-host.js";
+import { createFakeHost, createHostShapeFakeHost } from "./helpers/fake-host.js";
 import { createScriptedBackend, stepSuccess, stepEmpty, stepFail, stepHang, stepLate, stepProgramError } from "./helpers/fake-backend.js";
 import { createChainHarness, createProviderHarness, DEFAULT_QUERY } from "./helpers/chain-harness.js";
 import { assertNoSecrets, assertNoCredentialUserinfo, assertNoRawBody, createLogCapture } from "./helpers/redact.js";
@@ -148,6 +148,29 @@ test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失�
   host.editor.failNext = new Error("synthetic save failure");
   await assert.rejects(host.editor.edit(host.entry, (cur) => ({ ...cur, timeoutMs: 999 })));
   assert.equal(host.editor.saved().timeoutMs, 5, "保存失败后已生效快照保持一致（CFG-004/SET-004）");
+
+  // 宿主形态替身（PR#14 复审宿主实证）：Entry/Fiber 形态、configuration() 活行、edit 身份校验、无 saved()。
+  const hs = createHostShapeFakeHost({
+    config: { entries: [] },
+    extraRows: [{ entryId: "web-search-deepseek", config: { baseURL: "https://row.example/v1" } }],
+  });
+  assert.equal(hs.entry.options.id, "search-chain", "裸 id 在 options.id");
+  assert.equal(hs.entry.id, "include:search-chain", "Entry 顶层 id 是带父路径前缀的 getter（宿主实证）");
+  assert.equal(hs.fiber.id, undefined, "Fiber 无 id 属性，只有 uid");
+  assert.equal(typeof hs.fiber.uid, "string");
+  const rows = hs.configuration();
+  assert.deepEqual(rows.map((r) => r.entry.options.id), ["search-chain", "web-search-deepseek"], "行数组含本行与挂载行（{entry, config} 形态）");
+  assert.equal(rows[0].entry, hs.entry, "行 entry 与 ctx.fiber.entry 同一对象（宿主对象同一性）");
+  assert.equal(rows[1].config.baseURL, "https://row.example/v1", "官方行按 options.id 在场，携带自身 config");
+  assert.equal(hs.editor.saved, undefined, "宿主形态行集合没有 saved() 捷径");
+  await assert.rejects(hs.editor.edit(hs.fiber, (c) => c), /no longer available/, "Fiber 不是合法写入目标（旧 B3：宿主必拒）");
+  await assert.rejects(
+    hs.editor.edit({ options: { id: "search-chain" }, fiber: {} }, (c) => c),
+    /no longer available/,
+    "同形外来对象不在 entries() 内，同样必须拒绝",
+  );
+  await hs.editor.edit(hs.entry, (cur) => ({ ...cur, timeoutMs: 7 }));
+  assert.equal(hs.configuration()[0].config.timeoutMs, 7, "保存后 configuration() 读到活行（CFG-004 下一次读取即新值）");
 });
 
 test("fake-backend：脚本顺序消费、末步重复、默认挂起、失败带码、late 与 programError（A5/FB 面）", async () => {
