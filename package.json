@@ -1,0 +1,14 @@
+{
+  "name": "dsh-search-chain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH 网页搜索链插件（WP0：宿主验证与共享契约 oracle）",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=30000 test/"
+  }
+}
