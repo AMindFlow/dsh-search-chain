@@ -7,6 +7,25 @@ import { createLazyHostOfficial } from "./official.js";
 
 export { PROVIDER_ID };
 
+/** Host 依赖声明：web 用于注册，configEditor 用于读取本行与 web-search-deepseek 行的活配置。 */
+export const inject = ["web", "configEditor"];
+
+/**
+ * 读取本插件行的活配置（B1）。真实宿主经 configEditor.configuration() 读取全部活行的
+ * inherited/override 值。台架替身（test/helpers/fake-host.js）只暴露 editor.saved()，
+ * 此分支仅服务于替身；WP6 装配时若替身改为 configuration()，应删除该分支。
+ * 无法读到时回退到装载快照。
+ */
+export function liveOwnConfig(ctx, loadSnapshot) {
+  const editor = ctx.configEditor;
+  if (typeof editor?.configuration === "function") {
+    const row = editor.configuration().find((r) => r.entry?.id === ctx.fiber?.id);
+    return row ? { ...row.inherited, ...row.override } : loadSnapshot;
+  }
+  if (typeof editor?.saved === "function") return editor.saved();
+  return loadSnapshot;
+}
+
 /** 行配置声明（JSON Schema 形态；宿主 Config 投影校验的实机形态见 PR「未验证项」）。 */
 export const Config = {
   type: "object",
@@ -85,10 +104,11 @@ export function createSearchProvider(deps) {
 export function apply(ctx, config, testDeps = {}) {
   const chain = testDeps.chain ?? unwiredChain();
   const official = "official" in testDeps ? testDeps.official : createLazyHostOfficial(ctx);
+  // B1：每次查询实时读取已保存配置（CFG-004：保存成功后下一次查询生效），不绑死装载入参。
   const settings = {
     editor: ctx.configEditor,
     entry: ctx.fiber,
-    current: () => config,
+    current: () => liveOwnConfig(ctx, config),
   };
   const provider = createSearchProvider({
     getConfig: () => readConfig(settings),
