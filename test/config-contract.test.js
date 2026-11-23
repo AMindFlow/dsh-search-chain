@@ -72,7 +72,7 @@ test("CFG-004/FB-003：非法结构一律携带 CONFIG_CODES 的配置错误", a
   const mod = await load(t);
   if (!mod) return;
   for (const bad of [0, -5, 2.5, "25000", Number.NaN]) {
-    await expectConfigError(t, () => mod.normalizeConfig({ timeoutMs: bad }), C.CONFIG_CODES.TIMEOUT_INVALID);
+    await expectConfigError(t, () => mod.normalizeConfig({ timeoutMs: bad }), C.CONFIG_CODES.INVALID);
   }
   for (const raw of [
     { entries: "abc" },

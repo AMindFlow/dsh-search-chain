@@ -104,7 +104,17 @@ test("DSH-002：链的 FB-004 终态错误原样上报（同一错误对象）",
       },
     },
   });
-  const err = await assert.rejects(h.search({ query: DEFAULT_QUERY, llmProvider: "x" }));
+  // assert.rejects resolve 为 undefined,捕获返回必得 undefined(与实现无关)。
+  // 改 try/catch 捕获真实抛出对象,并显式断言「确实抛出」——只增强不减弱。
+  let threw = false;
+  let err;
+  try {
+    await h.search({ query: DEFAULT_QUERY, llmProvider: "x" });
+  } catch (e) {
+    threw = true;
+    err = e;
+  }
+  assert.ok(threw, "链终态错误必须向宿主抛出,不得吞掉(未抛出即为缺陷)");
   assert.equal(err, terminal, "终态错误必须原样上报：不得吞掉、重包装或降级为普通文本（DSH-002/FB-004）");
   C.assertWebError(err, {
     code: C.CHAIN_CODES.ALL_KEYS_MISSING,

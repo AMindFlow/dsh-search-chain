@@ -66,7 +66,16 @@ test("DSH-005：官方失败 → 原样抛错并保持选择，无静默回退",
       throw boom;
     },
   });
-  const err = await assert.rejects(h.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID }));
+  // assert.rejects resolve 为 undefined,捕获返回必得 undefined(与实现无关)。改 try/catch 捕获真实对象。
+  let threw = false;
+  let err;
+  try {
+    await h.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
+  } catch (e) {
+    threw = true;
+    err = e;
+  }
+  assert.ok(threw, "官方失败必须向宿主抛错,不得静默(未抛出即为缺陷)");
   assert.equal(err, boom, "官方失败错误原样上报（DSH-002/DSH-005）");
   assert.equal(h.chainRequestCount(), 0, "保持当前选择：不得悄悄回退自定义链（DSH-005）");
 });
