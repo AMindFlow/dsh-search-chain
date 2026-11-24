@@ -191,23 +191,63 @@ test("BING-001 解析：DOCTYPE 开头的合法 RSS 正样本解析成功，不�
   assert.equal(res.value.sources[0].snippet, "DOCTYPE 声明后的合法 RSS 正文", "description → snippet（BING-001）");
 });
 
-test("BING-001 解析：1MB 恶意 & 串线性扫描不超时（<200ms，宽松阈值防 CI 抖动，审阅缺口 4）", async (t) => {
+// 计时守护重构（Refs #13）：原断言「单次 <200ms」在共享 CI runner 上偶红（实测 218.7ms，本地全绿），
+// 因为绝对阈值量的是机器速度而不是复杂度——本用例真正要防的回归是【实体解码复杂度退化】：
+// decodeEntities/findReferenceEnd 由「每个 & 只扫到下一个 ; 或 &，段间不重叠 → O(n)」
+// 退化为逐 & 重复向后扫描/整段二次拷贝（src/backends/bing.js 线性扫描注释；审阅缺口 4），
+// 1MB 恶意 & 串会从几十毫秒涨到秒级乃至超时。
+// 改用同进程对照法，判定只依赖同机相对比较（机器快慢等比作用于所有测量，比值不随环境漂移）：
+//   ① 规模倍增：恶意输入 500K→1M。线性实现的比值恒 ≤2（含固定开销：(ovh+2s)/(ovh+s)≤2），
+//      本机实测 ~2.0–2.6；上限取 3.5×+40ms。纯二次实现比值→4，且加项要掩盖它需
+//      500K 档 ≤80ms——500K 个 & 的二次扫描 ≥1.2e11 次字符比较，JS 里不可能在 80ms 内完成，
+//      故纯二次必红。任务简报建议的 4–6 用在 ×2 规模上会直接放过 4× 的纯二次回归，故收紧。
+//   ② 绝对对照：与同尺寸、无 & 的同构文档比（该文档不进入 & 扫描路径，回归时耗时不变），
+//      1M 恶意档须 ≤max(500ms, 100×对照)。①只防超线性、放行「线性但常数级爆炸」，②补住这一
+//      与「不超时」等价的洞；500ms 地板给本机/常规 CI，超慢机上由 100×对照随机器速度放大，
+//      不再是死的 200ms。
+// 计时纪律：先预热 1 次进入 JIT 稳态；三档交错测量取 3 次最小值（最小值≈纯计算成本，
+// 调度抢占与 GC 只抬高个别样本），交错使中途整体变慢等比作用于各档而不扭曲比值。
+test("BING-001 解析：1MB 恶意 & 串线性扫描守护（同进程对照：规模 ×2 耗时 ≤3.5×+40ms，绝对耗时 ≤max(500ms, 100×无&对照)，审阅缺口 4）", async (t) => {
   const bing = await loadBingBackend(t, CLAUSE);
-  const { ctx, fetch } = makeBingCtx();
-  const hostile = "&".repeat(1_000_000);
-  routeBing(fetch, {
-    status: 200,
-    body: rssDoc(rssItem({ title: "perf sample", link: "https://perf-sample.host.test/doc", description: hostile })),
-    headers: RSS_HEADERS,
-  });
+  const hostHalf = "&".repeat(500_000);
+  const hostFull = "&".repeat(1_000_000);
+  const safeFull = "x".repeat(1_000_000); // 同尺寸线性对照：无 & → decodeEntities 早退，& 扫描回归不影响它
 
-  const startedAt = performance.now();
-  const res = await settle(bing.search(ctx));
-  const elapsedMs = performance.now() - startedAt;
+  const measureMs = async (description) => {
+    const { ctx, fetch } = makeBingCtx();
+    routeBing(fetch, {
+      status: 200,
+      body: rssDoc(rssItem({ title: "perf sample", link: "https://perf-sample.host.test/doc", description })),
+      headers: RSS_HEADERS,
+    });
+    const startedAt = performance.now();
+    const res = await settle(bing.search(ctx));
+    const elapsedMs = performance.now() - startedAt;
+    assert.equal(res.ok, true, `前置：性能样本须成功解析（BING-001），实际错误：${res.error?.code ?? ""} ${res.error?.message ?? ""}`);
+    return elapsedMs;
+  };
 
-  assert.equal(res.ok, true, `前置：恶意 & 串文档须成功解析（BING-001），实际错误：${res.error?.code ?? ""} ${res.error?.message ?? ""}`);
+  await measureMs(hostFull); // 预热：JIT 稳态后再计时
+
+  let halfMs = Infinity;
+  let fullMs = Infinity;
+  let safeMs = Infinity;
+  for (let round = 0; round < 3; round += 1) {
+    halfMs = Math.min(halfMs, await measureMs(hostHalf));
+    fullMs = Math.min(fullMs, await measureMs(hostFull));
+    safeMs = Math.min(safeMs, await measureMs(safeFull));
+  }
+
+  const ratioCapMs = 3.5 * halfMs + 40;
   assert.ok(
-    elapsedMs < 200,
-    `1MB 恶意 & 串（无有效引用）解析须 <200ms（宽松阈值防 CI 抖动；实体扫描须为线性 O(n)），实际 ${elapsedMs.toFixed(1)}ms`,
+    fullMs <= ratioCapMs,
+    `1MB 恶意 & 串耗时须随规模线性增长：500K=${halfMs.toFixed(1)}ms → 1M=${fullMs.toFixed(1)}ms（比值 ${(fullMs / halfMs).toFixed(2)}，上限 3.5×+40ms=${ratioCapMs.toFixed(1)}ms）。` +
+      "线性 O(n) 期望 ~×2；若退化为逐 & 二次扫描期望 ~×4 且绝对耗时秒级。",
+  );
+
+  const absCapMs = Math.max(500, 100 * safeMs);
+  assert.ok(
+    fullMs <= absCapMs,
+    `1MB 恶意 & 串绝对耗时须留在非超时区间：${fullMs.toFixed(1)}ms ≤ max(500ms, 100×同尺寸无&对照 ${safeMs.toFixed(1)}ms)=${absCapMs.toFixed(1)}ms（对照随机器速度缩放，替代原先死的 200ms 阈值）。`,
   );
 });
