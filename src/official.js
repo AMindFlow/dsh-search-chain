@@ -44,7 +44,7 @@ function unavailableOfficial(cause) {
   };
 }
 
-/** 宿主 web-search-deepseek 行的活配置（configuration() 行的 config 字段，宿主形态 {entry, config}）。读不到即抛 WEB_PROVIDER_UNAVAILABLE。 */
+/** 宿主 web-search-deepseek 行的活配置（configuration() 行，终局形状 {entry, inherited, override}）。读不到或形态非法即抛 WEB_PROVIDER_UNAVAILABLE。 */
 export function requireHostSearchRow(ctx) {
   const editor = ctx.configEditor;
   if (typeof editor?.configuration !== "function") {
@@ -56,7 +56,10 @@ export function requireHostSearchRow(ctx) {
   } catch (cause) {
     throw webError("WEB_PROVIDER_UNAVAILABLE", "读取宿主活配置失败，无法读取 web-search-deepseek 行配置", cause);
   }
-  const row = rows.find((r) => r.entry?.options?.id === SEARCH_ROW_ID);
+  if (!Array.isArray(rows)) {
+    throw webError("WEB_PROVIDER_UNAVAILABLE", "宿主活配置形态非法（configuration() 应返回行数组），无法读取 web-search-deepseek 行配置");
+  }
+  const row = rows.find((r) => r?.entry?.options?.id === SEARCH_ROW_ID);
   if (!row) {
     throw webError(
       "WEB_PROVIDER_UNAVAILABLE",

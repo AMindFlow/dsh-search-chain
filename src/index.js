@@ -28,7 +28,10 @@ export function liveOwnConfig(ctx) {
   } catch (cause) {
     throw new ConfigError(CONFIG_CODES.ROW_UNAVAILABLE, "读取宿主活配置失败", { cause });
   }
-  const row = rows.find((r) => r.entry === entry);
+  if (!Array.isArray(rows)) {
+    throw new ConfigError(CONFIG_CODES.ROW_UNAVAILABLE, "宿主活配置形态非法（configuration() 应返回行数组）");
+  }
+  const row = rows.find((r) => r?.entry === entry);
   if (!row) {
     throw new ConfigError(CONFIG_CODES.ROW_UNAVAILABLE, "本插件配置行不在宿主活行中（未挂载或已卸载）");
   }
@@ -54,19 +57,22 @@ export function liveOwnConfig(ctx) {
  * @deepseek-ai/schemastery（zod 形状）在注册表版本（3.x）与 bundle 版本（0.2.x）间不对齐，且跨副本
  * volatile 标记不确定，因此这里零依赖手写 Standard Schema 字面。
  *
- * 分界：validate 只做形状钉存（plain object、已知键、类型与正整数），不深校验 entries 每项；
- * 深校验归 config.js normalizeConfig。validate 纯检查，原样返回 { value }，缺省字段不补值。
+ * 分界：validate 只做形状钉存（plain object、已知键的类型与正整数），不深校验 entries 每项；
+ * 深校验归 config.js normalizeConfig。validate 纯检查，原样返回 { value }（含未知键），缺省字段不补值。
  * 同步：绝不返回 thenable。
  *
+ * 未知键【接受】（宿主语义）：宿主 configEditor 的 Config 面按 z.object 语义剥离 extras；若此处严格拒绝
+ * 未知键，则保存结果（含他插件键或旧版残留键）必被宿主 validate 拒绝，形成「保存永败」死锁。
+ * 未知键的丢弃发生在读路径（normalizeConfig），写路径保留 raw 未知键（writeConfig）。
+ *
  * toJSON() 仅保留 JSON Schema 投影，供 WP12 设置面板做投影（volatileForm / schema.toJSON()）。
+ * 投影与 validate 一致：additionalProperties 为 true（未知键不作为设置面错误）。
  * 宿主表单与 role 标记需要 schemastery 面；WP12 决策是否精确 pin @deepseek-ai/schemastery@3.19.0 并核对
  * 宿主实际解析版本。本 Config 本身不提供宿主表单标记。
  */
-const CONFIG_KEYS = ["entries", "useOfficialDeepSeekSearch", "timeoutMs"];
-
 const CONFIG_JSON_SCHEMA = {
   type: "object",
-  additionalProperties: false,
+  additionalProperties: true,
   properties: {
     entries: { type: "array", description: "有序搜索条目（CFG-004）" },
     useOfficialDeepSeekSearch: { type: "boolean", default: true, description: "SET-005 官方 DeepSeek 搜索开关" },
@@ -87,9 +93,6 @@ export const Config = {
         return { issues: [{ message: "配置必须是对象" }] };
       }
       const issues = [];
-      for (const key of Object.keys(value)) {
-        if (!CONFIG_KEYS.includes(key)) issues.push({ message: `未知配置项：${key}`, path: [key] });
-      }
       if (value.entries !== undefined) {
         if (!Array.isArray(value.entries)) {
           issues.push({ message: "entries 必须是数组", path: ["entries"] });
@@ -140,7 +143,9 @@ function unwiredChain() {
 
 /**
  * 创建 search-chain provider。
- * deps = { getConfig, chain, official?, routeOf?, officialRouteId? }
+ * deps = { getConfig, getRouteConfig?, chain, official?, routeOf?, officialRouteId? }
+ *   - getConfig：链路径的规范化快照（readConfig），非法条目在此抛 CONFIG_INVALID，仅作链终态。
+ *   - getRouteConfig：路由判定的浅读活配置（不经 normalizeConfig），缺省回落 getConfig（测试替身）。
  *   - official：宿主 DeepSeek 官方搜索 provider（须暴露 search(request, signal)），或返回它的惰性函数；
  *     为 null 时官方路由回落自定义链（测试替身语义）。
  *   - routeOf：从请求取路由 id，默认 request.llmProvider。
@@ -148,6 +153,7 @@ function unwiredChain() {
 export function createSearchProvider(deps) {
   const {
     getConfig,
+    getRouteConfig = getConfig,
     chain,
     official = null,
     routeOf = (request) => request?.llmProvider,
@@ -161,14 +167,17 @@ export function createSearchProvider(deps) {
       return true;
     },
     // DSH-002/DSH-005：每次调用一个查询；官方分支仅在「开关开 + 官方路由 + 官方可用」时选择。
+    // 每次查询重读活配置（CFG-004）；路由判定先于规范化，链路径才进 readConfig/normalizeConfig。
     async search(request, signal) {
-      const cfg = getConfig();
-      const useOfficial = cfg?.useOfficialDeepSeekSearch !== false;
+      const routeCfg = getRouteConfig();
+      const useOfficial = routeCfg?.useOfficialDeepSeekSearch !== false;
       if (official && useOfficial && routeOf(request) === officialRouteId) {
         // 官方分支不经 ctx.web.search（会因配置 id=search-chain 选回本插件）。
         const target = typeof official === "function" ? await official() : official;
         if (target) return target.search(request, signal);
       }
+      // 链路径：规范化快照（非法条目在此以 CONFIG_INVALID 终态止步，零条目执行）。
+      getConfig();
       return chain.search(request, signal);
     },
     release() {
@@ -200,6 +209,7 @@ export function apply(ctx, _loadSnapshot, testDeps = {}) {
   const settings = createSettingsPort(ctx);
   const provider = createSearchProvider({
     getConfig: () => readConfig(settings),
+    getRouteConfig: () => settings.current(),
     chain,
     official,
     routeOf: testDeps.routeOf,
