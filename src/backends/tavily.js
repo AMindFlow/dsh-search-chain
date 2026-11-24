@@ -43,6 +43,12 @@ const TAVILY_MAX_RESULTS_CAP = 20;
 /** TAV-002 验收：用量超限状态码（432/433），适配器本地特例面（待办 P6，见报告）。 */
 const TAVILY_QUOTA_STATUSES = new Set([432, 433]);
 
+/** 无注入时钟时的回退（生产由链注入；缺省回落真实时钟，防装配外调用崩溃）。 */
+const SYSTEM_CLOCK = Object.freeze({
+  setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),
+  clearTimeout: (id) => globalThis.clearTimeout(id),
+});
+
 // ─── 失败分类 ──────────────────────────────────────────────────────────────
 
 /**
@@ -269,7 +275,8 @@ function extractUpstreamCode(text) {
 // ─── 适配器主流程 ──────────────────────────────────────────────────────────
 
 async function searchTavily(ctx) {
-  const { entry, query, maxResults, key, fetch, budgetMs, signal, clock, log } = ctx;
+  const { entry, query, maxResults, key, fetch, budgetMs, signal, log } = ctx;
+  const clock = ctx.clock ?? SYSTEM_CLOCK;
   const logWarn =
     typeof log === "function"
       ? (message, meta) => {
