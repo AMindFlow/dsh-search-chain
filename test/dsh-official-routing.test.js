@@ -56,6 +56,97 @@ test("DSH-005：官方分支零自定义资源——空链不影响，配置条�
   await hEmpty.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
   assert.equal(hEmpty.officialRequestCount(), 1, "空自定义链不阻断官方分支，也不报未配置（DSH-005）");
   assert.equal(hEmpty.chainRequestCount(), 0);
+  // P1-1（终审轮）：审阅探针实证现状 officialCalls=0——apply 在路由前跑 normalizeConfig，
+  // 非法条目（bogus type + 非法 proxy）把官方路由也拒成 CONFIG_INVALID。定案：深校验只属链路径，
+  // 官方分支+开关开必须照走官方，零 CONFIG_INVALID。
+  const BAD = C.makeSavedConfig(
+    [
+      C.makeEntry({ id: "e-bogus", type: "bogus-type", name: "非法类型条目" }),
+      C.makeEntry({ id: "e-badproxy", type: "tavily", proxy: "not a url", name: "非法代理条目" }),
+    ],
+    { useOfficialDeepSeekSearch: true },
+  );
+  const host = createHostShapeFakeHost({ config: structuredClone(BAD) });
+  const officialCalls = [];
+  const chainCalls = [];
+  await Promise.resolve(
+    mod.apply(host.ctx, structuredClone(BAD), {
+      chain: {
+        async search(r) {
+          chainCalls.push(r);
+          return { sources: C.makeSources(1), truncated: false };
+        },
+        release() {},
+      },
+      official: {
+        async search(r) {
+          officialCalls.push(r);
+          return officialOk();
+        },
+      },
+    }),
+  );
+  const provider = host.searchRegistrations()[0];
+  let searchErr;
+  try {
+    await provider.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
+  } catch (e) {
+    searchErr = e;
+  }
+  assert.equal(
+    searchErr,
+    undefined,
+    "P1-1：官方路由+开关开被路由前深校验拒掉（实测 " + String(searchErr && searchErr.code) +
+      "）——官方分支不得被非法自定义条目拖垮",
+  );
+  assert.equal(officialCalls.length, 1, "P1-1：非法条目在场时官方查询仍须委托官方（审阅探针实证现状=0）");
+  assert.equal(chainCalls.length, 0, "官方分支零自定义条目执行——即使条目非法也不得碰链");
+  await host.disposeAll();
+});
+
+// 链侧对照：同一非法 fixture 在链路由下必须止步 CONFIG_INVALID（深校验只拦链，不拦官方）。
+test("P1-1 链侧：非法条目在链路由下止步 CONFIG_INVALID 且零条目执行", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const BAD = C.makeSavedConfig(
+    [
+      C.makeEntry({ id: "e-bogus", type: "bogus-type", name: "非法类型条目" }),
+      C.makeEntry({ id: "e-badproxy", type: "tavily", proxy: "not a url", name: "非法代理条目" }),
+    ],
+    { useOfficialDeepSeekSearch: true },
+  );
+  const host = createHostShapeFakeHost({ config: structuredClone(BAD) });
+  const officialCalls = [];
+  const chainCalls = [];
+  await Promise.resolve(
+    mod.apply(host.ctx, structuredClone(BAD), {
+      chain: {
+        async search(r) {
+          chainCalls.push(r);
+          return { sources: C.makeSources(1), truncated: false };
+        },
+        release() {},
+      },
+      official: {
+        async search(r) {
+          officialCalls.push(r);
+          return officialOk();
+        },
+      },
+    }),
+  );
+  const provider = host.searchRegistrations()[0];
+  let err;
+  try {
+    await provider.search({ query: DEFAULT_QUERY, llmProvider: "custom-model" });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "链路由 + 非法条目必须显式失败，不得静默降级直连");
+  assert.equal(err.code, C.CONFIG_CODES.INVALID, "链路径深校验终态 = CONFIG_INVALID");
+  assert.equal(officialCalls.length, 0, "链路由不碰官方");
+  assert.equal(chainCalls.length, 0, "CONFIG_INVALID 拦在条目执行之前（零外发零凭据消费）");
+  await host.disposeAll();
 });
 
 test("DSH-005：官方失败 → 原样抛错并保持选择，无静默回退", async (t) => {

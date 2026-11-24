@@ -53,6 +53,8 @@ function makeEntryForm(id, name, fiberUid) {
  *   config?: Record<string, any>,                       // 行初始 config
  *   credentials?: any,                                  // 默认 createFakeCredentials()
  *   validate?: (candidate: any) => void,                // 模拟宿主 Config 校验（抛错=保存拒绝）
+ *   configSchema?: any,                                 // 运行时 Config（Standard Schema）：change 返回后、落盘前
+ *                                                       //   过 ["~standard"].validate（宿主 resolveConfig 时序）
  *   hostShape?: boolean,                                // true：宿主形态 configuration()，无 editor.saved()
  *   extraRows?: Array<{ entryId: string, config: Record<string, any> }>, // 宿主形态：其它挂载行
  * }} [opts]
@@ -184,6 +186,16 @@ export function createFakeHost(opts = {}) {
       const next = await change(structuredClone(rawLayer), structuredClone(inheritedLayer));
       if (next === null || typeof next !== "object" || Array.isArray(next)) {
         throw new TypeError("change 必须返回新 raw 层整体对象（宿主变异函数语义）");
+      }
+      // 宿主时序（asar 实证）：resolveConfig 在 change 返回后、落盘前跑 runtime Config 的
+      // ["~standard"].validate；issues 即抛（宿主 ValidationError 等价）——保存不生效。
+      if (opts.configSchema) {
+        const vr = opts.configSchema["~standard"].validate(next);
+        if (vr.issues) {
+          throw new Error(
+            "Configuration validation failed: " + vr.issues.map((i) => i.message).join("; "),
+          );
+        }
       }
       if (opts.validate) opts.validate(next); // 抛错 = 宿主拒绝，保存不生效
       if (hostShape) overrideByEntry.set(target, next); // 整体替换该行自身层；inherited 不动

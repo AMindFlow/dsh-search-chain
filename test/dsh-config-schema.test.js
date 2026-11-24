@@ -51,6 +51,10 @@ test("CFG-001 schema 面：合法配置 → 无 issues，result.value 原样返�
   const VALID = [
     {}, // 全缺省装载合法（缺省语义由 normalizeConfig/分层补齐，schema 面不注入默认值）
     { entries: [], useOfficialDeepSeekSearch: false, timeoutMs: 1 },
+    // P2-2 定案（终审轮）：未知键是【接受】不是拒绝——宿主 Config 为 z.object 形态，
+    // resolveConfig 在 change 返回后跑校验并剥离 extras；严格拒绝会让 raw 携带未知键时
+    // 「保存永败 → 设置 UI 不可修复」。本用例钉：无 issues 且 value 原样返回（含未知键）。
+    { someOtherPluginKey: 1, timeoutMs: 5 },
   ];
   for (const input of VALID) {
     const before = structuredClone(input);
@@ -69,7 +73,6 @@ test("CFG-001 schema 面：非法配置 → issues 非空且每条含字符串 m
   const INVALID = [
     { timeoutMs: "12" }, // 类型违例：字符串数字（正整数语义深浅均拒：此处钉类型）
     { useOfficialDeepSeekSearch: "yes" }, // 类型违例：非布尔
-    { unknownKey: 1 }, // 未知键（additionalProperties:false 的 schema 面等价物）
     [], // 根形状违例：数组根
     null, // 根形状违例：null 根
   ];

@@ -153,6 +153,25 @@ test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失�
     (e) => e instanceof TypeError && /change is not a function/.test(e.message),
     "对象式 change 必须被拒（宿主 edit 第二参是变异函数，探针实证原文 change is not a function）",
   );
+  // 校验闸自测：configSchema 提供时 change 返回值落盘前过 ~standard.validate（宿主 resolveConfig 时序）。
+  const gated = createFakeHost({
+    config: { keep: 1 },
+    configSchema: {
+      "~standard": {
+        version: 1,
+        vendor: "selftest",
+        validate: (v) => ("bad" in v ? { issues: [{ message: "no bad allowed" }] } : { value: v }),
+      },
+    },
+  });
+  await assert.rejects(
+    gated.editor.edit(gated.entry, () => ({ bad: true })),
+    /Configuration validation failed.*no bad allowed/,
+    "change 返回值带 issues 时必须按宿主时序在落盘前被拒",
+  );
+  assert.equal(gated.editor.saved().keep, 1, "校验拒绝后存储不变");
+  await gated.editor.edit(gated.entry, () => ({ ok: 2 }));
+  assert.equal(gated.editor.saved().ok, 2, "无 issues 的返回层正常落盘");
 
   // 宿主形态替身（PR#14 复审宿主实证）：Entry/Fiber 形态、configuration() 活行、edit 身份校验、无 saved()。
   const hs = createHostShapeFakeHost({

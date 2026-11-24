@@ -11,7 +11,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as C from "./helpers/contract.js";
-import { createFakeHost } from "./helpers/fake-host.js";
+import { createFakeHost, createHostShapeFakeHost } from "./helpers/fake-host.js";
 import { tryImportSrc, failIfUnimplemented } from "./helpers/impl.js";
 
 const WP = "WP6 src/index.js";
@@ -122,4 +122,51 @@ test("DSH-001/DSH-003 配套：配置行声明存在且 id=search-chain（cordis
   }
   assert.match(text, /^\s*-?\s*id:\s*search-chain\s*$/m, "配置行 id 必须为 search-chain");
   assert.match(text, /dsh-search-chain/, "配置行归属 bundle dsh-search-chain");
+});
+
+test("DSH-001/P3：我行按对象身份匹配——克隆行（同形状不同对象）不得被认作 fiber.entry", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  // M1c 绿漏消除：若实现从 r.entry === ctx.fiber.entry 漂移到按 id/形状匹配，本用例当场红。
+  const host = createHostShapeFakeHost({ config: C.makeSavedConfig([]) });
+  const chain = {
+    async search() {
+      return { sources: C.makeSources(1), truncated: false };
+    },
+    release() {},
+  };
+  await Promise.resolve(mod.apply(host.ctx, C.makeSavedConfig([]), { chain }));
+  const provider = host.searchRegistrations()[0];
+  const orig = host.editor.configuration.bind(host.editor);
+  host.editor.configuration = () =>
+    orig().map((r) =>
+      r.entry === host.entry
+        ? {
+            // 同形状克隆行：options.id / 前缀 id getter 全一致，唯独不是同一对象（宿主行管线往返形态）
+            entry: {
+              name: r.entry.name,
+              options: { ...r.entry.options },
+              uid: r.entry.uid,
+              get id() {
+                return `include:${this.options.id}`;
+              },
+            },
+            inherited: r.inherited,
+            override: r.override,
+          }
+        : r,
+    );
+  let err;
+  try {
+    await provider.search({ query: "q", llmProvider: "custom-model" });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "克隆行不得被认作我行（身份守卫）");
+  assert.equal(
+    err.code,
+    C.CONFIG_CODES.ROW_UNAVAILABLE,
+    "活行无我行 → 显式 CONFIG_ROW_UNAVAILABLE，禁止静默回落装载快照（B1 防线）",
+  );
+  await host.disposeAll();
 });

@@ -22,6 +22,8 @@ import { tryImportSrc, failIfUnimplemented } from "./helpers/impl.js";
 
 const WP = "WP1 src/config.js";
 
+// 末尾追加段（终审轮 P2-2）需要 index.js 的 runtime Config——见文件末尾。
+
 async function load(t) {
   const res = await tryImportSrc("config.js");
   if (failIfUnimplemented(t, res, WP, "CFG-001..004/SET-005")) return null;
@@ -351,4 +353,27 @@ test("CFG-002：凭据不可读/损坏 = CREDENTIALS_UNREADABLE 配置错误（�
       }),
     C.CONFIG_CODES.CREDENTIALS_UNREADABLE,
   );
+});
+
+// ── 终审轮 P2-2：宿主 zod 层对未知键是剥离/接受，不是拒绝。raw 携带未知键时 writeConfig
+//    必须保存成功——严格拒绝会造成「raw 含未知键 → 保存永败 → 设置 UI 不可修复」。
+//    fake-host 的 configSchema 闸复现宿主 resolveConfig 时序（change 返回后、落盘前校验）。──
+test("P2-2 写路径：raw 含未知键时 writeConfig 保存成功且未知键经 raw→返回层→落盘保留", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const idxRes = await tryImportSrc("index.js");
+  if (failIfUnimplemented(t, idxRes, "WP0 src/index.js Config", "P2-2 写路径")) return;
+  const host = createFakeHost({
+    config: { ...structuredClone(SAVED_FIXTURE), otherPluginKey: "keep-me" },
+    configSchema: idxRes.module.Config,
+  });
+  const port = host.settingsPort;
+  await mod.writeConfig(port, C.makeSavedConfig([C.makeEntry({ id: "e-p22", type: "openai", name: "P22 条目" })]));
+  assert.equal(
+    host.editor.saved().otherPluginKey,
+    "keep-me",
+    "未知键非我属性：经 raw→change 返回层保留落盘（writeConfig 不得吞他人键）",
+  );
+  const snap = await mod.readConfig(port);
+  assert.equal(snap.entries.at(-1).id, "e-p22", "接受未知键后自有键保存照常生效");
 });
