@@ -20,7 +20,7 @@
 //      判长（内存峰值到全量为止，无法网络层早停）；本例只钉「超限即失败」，不强求早停。现预期为
 //      绿（守卫回归），非 dev 红面。
 //
-// 预期红（dev 面 = 现无上限；实现字节上限后转绿）：
+// 缺陷钉（当前绿=字节上限已落地，回退即红；历史 dev 面 = 无上限）：
 //   - 「MAX_RESPONSE_BYTES」1 例（constants.js 缺常量）；
 //   - 「PAC 下载」1 例（transport 无上限：读满 8MB、错误为 EVAL/NETWORK 类、无尺寸线索）；
 //   - 六家供应商各 1 例（text() 读满 4MB、无 cancel、无尺寸线索）。共 8 红。
@@ -192,7 +192,7 @@ async function rejectionOf(promise) {
 // ─── ① 上限常量（constants.js 单源面）────────────────────────────────────────
 
 test("#12 上限常量：src/constants.js 须导出 MAX_RESPONSE_BYTES = 2MiB（复用 BING-002 对齐名字面）", () => {
-  // 现状缺陷=dev 面（预期红）：constants.js 无该常量；bing.js 的 MAX_BODY_BYTES 是本地上限，未提升为
+  // 现状缺陷=dev 面（缺陷钉）：constants.js 无该常量；bing.js 的 MAX_BODY_BYTES 是本地上限，未提升为
   // 跨模块单源。修复 = 新增/对齐导出，值与 BING-002 全等，避免「第三份可漂移权威」。
   assert.equal(
     constants.MAX_RESPONSE_BYTES,
@@ -256,7 +256,7 @@ async function startPacServer(totalBytes) {
 }
 
 test("#12 PAC 下载上限：8MB 无限流须 ≤上限+余量处早停，PAC_FETCH_FAILED 携尺寸线索，全程 <2s（不等全量）", async (t) => {
-  // 现状缺陷=dev 面（预期红）：transport.js loadPac() 直接 res.text()——读满 8MB 才开始求值；
+  // 现状缺陷=dev 面（缺陷钉）：transport.js loadPac() 直接 res.text()——读满 8MB 才开始求值；
   // 错误落点变成 EVAL_FAILED / 直连出站失败，服务端观测到全量，无尺寸线索。
   const { createEntryTransport } = await import("../src/transport.js");
   const { server, obs, port } = await startPacServer(PAC_TOTAL);
@@ -325,7 +325,7 @@ test("#12 PAC 下载上限：8MB 无限流须 ≤上限+余量处早停，PAC_FE
   );
 });
 
-// ─── ③ 供应商正文读取上限（参数化，六家各 1 例；预期红=dev 面）───────────────
+// ─── ③ 供应商正文读取上限（参数化，六家各 1 例；缺陷钉=dev 面）───────────────
 
 const VENDOR_CASES = [
   { type: "brave", rel: "backends/brave.js", pick: (m) => m.braveBackend ?? m.default ?? m.createBraveBackend?.() },
@@ -341,7 +341,7 @@ const VENDOR_CASES = [
 ];
 
 for (const c of VENDOR_CASES) {
-  test(`#12 供应商上限（预期红=dev 面）：${c.type} 4MB 正文须 ≤上限+容差早停 cancel 并以尺寸线索失败`, async (t) => {
+  test(`#12 供应商上限（缺陷钉=dev 面）：${c.type} 4MB 正文须 ≤上限+容差早停 cancel 并以尺寸线索失败`, async (t) => {
     // 现状缺陷：res.text() 无上限——4MB 全量入内存（delivered=4MB、无 cancel），错误只是顺带的
     // 解析/映射失败（无尺寸线索）。修复 = 流式逐块计数，>MAX_RESPONSE_BYTES 即 cancel +
     // ENTRY_BAD_RESPONSE 类（FB-005「异常响应」；本地归类为 ENTRY_BAD_RESPONSE 已被接受）。

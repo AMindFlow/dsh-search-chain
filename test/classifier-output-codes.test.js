@@ -6,7 +6,7 @@
 //   return code;
 //   即：①共享分类器返回非 ENTRY 码（含非字符串）→ 无码程序违约上抛，消息点名未知输出；
 //       ②共享分类器自身抛异常 → 原样上抛（不设 try/catch 吞掉）。
-// 被检面（本分支现状 = 预期红，dev 修复面）：
+// 被检面（缺陷钉：当前绿=已修复，回退即红）：
 //   - deepseek.js classifyFailure：`if (typeof code === "string") return code;` —— 共享分类器返回
 //     非 ENTRY 码字符串原样返回，entryError 带着未知码出门（A1）；返回 undefined 静默落 localClassify
 //     （A2，非 ENTRY 码的另一种形态，四先例一律上抛）。
@@ -124,7 +124,7 @@ function expectUnknownCodeViolation(problems, label, err, returned) {
 
 // ─── deepseek：`typeof code === "string"` 即返回，非 ENTRY 码原样出门 ────────────────────
 
-test("P2-a A1 deepseek：共享分类器返回非 ENTRY 码字符串→无码程序违约上抛（现状原样返回未知码出门，预期红）", async () => {
+test("P2-a A1 deepseek：共享分类器返回非 ENTRY 码字符串→无码程序违约上抛（现状原样返回未知码出门，缺陷钉）", async () => {
   const stage = await stageBackend("backends/deepseek.js");
   try {
     await stage.setSearch(SEARCH_RETURNS_BOGUS);
@@ -139,7 +139,7 @@ test("P2-a A1 deepseek：共享分类器返回非 ENTRY 码字符串→无码程
   }
 });
 
-test("P2-a A2 deepseek：共享分类器返回 undefined→同属未知码，无码程序违约上抛（现状静默落 localClassify，预期红）", async () => {
+test("P2-a A2 deepseek：共享分类器返回 undefined→同属未知码，无码程序违约上抛（现状静默落 localClassify，缺陷钉）", async () => {
   const stage = await stageBackend("backends/deepseek.js");
   try {
     await stage.setSearch(SEARCH_RETURNS_UNDEFINED);
@@ -155,7 +155,7 @@ test("P2-a A2 deepseek：共享分类器返回 undefined→同属未知码，无
 
 // ─── tavily：try{general}catch{} 吞异常；未知码回退 localGeneralCode ────────────────────
 
-test("P2-a A3 tavily：共享分类器自身抛异常→原样上抛（现状 try/catch 吞掉后静默 localGeneralCode，预期红）", async () => {
+test("P2-a A3 tavily：共享分类器自身抛异常→原样上抛（现状 try/catch 吞掉后静默 localGeneralCode，缺陷钉）", async () => {
   const stage = await stageBackend("backends/tavily.js");
   try {
     await stage.setSearch(SEARCH_THROWS);
@@ -185,7 +185,7 @@ test("P2-a A3 tavily：共享分类器自身抛异常→原样上抛（现状 tr
   }
 });
 
-test("P2-a A4 tavily：共享分类器返回非 ENTRY 码字符串→无码程序违约上抛（现状回退 localGeneralCode，预期红）", async () => {
+test("P2-a A4 tavily：共享分类器返回非 ENTRY 码字符串→无码程序违约上抛（现状回退 localGeneralCode，缺陷钉）", async () => {
   const stage = await stageBackend("backends/tavily.js");
   try {
     await stage.setSearch(SEARCH_RETURNS_BOGUS);

@@ -3,7 +3,7 @@
 // 先例（main 上 exa.js / brave.js / openai.js / gemini.js 的 upstreamClassifier，#12-25 注释）：
 //   - 加载失败（rejected）不得永久缓存：失败即重置，下一次调用重新探测；
 //   - src/search.js 存在但未导出 classifyUpstreamFailure → A4 程序违约，向上抛出（不带 ENTRY 码）。
-// 被检面（main 现状 = 预期红）：
+// 被检面（main 现状 = 缺陷钉）：
 //   - deepseek.js loadSharedClassifier：import(...) 失败被 `() => null` 吞掉并永久缓存 → 之后一直
 //     静默走 localClassify 本地兜底（首败即被钉死，永不重试）；未导出同样静默兜底。
 //   - tavily.js generalClassifierState 的 "absent" 状态机：导入失败与未导出一并置 "absent" 缓存，

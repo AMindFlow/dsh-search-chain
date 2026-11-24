@@ -1,9 +1,9 @@
 {
   "name": "dsh-search-chain",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "DSH 网页搜索链插件（WP0：宿主验证与共享契约 oracle）",
+  "description": "DSH 网页搜索链插件（自定义多供应商回退链）",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=24"
