@@ -11,7 +11,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as C from "./helpers/contract.js";
 import { tryImportSrc, failIfUnimplemented } from "./helpers/impl.js";
-import { hostApply, makeWebError } from "./helpers/assembly-harness.js";
+import { hermeticEnvKeys, hostApply, makeWebError } from "./helpers/assembly-harness.js";
+import { createHostShapeFakeHost } from "./helpers/fake-host.js";
 
 const WP = "WP6 src/index.js";
 
@@ -144,5 +145,70 @@ test("DSH-002（装配面）：链 FB-004 终态错误原样上抛（同一错�
     code: C.CHAIN_CODES.UPSTREAM_FAILURES,
     attempts: [{ entryId: "e-tav", code: C.ENTRY_CODES.RATE_LIMITED }],
   });
+  await host.disposeAll();
+});
+
+// ─── WP13（实机 P0 oracle）：inject 宿主服务面声明完备 + 凭据服务缺失的装配终态 ───
+// 实机事实（真宿主，独立测试 profile）：src/index.js 的 inject 只声明 ["web","configEditor"]，
+// 宿主仅注入 inject 声明过的服务 → 真宿主 ctx.get("credentials") === undefined →
+// hostCredentials 的 resolve/readRecord 恒抛 → 全部条目 ENTRY_CREDENTIALS（链看似在跑，实则恒凭据败）。
+// 既有测试全绿的原因：fake-host 无条件把 createFakeCredentials() 挂进 services，从不按 inject 收敛——
+// 本 WP13 两条即补这两面：①声明完备（红）；②服务缺失时装配行为仍是 ENTRY_CREDENTIALS 终态而非崩溃（钉行为）。
+
+test("WP13（实机 P0）：inject 必须声明完整宿主服务面 web/configEditor/credentials", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  assert.ok(Array.isArray(mod.inject), "inject 必须是字符串数组（bundle 宿主依赖声明）");
+  assert.ok(
+    mod.inject.every((s) => typeof s === "string" && s.length > 0),
+    "inject 每项必须是非空字符串服务名",
+  );
+  // 宿主只注入 inject 声明的服务（dsh bundle 契约）；缺 credentials 则 ctx.get("credentials")
+  // 在真宿主上恒为 undefined，凭据链路整体失效——声明完备性是 P0。
+  for (const svc of ["web", "configEditor", "credentials"]) {
+    assert.ok(
+      mod.inject.includes(svc),
+      `inject 缺少 "${svc}"：宿主不会注入未声明服务，真宿主上 ctx.get("${svc}") 恒为 undefined`,
+    );
+  }
+});
+
+test("WP13（实机 P0）：装配 ctx.get(\"credentials\") 缺失时 search 走 ENTRY_CREDENTIALS 终态而非崩溃，零出站", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  hermeticEnvKeys(t); // 隔离本机白名单 key（TAVILY_API_KEY 等），确保真走「凭据服务缺失」路径
+
+  const outbound = [];
+  // 关键 1：不注入 chain——走真实 apply 的生产链（hostCredentials(ctx) 经 ctx.get("credentials")，
+  // 与真宿主同一接线）。
+  // 关键 2：credentials 必须在 apply 之前就不存在——真宿主自装载起即不注入未声明服务，而
+  // hostCredentials 在 apply 时捕获 svc；若先装载再删除，测到的是「服务中途消失」而非本缺陷形状。
+  const host = createHostShapeFakeHost({ config: structuredClone(CFG) });
+  host.services.credentials = undefined;
+  assert.equal(host.ctx.get("credentials"), undefined, "前置条件：装载前 ctx 的 credentials 服务面必须缺失");
+  const cleanup = mod.apply(host.ctx, structuredClone(CFG), {
+    official: null,
+    fetch: (url) => {
+      outbound.push(String(url));
+      throw new Error("network tripwire：凭据失败必须先于任何出站止步");
+    },
+  });
+  assert.equal(typeof cleanup, "function", "apply 必须返回 disposer（与 hostApply 同形）");
+  const provider = host.searchRegistrations()[0];
+
+  let err;
+  try {
+    await provider.search(structuredClone(REQ), undefined);
+  } catch (e) {
+    err = e;
+  }
+  // 必须是 FB-004 终态 WebError（可操作、逐条归因），而不是崩溃，也不是静默成功。
+  assert.ok(err, "凭据服务缺失必须以链终态错误收束（不得静默成功）");
+  C.assertWebError(err, {
+    code: C.CHAIN_CODES.UPSTREAM_FAILURES,
+    attempts: [{ entryId: "e-tav", code: C.ENTRY_CODES.CREDENTIALS }],
+  });
+  assert.equal(outbound.length, 0, "凭据失败必须止步于出站之前（对供应商零请求）");
+  assert.equal(host.traps.webSearch, 0, "不得经 ctx.web.search 回流");
   await host.disposeAll();
 });
