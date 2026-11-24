@@ -5,7 +5,8 @@
 //         要么在 PR 说明中改写本文件对应断言并给出理由。不得把这些断言散落到其他测试文件，也不得 skip。
 //
 // 待办清单：
-//   P1 TAV-002/FB-002  上游超发时截断责任（适配器 vs 链）未定；本文件推断适配器输出 ≤ maxResults。
+//   P1 TAV-002/FB-002  已裁决：截断与 truncated 置位归链层（WP5 统一执行）；适配器返回全部映射来源、
+//      不本地截断，maxResults 仅作上游参数 max_results 入请求体。对应测试已按定案契约改写。
 //   P2 TAV-002/FB-002  answer 字段不得成为 content（FB-002「供应商生成的正文不得作为通用 content」推断）。
 //   P3 FB-001/FB-003   宿主取消的错误形状未定；推断：不得以可降级 ENTRY_* 码抛出（否则链会误以为可继续）。
 //   P4 TAV-001/FB-001  缺 key 时适配器抛出的码未定（CREDENTIALS 或由链给 SKIPPED_NO_KEY）；本文件选 CREDENTIALS。
@@ -31,19 +32,23 @@ import {
   rejectionOf,
   withGuard,
   singleCall,
+  bodyOf,
 } from "./helpers/tavily-oracle.js";
 
 const ENTRY_CODE_VALUES = Object.values(C.ENTRY_CODES);
 
-test("[待办 TAV-002/FB-002] P1 上游超发（3 条 > maxResults=2）：适配器输出不得超过 maxResults", async (t) => {
+test("TAV-002/FB-002 上游超发（3 条 > maxResults=2）：适配器返回全量来源不截断（截断与 truncated 归链层）", async (t) => {
   const backend = await loadTavilyBackend(t, "TAV-002/FB-002");
   if (!backend) return;
   const fetch = tavilyFetch({ status: 200, body: successBody(SAMPLE_RESULTS) });
   const out = await backend.search(makeCtx({ fetch, maxResults: 2 }));
-  singleCall(fetch, "超发");
-  assert.ok(
-    out.sources.length <= 2,
-    `[待办 P1] 截断责任未定（TAV-002 未写；FB-002 写在结果层）。推断适配器输出 ≤ maxResults，实际 ${out.sources.length} 条`,
+  const call = singleCall(fetch, "超发");
+  // maxResults 仍作为上游参数发送（TAV-001：max_results=min(maxResults,20)）；本用例钉住「发送但不本地裁剪」。
+  assert.equal(bodyOf(call).max_results, 2, "maxResults=2 仍须入请求体 max_results（TAV-001 上游参数），实际未发送或值不符");
+  assert.equal(
+    out.sources.length,
+    SAMPLE_RESULTS.length,
+    `裁决（FB-002）：截断与 truncated 置位归链层（WP5）统一执行，适配器返回全部 ${SAMPLE_RESULTS.length} 条映射来源、不本地截断，实际 ${out.sources.length} 条`,
   );
 });
 
