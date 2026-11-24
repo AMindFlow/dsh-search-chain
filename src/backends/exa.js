@@ -28,7 +28,8 @@
 //             FB-005 未列 5xx，oracle 头注 14-15 行只断言可降级）。
 // TODO-EXA-8  缺 key 适配器级行为：零出站 + 抛 ENTRY_CREDENTIALS（FB-001 链级跳过发生在适配器之前，
 //             此处为纵深防御；oracle 头注 15-17 行只断言零出站+抛错）。
-// TODO-EXA-9  预算/取消中止错误形状：err.name = "AbortError" 且 err.code = ENTRY_TIMEOUT，
+// TODO-EXA-9  中止错误形状（修订，WP9 裁决）：宿主取消 → 无码 AbortError（name=AbortError，无 code）；
+//             预算到期 → ENTRY_TIMEOUT（带码）。二者可区分，链以 name+无码识别取消。原记录：
 //             同时满足 oracle 头注 17-18 行「二者之一」断言的两个分支。
 // TODO-EXA-10 费用说明文案属设置面板（settings-ui.md），不在适配器内，本 WP 不实现。
 // TODO-EXA-11 请求体逐字段只允许 query / type / numResults / contents 四键（exa.md:5 逐字段口径；
@@ -157,12 +158,23 @@ function entryFailure(code, message) {
   return err;
 }
 
-/** 取消/预算中止错误（TODO-EXA-9：name=AbortError 且 code=ENTRY_TIMEOUT，两个断言分支皆满足）。 */
-function abortFailure(reason) {
+/**
+ * 宿主取消（ctx.signal 中止）：无码 AbortError（name=AbortError，无 .code）。
+ * 跨后端契约形状（WP1/WP3/WP4/WP11 同口径）：链/装配以 name=AbortError 且无码识别「取消」，
+ * 不得打 ENTRY_TIMEOUT 码（否则被当作终态条目超时而非取消）。
+ */
+function hostAbortFailure(reason) {
   const message = reason && typeof reason.message === "string" && reason.message !== ""
     ? reason.message
     : "This operation was aborted";
   const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
+/** 预算到期（FB-003）：ENTRY_TIMEOUT（带码；name=AbortError 亦满足 TODO-EXA-9 的 oracle 分支）。 */
+function budgetFailure() {
+  const err = new Error("条目预算到期");
   err.name = "AbortError";
   err.code = ENTRY_CODE.TIMEOUT;
   return err;
@@ -246,10 +258,10 @@ async function search(ctx) {
 
   // FB-003：宿主预取消或无可用时间时不得发出请求（零出站）。
   const signal = ctx.signal;
-  if (signal?.aborted) throw abortFailure(signal.reason);
+  if (signal?.aborted) throw hostAbortFailure(signal.reason);
   const budgetMs = typeof ctx.budgetMs === "number" ? ctx.budgetMs : Number.NaN;
   if (!Number.isFinite(budgetMs) || budgetMs <= 0) {
-    throw abortFailure(new Error("条目预算已耗尽"));
+    throw budgetFailure();
   }
 
   // EXA-001 逐字段：query / type:"auto" / numResults（仅宿主提供上限时）/ contents.highlights；
@@ -273,9 +285,9 @@ async function search(ctx) {
       }, budgetMs)
     : null;
 
-  // 取消/预算中止统一为 abortFailure 形状（TODO-EXA-9）。
+  // 中止来源必须可区分：预算定时器到期（timedOut）→ ENTRY_TIMEOUT；否则为宿主取消 → 无码 AbortError。
   const abortedError = (cause) =>
-    abortFailure(timedOut ? new Error("条目预算到期") : (signal?.reason ?? cause));
+    timedOut ? budgetFailure() : hostAbortFailure(signal?.reason ?? cause);
   const isAbortLike = (err) => timedOut || signal?.aborted === true || err?.name === "AbortError";
 
   let response;
