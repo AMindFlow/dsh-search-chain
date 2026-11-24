@@ -48,9 +48,9 @@
 //      列出的 generation-blocked 码族（safety/recitation/prohibited_content/spii/blocklist/content_policy，
 //      大小写不敏感，error.code 或 error.status 命中即算）一并归 CONTENT_POLICY——超冻结面的合理扩展，
 //      不影响任何冻结断言（见 PR 报告「官方文档核对结论」）。
-// P-11 429 + RESOURCE_EXHAUSTED + 配额文案 → ENTRY_QUOTA。与 FB-005 字面（fallback.md:34「其他 429
-//      属限流」）冲突：按协调暂裁执行 pending 双收面——Gemini 专属额度载荷在 httpFailure 内先行判定
-//      （QUOTA），其余 429 交通用分类器（RATE_LIMITED）；WP6 契约轮统一定案前本实现为临时口径。
+// P-11 429 + RESOURCE_EXHAUSTED + 配额文案 → ENTRY_QUOTA。去向：GMI-003（draft，docs/specs/draft/gemini.md），
+//      待 WP7 实机证认——额度证据码不受状态码限制、命中即额度优先（与 FB-005「无论有无状态码
+//      均按额度优先判定」同口径）；FB-005「其他 429 属限流」指不满足任何额度判据的 429。
 // P-12 5xx → ENTRY_BAD_RESPONSE（FB-005 异常响应；规格未给 5xx 映射，推断）且只出站一次（FB-001）。
 // P-13 预算为 0/负/非有限 → 拒绝且码 ENTRY_TIMEOUT（FB-005 单项超时），零出站（FB-003）。
 // P-14 宿主取消：err.name = "AbortError" 且不带条目分类码（fetch 取消惯例，FB-001 不可降级）。
