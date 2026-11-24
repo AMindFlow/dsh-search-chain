@@ -20,7 +20,7 @@
 //   P-09b 无搜索证据（无 google_search_* 步骤）→ ENTRY_BAD_RESPONSE（推断：GMI-001「缺少该证据…按降级」，选失败而非空结果）
 //   P-10a status=failed 无安全原因 → ENTRY_BAD_RESPONSE（推断：FB-005 异常响应）
 //   P-10b 内容安全拦截 → ENTRY_CONTENT_POLICY（推断：FB-001 明确的上游内容策略拒绝为终止类；拦截体形状未在规格中写明）
-//   P-11 429 + RESOURCE_EXHAUSTED + 配额文本 → ENTRY_QUOTA（推断：额度语义；与 FB-005 字面「其他 429 属限流」冲突，见歧义清单）
+//   P-11 429 + RESOURCE_EXHAUSTED + 配额文本 → ENTRY_QUOTA（推断：额度语义优先；定案去向：GMI-003（draft），待 WP7 实机证认；FB-005「其他 429 属限流」指未命中额度判据的 429）
 //   P-12 5xx → ENTRY_BAD_RESPONSE（推断：FB-005 异常响应；规格未给 5xx 映射）
 //   P-13 预算为 0 时拒绝且码为 ENTRY_TIMEOUT（推断：FB-005 单项超时；零出站由 gemini-budget 硬断言覆盖）
 //   P-14 宿主取消的错误 name 为 AbortError（推断：fetch 取消惯例；硬断言只要求不带 ENTRY 码）
@@ -210,7 +210,7 @@ test("P-10b（推断）：内容安全拦截 → ENTRY_CONTENT_POLICY（终止�
   expectCode(err, ENTRY_CODES.CONTENT_POLICY, "P-10b 内容安全拦截（推断形状与码）");
 });
 
-test("P-11（推断，与 FB-005 字面冲突）：429 + RESOURCE_EXHAUSTED 配额文本 → ENTRY_QUOTA", async (t) => {
+test("P-11（推断，去向 GMI-003 draft 定案提案）：429 + RESOURCE_EXHAUSTED 配额文本 → ENTRY_QUOTA", async (t) => {
   const backend = await loadGeminiBackend(t, "FB-005 / P-11");
   const rig = newRig();
   rig.fetch.when(GEMINI_ROUTE).responds({
@@ -219,7 +219,7 @@ test("P-11（推断，与 FB-005 字面冲突）：429 + RESOURCE_EXHAUSTED 配�
   });
   const outcome = await settle(rig, startSearch(backend, rig));
   const err = expectRejected(outcome, "P-11 配额体 429");
-  expectCode(err, ENTRY_CODES.QUOTA, "P-11 配额体 429（推断：额度语义优先；FB-005 字面「其他 429 属限流」会得 RATE_LIMITED，见歧义清单）");
+  expectCode(err, ENTRY_CODES.QUOTA, "P-11 配额体 429（推断：额度证据码不受状态码限制、命中即额度优先，与 FB-005 同口径；定案去向 GMI-003（draft），待 WP7 实机证认）");
   assert.equal(rig.fetch.count(), 1, "P-11：额度失败后不得重试");
 });
 
