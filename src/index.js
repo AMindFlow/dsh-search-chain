@@ -148,9 +148,9 @@ const SYSTEM_CLOCK = Object.freeze({
 const NOOP_LOG = () => {};
 
 /**
- * 生产出站 fetch（零依赖，全局 fetch）。直连路由照常出站；需要代理/PAC 命中代理的路由需要 undici 分发器，
- * 本插件零依赖不引入它，故此类路由显式失败（原因 PROXY_UNSUPPORTED，由 transport 归为条目代理失败），
- * 绝不静默改走直连（CFG-001）。
+ * 生产出站 fetch（零依赖，全局 fetch）。直连路由照常出站；需要代理/PAC 命中代理的路由需要
+ * 分发器实现（本插件零依赖，不引入 undici），故此类路由以 PROXY_UNSUPPORTED 显式失败、零出站，
+ * 绝不静默改走直连（CFG-001）。代理错误码透传由 transport/后端协同面处理，本函数只负责失败不放行。
  */
 function productionFetch(url, init = {}) {
   const { route, ...rest } = init ?? {};

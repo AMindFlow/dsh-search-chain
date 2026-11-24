@@ -133,7 +133,8 @@ test("fake-credentials：两 key 空间、读取记录、注入故障（CFG-002/
 });
 
 test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失败语义（DSH-001 面）", async () => {
-  const host = createFakeHost({ config: { entries: [] } });
+  // inject 收敛（P1-5）：本用例经 ctx 消费的宿主服务是 web（注册面）与 configEditor；显式声明。
+  const host = createFakeHost({ inject: ["web", "configEditor", "credentials"], config: { entries: [] } });
   const disposer = host.ctx.web.registerSearchProvider({ id: "search-chain", available: () => true, search: async () => ({ sources: [], truncated: false }) });
   assert.equal(host.searchRegistrationCount(), 1);
   assert.deepEqual(host.providerIds(), ["search-chain"]);
@@ -232,6 +233,45 @@ test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失�
     (e) => e instanceof TypeError && /change is not a function/.test(e.message),
     "null change 同样必拒（身份守卫之后即类型闸）",
   );
+});
+
+test("fake-host inject 收敛：只挂声明服务，缺省零挂载；inject 缺 credentials 的假模块 apply 后 ctx.get(\"credentials\")===undefined（P1-5 结构防再犯）", async () => {
+  // 缺省零挂载：忘记声明 inject 的调用方拿不到任何 ctx 服务（被全量挂载掩盖的老路已封死），
+  // 但宿主结构面（effect/on/fiber）与替身观测面（editor/entry/settingsPort/traps）不受影响。
+  const bare = createFakeHost({ config: {} });
+  assert.equal(bare.ctx.web, undefined, "未声明 web → ctx.web 访问器为 undefined");
+  assert.equal(bare.ctx.tools, undefined, "未声明 tools → ctx.tools 访问器为 undefined");
+  assert.equal(bare.ctx.configEditor, undefined, "未声明 configEditor → ctx.configEditor 访问器为 undefined");
+  assert.equal(bare.ctx.get("credentials"), undefined, "越界 ctx.get → undefined");
+  assert.equal(bare.credentials, undefined, "未挂载服务不留返回值旁路句柄");
+  assert.equal(typeof bare.ctx.effect, "function", "effect 是宿主结构面，不经 inject");
+  assert.ok(bare.ctx.fiber, "ctx.fiber 是装载结构，不经 inject（index.js 的 inject 亦不含 fiber）");
+  assert.ok(bare.editor && bare.entry, "editor/entry 测试观测面恒在");
+
+  // 假模块：inject 声明 web/configEditor，故意缺 credentials（WP13 实机 P0 的形状）。
+  const fakeModule = {
+    inject: ["web", "configEditor"],
+    seen: {},
+    apply(ctx) {
+      this.seen.credentialsViaGet = ctx.get("credentials");
+      const unregister = ctx.web.registerSearchProvider({
+        id: "toy-inject",
+        available: () => true,
+        search: async () => ({ sources: [], truncated: false }),
+      });
+      return ctx.effect(() => unregister);
+    },
+  };
+  const host = createFakeHost({ inject: fakeModule.inject, config: {} });
+  const cleanup = fakeModule.apply(host.ctx);
+  // 关键断言（结构防再犯）：装载即缺失，apply 之后依旧缺失——被测模块运行不会让未声明服务凭空出现。
+  assert.equal(fakeModule.seen.credentialsViaGet, undefined, "inject 缺 credentials：apply 内 ctx.get(\"credentials\") 恒 undefined");
+  assert.equal(host.ctx.get("credentials"), undefined, "apply 之后 ctx.get(\"credentials\") 仍 undefined");
+  // 声明面照常工作：收敛只拦越界，不拦声明过的服务。
+  assert.equal(host.searchRegistrationCount(), 1, "声明过的 web 服务照常可用");
+  assert.equal(host.ctx.configEditor, host.editor, "声明过的 configEditor 与观测面同一对象");
+  await cleanup();
+  assert.equal(host.searchRegistrationCount(), 0, "声明服务的 effect 生命周期不受 inject 影响");
 });
 
 test("fake-backend：脚本顺序消费、末步重复、默认挂起、失败带码、late 与 programError（A5/FB 面）", async () => {

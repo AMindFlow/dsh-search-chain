@@ -16,7 +16,7 @@
 //   - 程序违约（适配器 throw 无 ENTRY_CODES 码的错误）原样暴露，不包装、不再发起新请求（FB-005）；
 //   - 输出脱敏：错误与日志只含链自产的条目级文本，不带上游原始报文（CFG-003）。
 //
-// 运行时代码不 import test/；常量来自 ./constants.js（本地再导出，WP6 合并时统一）。
+// 运行时代码不 import test/；常量来自 ./constants.js（运行时共享常量唯一来源，与 test/helpers/contract.js 同值）。
 
 import {
   ENTRY_CODES,

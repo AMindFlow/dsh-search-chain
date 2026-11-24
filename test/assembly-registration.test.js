@@ -152,8 +152,10 @@ test("DSH-002（装配面）：链 FB-004 终态错误原样上抛（同一错�
 // 实机事实（真宿主，独立测试 profile）：src/index.js 的 inject 只声明 ["web","configEditor"]，
 // 宿主仅注入 inject 声明过的服务 → 真宿主 ctx.get("credentials") === undefined →
 // hostCredentials 的 resolve/readRecord 恒抛 → 全部条目 ENTRY_CREDENTIALS（链看似在跑，实则恒凭据败）。
-// 既有测试全绿的原因：fake-host 无条件把 createFakeCredentials() 挂进 services，从不按 inject 收敛——
-// 本 WP13 两条即补这两面：①声明完备（红）；②服务缺失时装配行为仍是 ENTRY_CREDENTIALS 终态而非崩溃（钉行为）。
+// 当时的掩盖根因（gap C 已由 C 包修复）：fake-host 曾无条件全量挂载 services，从不按 inject 收敛——
+// 现在替身缺省零挂载、只挂 inject 声明面，「inject 漏声明」类缺陷在测试面即红（结构防再犯，
+// 见 helpers-selftest.test.js 的 inject 收敛用例）。本 WP13 两条钉：①声明完备；②服务缺失时
+// 装配行为仍是 ENTRY_CREDENTIALS 终态而非崩溃（钉行为——用「inject 不含 credentials」表达缺失形状）。
 
 test("WP13（实机 P0）：inject 必须声明完整宿主服务面 web/configEditor/credentials", async (t) => {
   const mod = await load(t);
@@ -183,9 +185,10 @@ test("WP13（实机 P0）：装配 ctx.get(\"credentials\") 缺失时 search 走
   // 与真宿主同一接线）。
   // 关键 2：credentials 必须在 apply 之前就不存在——真宿主自装载起即不注入未声明服务，而
   // hostCredentials 在 apply 时捕获 svc；若先装载再删除，测到的是「服务中途消失」而非本缺陷形状。
-  const host = createHostShapeFakeHost({ config: structuredClone(CFG) });
-  host.services.credentials = undefined;
-  assert.equal(host.ctx.get("credentials"), undefined, "前置条件：装载前 ctx 的 credentials 服务面必须缺失");
+  // P1-5 收敛后这就是结构面：inject 不声明 credentials → 替身自装载起不挂载（不再是装载后改
+  // host.services 的事后模拟），缺失形状与真宿主同路。
+  const host = createHostShapeFakeHost({ inject: ["web", "configEditor"], config: structuredClone(CFG) });
+  assert.equal(host.ctx.get("credentials"), undefined, "前置条件：装载前 ctx 的 credentials 服务面必须缺失（inject 未声明即不挂载）");
   const cleanup = mod.apply(host.ctx, structuredClone(CFG), {
     official: null,
     fetch: (url) => {

@@ -27,7 +27,10 @@
 //    Entry { id(稳定), type, name, enabled, credentialRef?, proxy?, 其余类型参数… }
 //    proxy 取值（CFG-001）：string（HTTP(S) 正向代理 URL）| { pac: string } | 省略/空白=直连。
 // A4 实现模块与导出（尚未实现；测试按此 import，缺失即红并等待对应工作包，见 impl.js failIfUnimplemented）：
-//    src/search.js   : export function createSearchChain(deps) → { search(request, signal), release?() }
+//    src/search.js   : export function createSearchChain(deps) → { search(request, signal?, configSnapshot?),
+//                     release?() }
+//                     // 第三参 configSnapshot = 装配层快照注入（#12 每操作契约）：provider 入口一次读取的
+//                     // 规范化快照由装配层传入，链不再自读；缺省时链经 getConfig() 自读（独立使用的兼容默认）。
 //                     export function classifyUpstreamFailure(info) → ENTRY_* 码 （FB-005 映射，
 //                     info = { status?, upstreamCode?, phase?("transport"|"response"|"timeout"), error? }）
 //    src/config.js   : export function normalizeConfig(raw) → 已保存形状（非法抛 CONFIG_CODES.INVALID）
@@ -52,9 +55,12 @@
 //                       // 第三参 testDeps 为测试专用注入面 { chain, official, officialRouteId, routeOf }，
 //                       // 生产调用只有两参（宿主核对项 HOST-1；WP6 若改注入方式须同步本契约）。
 //                     export function createSearchProvider(deps) → provider（含 release() 追加方法）
-//                       deps = { getConfig, chain, official,
+//                       deps = { getConfig, getRouteConfig = getConfig, chain, official,
 //                                routeOf = (request) => request?.llmProvider,
 //                                officialRouteId = OFFICIAL_ROUTE_ID }
+//                       // getRouteConfig：路由判定的浅读活配置（不经 normalizeConfig），缺省回落 getConfig
+//                       // （测试替身）。装配层（index.js apply）注入 () => settings.current()：路由判定与链
+//                       // 快照由同一份入口读数派生，一次查询的行读恰为 1（#12 每操作契约）。
 // A5 适配器 seam（供链级测试注入替身；实际适配器须满足同一形状，见各 backends 规格）：
 //    Backend = { type, search(ctx) }, ctx = { entry, query, maxResults?, key, fetch, budgetMs,
 //      signal, clock, log }；resolve → { sources, content? }（空数组=明确无结果，FB-004）；
@@ -170,7 +176,11 @@ export const CONFIG_CODES = Object.freeze({
 /** FB-003 默认总预算（毫秒）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
 
-/** A5 适配器能力声明（FB-002 contentMode 判定依据，oracle 假设）。 */
+/**
+ * A5 适配器能力声明——展示用途：chain/测试不消费本常量判 contentMode。
+ * FB-002 contentMode 的实际判定在 src/search.js 链侧本地表 SOURCES_ONLY_TYPES（成员 bing：
+ * 纯来源适配器，其供应商正文不得作为通用 content）；其余类型 content 由各自适配规格透传。
+ */
 export const CONTENT_MODE = Object.freeze({ SOURCES_ONLY: "sources-only", ADAPTER: "adapter" });
 
 // ─── 结果契约断言（FB-002 + A1/A2）──────────────────────────────────────────
