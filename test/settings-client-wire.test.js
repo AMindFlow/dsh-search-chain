@@ -1,68 +1,176 @@
-// WP13 客户端挂载线（oracle）v0.2 —— settings.section 注册契约按 live 重钉（推翻重写 PR#40 假形状面）。
+// WP13 客户端挂载线（oracle）v0.3 —— P1 修正：Client 产物唯一入口 = window.__ModuleLoader__.load()
+// 自注册（app.asar 模板审阅实证，权威）；推翻 v0.2 的「裸 ESM export 由 harness 直接 import」装载面。
 //
-// 本文件不改实现，只钉「装载线 + 挂载形状 + v0.1 编辑面声明」最小契约：
-// package.json dsh.client / exports["./client"]、src/client-entry.js 的 inject/apply/registration/
-// 组件工厂懒加载，与内置插件页可编辑所需的 cordis.patch.yml + Config schema 注记。
+// 本文件不改实现，只钉「自注册 + factory 产物挂载形状 + v0.1 只读文案 + 内置页编辑桥声明」最小契约。
 //
-// ─── live 实证（lead cordis inspect，DSH 0.2.2-rc.5，2026-11-25，写入本头注为权威基准）──────
+// ─── ModuleLoader 权威实证（lead 审阅，DSH 0.2.2-rc.5 app.asar 模板，2026-11-25）──────────
+//   [M1] Client 产物唯一入口是自注册，模板所示逐字：
+//          window.__ModuleLoader__.load({
+//            id: '<包名>',
+//            factory(require) {
+//              const React = require('react'); ...
+//              return {
+//                inject: ['slots'],
+//                apply(ctx) {
+//                  ctx.slots.inject('settings.section', () =>
+//                    ctx.slots.register({ name: 'settings.section', id, order, label }, Comp));
+//                },
+//              };
+//            },
+//          });
+//   [M2] loader 真实面只有 mode / pendingQueue / load / create —— **无 require 属性**。
+//        v0.2 实现经 window.__ModuleLoader__.require('react') 懒取 React 是对不存在 API 的调用；
+//        相关「loader.require 懒取」钉全部删除。React 只经 factory 入参 require('react') 进入
+//        组件作用域（[M1]）。
+//   [M3] load 注册的 id 恒 = 包名（本包 = "dsh-search-chain"）。
+//   [M4] package.json dsh.client.inject 是**装载包列表**（宿主按序装载依赖包），不是服务名表。
+//        本包 factory 所需 React 由宿主模块表经 load factory 的 require 注入（[M1]），不是独立
+//        装载包 → inject 现须恰为 []。把服务名（"slots"）填进装载列表 = 宿主去装载 phantom 包
+//        "slots" → 模块整体不激活 = 红。注记：owner 包顺序项属 H-5 实机核对，可后补（届时补钉）。
+//
+// ─── live 实证沿用（v0.2 头注 [L1]–[L4]，lead cordis inspect，DSH 0.2.2-rc.5）─────────────
 //   [L1] settings.section 注册形状：{ id: string 必, order?: number, label?: string|(()=>string) }。
 //        panel 不是字段——ctx.slots.register 的第二参是 React 组件工厂；ownerProps 只给 { close }。
-//        挂载写法（templates/decoration/client.js 同形）：
+//        挂载写法与 [M1] 模板内 apply 一致：
 //          ctx.slots.inject("settings.section", () =>
 //            ctx.slots.register({ name: "settings.section", id, order, label }, Component))
 //   [L2] 现存 occupants order：account -10 / general 0 / models 10 / plugins 15 / agent-presets 20
 //        → 本区取 order 30（追加在既有区之后）。
 //   [L3] Client 平台服务目录：layout / locale / sessions / slots / theme / timer / uiWorkspace /
-//        workspaces —— 无 configEditor、无 credentials。inject 声明缺席服务 → 模块整体不激活
-//        （references/practices.md）。故 entry inject 恰为 ["slots"]，多一个都红。
+//        workspaces —— 无 configEditor、无 credentials。factory 产物 inject 声明缺席服务 → 模块
+//        整体不激活（references/practices.md）。故 inject 恰为 ["slots"]，多一个都红。
 //   [L4] host web 服务对 client 仅 @Remote listProviders —— v0.1 无「客户端编辑宿主配置」桥。
-//   复核注记（本机，同版）：client Slots.listSubTree 查询超时（Harness 页面未连接），host
-//   Config.listConfigs 目录无 dsh-search-chain 活行（本 profile 未装载该 bundle）——形状基准
-//   以 lead 0.2.2-rc.5 实证 [L1]–[L4] 为准，未在线复核项不得反向放宽。
 //
 // ─── v0.1 范围裁决（docs/specs/draft/settings-ui.md 设计决定 / settings-ui.md:37）─────────
 //   「必要时采用已验证的插件配置区作为宿主入口」：v0.1 的配置编辑走内置插件页
-//   （bundle 行 config + 插件 Config schema，见第 4 组用例）；自定义 settings.section 区为
-//   【只读指示器】。createSettingsPanel 的编辑端口面继续由 settings-ui.test.js 在 src/client.js
-//   逻辑端口层钉合，不再经 client-entry 进入 client ctx（幻影面 configEditor/credentials 撤除）。
+//   （bundle 行 config + 插件 Config schema，见第 6 组用例）；自定义 settings.section 区为
+//   【只读指示器】——标题「网页搜索链」+ 指向内置插件页的指引文案（文案须含「插件」）。
+//   createSettingsPanel 的编辑端口面继续由 settings-ui.test.js 在 src/client.js 逻辑端口层钉合，
+//   不经 client-entry 进入 client ctx（幻影面 configEditor/credentials 撤除，维持 v0.2 裁决）。
 //
-// ─── 对 PR#40（test 6cedc2a + src e1cc5de）假形状面的推翻注记 ────────────────────────────
-//   旧契约按臆测钉 slots.register(slot, { id, title, panel }) 直调形状，并在 inject 声明 live
-//   不存在的 configEditor/credentials。live 形状 [L1][L3] 下该实现恒不激活且注册字段全错——
-//   本文件按 live 全部重钉。预期红：
-//     ① entry inject ≠ ["slots"]（幻影声明）；② 挂载未走 ctx.slots.inject（假形状直调 register）；
-//     ③ 重复 apply 面同②连带红；④ patch 行 config 无 entries 种子（dev 补）。
+// ─── v0.2（test df90b6a）→ v0.3 的钉迁移 ─────────────────────────────────────────────────
+//   旧 T2「挂载形状」、旧 T3「幂等」为 live [L1][L2] 有效钉，原样迁移到 factory 产物
+//   （factory(fakeRequire) 返回物的 apply）上；旧 T4「内置插件页编辑面」、旧 T5「纯增量守卫」
+//   原样保留（本文件第 6、7、8 组）。旧 T1 的「entry 裸 ESM 导出 inject/apply」与
+//   「React 经 loader.require 懒取」面全部删除（[M1][M2]），由第 1–3 组自注册/factory 面替代。
+//
+// ─── 预期红（对现实现 f0e0713，三面对）───────────────────────────────────────────────────
+//   ① 自注册缺位：现实现为裸 ESM export（export const inject / export function apply），
+//      load 捕获 0 次 → 第 1 组红，第 2（factory）3（挂载）4（幂等）组连带红；
+//   ② React 通道错：现实现组件经 window.__ModuleLoader__.require('react') 取 React（[M2]
+//      不存在的 API），factory 注入的 fake require 无从供 React → 第 2 组 spec 'react' 钉红、
+//      第 3 组渲染树连带红；
+//   ③ manifest：dsh.client.inject 现 ["slots"]，按 [M4] 须 [] → 第 5 组红。
 //   红不得改 skip、不得删断言（helpers/impl.js 约定），只能经实现转绿。
 //
 // ─── 纯增量前提 ────────────────────────────────────────────────────────────────────────
 //   src/index.js 的 web provider 面（inject/apply/Config）不得被本工作移动；装配测试全绿是合入
-//   前提，本文件末尾保留 host 面守卫（第 5 组），与第 4 组 Config schema 面双向钉合。
+//   前提，本文件末尾保留 host 面守卫（第 8 组），与第 6 组 Config schema 面双向钉合。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { tryImportSrc, failIfUnimplemented } from "./helpers/impl.js";
 
-const WP = "SET-001 client wire src/client-entry.js（live 形状）";
+const WP = "SET-001 client wire src/client-entry.js（ModuleLoader load() 自注册）";
 
-// 字面量钉合（槽名/区域 id/标题/order 的改动必须在此显式过堂；值出处 live [L1][L2] 与 catalog.js）：
+// 字面量钉合（槽名/区域 id/标题/order/包名的改动必须在此显式过堂；值出处 [M3]/[L1][L2] 与 catalog.js）：
 const SLOT = "settings.section";
 const SECTION_ID = "search-chain";
 const SECTION_TITLE = "网页搜索链";
 const SECTION_ORDER = 30; // [L2]：agent-presets 20 之后
-// live [L3]：client 平台真实服务目录；entry inject 声明此表之外名字的后果 = 模块整体不激活。
+const PACKAGE_ID = "dsh-search-chain"; // [M3]：load 注册 id 恒 = 包名
+// v0.1 只读指示器文案在场性（标题 + 「设置→插件→…」编辑指引）：
+const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "插件"];
+// live [L3]：client 平台真实服务目录（factory 产物 inject 的消息参照）。
 const CLIENT_SERVICE_CATALOG = [
   "layout", "locale", "sessions", "slots", "theme", "timer", "uiWorkspace", "workspaces",
 ];
 // v0.1 已知幻影面（[L3][L4]）：出现在 inject 里必须红，且红名可读。
 const PHANTOM_SERVICES = ["configEditor", "credentials"];
 
+// cache-bust：自注册模块的每次动态 import 用新 URL（?v=）绕开 ESM 模块缓存，
+// 保证 [M1] 的 import 期 load 副作用每次重新执行。
+let bustCounter = 0;
+
 // ────────────────────────────────────────────────────────────────────────────────────────
-// live 形状 ctx 替身与 DOM 陷阱
+// [M1] 宿主装载环境替身
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 设 globalThis.window = { __ModuleLoader__: { load: capture } }，动态 import
+ * src/client-entry.js 的 cache-bust 新副本，返回 load 捕获的注册表。
+ * import 结束即恢复 window——factory 是纯闭包产物，后续调用不得再依赖全局 window
+ * （React 只经 factory 入参 require 通道，[M1][M2]）。
+ * @param {string} tag 用例标签（进 cache-bust URL）
+ * @returns {Promise<Array<{ id: unknown, factory: unknown }>>}
+ */
+async function importSelfRegister(tag) {
+  const registrations = [];
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
+  globalThis.window = {
+    __ModuleLoader__: {
+      load(reg) {
+        registrations.push(reg);
+      },
+    },
+  };
+  try {
+    await import(`../src/client-entry.js?v=${tag}-${++bustCounter}`);
+  } finally {
+    if (saved) Object.defineProperty(globalThis, "window", saved);
+    else delete globalThis.window;
+  }
+  return registrations;
+}
+
+/**
+ * factory 的 require 通道（[M1]）：记录每次取用的 spec；reactValue 为 'react' 的给值
+ * （undefined = 模块表里没有 react）。宿主 loader 无 require 属性（[M2]），本文件任何
+ * 替身都不提供 __ModuleLoader__.require，确保「经注入 require 取 React」是唯一绿路。
+ */
+function makeFakeRequire(reactValue) {
+  const specs = [];
+  const require = (spec) => {
+    specs.push(spec);
+    return spec === "react" ? reactValue : undefined;
+  };
+  return { require, specs };
+}
+
+/** 假 react.createElement：产出 { type, props, children } 节点树（真实 DOM 全程缺席）。 */
+function makeFakeReact() {
+  return {
+    createElement(type, props, ...children) {
+      return { type, props: props ?? null, children };
+    },
+  };
+}
+
+/** 收集节点树全部文本（兼容 children 展开、props.children、数组与嵌套）。 */
+function collectText(node, out) {
+  if (node === null || node === undefined || typeof node === "boolean") return out;
+  if (typeof node === "string" || typeof node === "number") {
+    out.push(String(node));
+    return out;
+  }
+  if (Array.isArray(node)) {
+    for (const n of node) collectText(n, out);
+    return out;
+  }
+  if (typeof node === "object") {
+    if ("children" in node) collectText(node.children, out);
+    if (node.props && "children" in node.props) collectText(node.props.children, out);
+  }
+  return out;
+}
+
+// ────────────────────────────────────────────────────────────────────────────────────────
+// live 形状 ctx 替身与 DOM 陷阱（v0.2 原样保留：[L1] 挂载形状与零 DOM 钉不随装载面修正而变）
 // ────────────────────────────────────────────────────────────────────────────────────────
 
 /**
  * live 形状 client ctx 替身：slots.inject(name, factory) → cleanup；
- * slots.register(registration, Component) → unregister（形状按 [L1] 与模板 decoration/client.js）。
+ * slots.register(registration, Component) → unregister（形状按 [L1] 与 [M1] 模板内 apply）。
  * register 归属哪个 inject 回调由 mountInjected 执行期间的 activeInject 记账——
  * 「注册须经 inject 回调发生」与「inject 的 cleanup 撤销其名下注册」由此可观测。
  */
@@ -126,8 +234,8 @@ function runEffects(effects) {
 /**
  * DOM 陷阱：以 getter 挂上 window/document（node 恒无二者；getter 触发本身不记点，
  * `typeof window` 类探测不误伤）。记点 = 对 DOM 对象的属性访问/赋值（document.createElement 等），
- * 以及 window 上 DOM 类属性；window.__ModuleLoader__（浏览器模块表，React 懒加载通道 [L1]/模板）
- * 不记点。
+ * 以及 window 上 DOM 类属性。本替身的 window.__ModuleLoader__ 为 undefined 且不记点：
+ * 自注册守卫须在无模块表时安全短路（loader 只有 mode/pendingQueue/load/create，[M2]）。
  */
 function installDomTrap() {
   const touches = [];
@@ -178,32 +286,37 @@ function installDomTrap() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────────────────
-// 1. 装载线 manifest 与入口声明面
+// 1. 自注册（[M1][M3]）：load 恰 1 次、id = 包名、factory 为函数
 // ────────────────────────────────────────────────────────────────────────────────────────
 
-test("装载线：dsh.client manifest + exports[\"./client\"] 保留面；entry inject 恰 [\"slots\"]（幻影服务=红）", async (t) => {
+test("自注册：window.__ModuleLoader__ 下 cache-bust import → load 恰 1 次；registration.id=包名；factory 为函数（[M1][M3]）", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  // 既有宿主面不动：包名与 "." 导出保持。
-  assert.equal(pkg.name, "dsh-search-chain");
-  assert.equal(pkg.exports["."], "./src/index.js");
-  // dsh.client 存在（模板字段：platform/inject 必备，immediately 出现则须为布尔）。
-  const client = pkg.dsh?.client;
-  assert.ok(client && typeof client === "object", "dsh.client 缺失：Client 产物不会被宿主装载（SET-001 缺口本体）");
-  assert.equal(client.platform, "web", "dsh.client.platform 须为 \"web\"（模板 decoration/package.json）");
-  assert.ok(Array.isArray(client.inject), "dsh.client.inject 须为数组（模板：依赖的 Client 模块 id 列表）");
-  for (const dep of client.inject) {
-    assert.equal(typeof dep, "string");
-    assert.ok(dep.length > 0, "dsh.client.inject 元素须为非空模块 id 字符串");
+  let registrations;
+  try {
+    registrations = await importSelfRegister("selfreg");
+  } catch (e) {
+    assert.fail(
+      "load 环境下动态 import src/client-entry.js 不得抛——import 期须完成 " +
+        `__ModuleLoader__.load({ id, factory }) 自报（[M1]）：${e && e.stack}`,
+    );
   }
-  if ("immediately" in client) {
-    assert.equal(typeof client.immediately, "boolean");
-  }
-  // ./client 导出指向新入口（装载线落点）。
-  assert.equal(pkg.exports["./client"], "./src/client-entry.js");
+  assert.equal(
+    registrations.length,
+    1,
+    `load 须恰被调用 1 次；现 ${registrations.length} 次——现实现为裸 ESM 导出、不向 ` +
+      `__ModuleLoader__.load 自报（v0.2 假装载面，红属预期，[M1]）`,
+  );
+  const reg = registrations[0];
+  assert.equal(reg.id, PACKAGE_ID, `load 注册 id 恒 = 包名 "${PACKAGE_ID}"（[M3]）`);
+  assert.equal(reg.id, pkg.name, "load 注册 id 须与 package.json name 一致（[M3]）");
+  assert.equal(typeof reg.factory, "function", "load 注册 factory 须为函数（inject/apply 产物与 React 通道都在 factory 面上，[M1]）");
+});
 
-  // 入口声明面：模块必须可在 node 直接 import（零抛），import 期零 DOM 接触。
-  // 模板形态在工厂里 require('react')（浏览器模块表）；若照搬为模块顶层 React import，
-  // node 装载即炸——懒加载 React 是装载线的一部分，此断言即闸。
+// ────────────────────────────────────────────────────────────────────────────────────────
+// 2. node import 面保留：无 window 零抛、import 期零 DOM 接触
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+test("node import 面保留：无 window（DOM 陷阱）下 import 零抛、import 期零 DOM 接触", async (t) => {
   const trap = installDomTrap();
   let res;
   try {
@@ -212,49 +325,81 @@ test("装载线：dsh.client manifest + exports[\"./client\"] 保留面；entry 
     trap.restore();
   }
   assert.deepEqual(trap.touches, [], `node 环境 import client-entry 不得接触 DOM：${JSON.stringify(trap.touches)}`);
-  if (failIfUnimplemented(t, res, WP, "装载面/inject")) return;
-  const mod = res.module;
-  // live [L3]：inject 恰 ["slots"]——configEditor/credentials 在 client 目录不存在，
-  // 声明缺席服务的后果是模块整体不激活（practices.md），不是「拿不到该属性」。
-  assert.ok(Array.isArray(mod.inject), "client-entry 须导出 inject 数组（模板 { inject, apply } 形态）");
-  for (const phantom of PHANTOM_SERVICES) {
-    assert.ok(!mod.inject.includes(phantom), `inject 不得声明幻影服务 "${phantom}"（client 平台无此服务，[L3]）`);
-  }
-  assert.deepEqual(
-    [...mod.inject].sort(),
-    ["slots"],
-    `entry inject 须恰为 ["slots"]；live client 服务目录 = ${CLIENT_SERVICE_CATALOG.join("/")}，` +
-      "现实现按 PR#40 假形状声明幻影面，红属预期",
-  );
-  assert.equal(typeof mod.apply, "function");
+  if (failIfUnimplemented(t, res, WP, "import 面")) return;
+  // 无模块表（__ModuleLoader__ 缺席）即安全短路：不抛、不自注册、零副作用。
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
-// 2. 挂载形状（live [L1]）：inject 懒回调 → register(registration, Component)
+// 3. factory 面（[M1][M2]）：factory(fakeRequire) → { inject:["slots"], apply }
 // ────────────────────────────────────────────────────────────────────────────────────────
 
-test("挂载形状：经 inject 回调恰 1 次 register；registration 恰 {name,id,order,label} 无 title/panel；第二参组件工厂 headless 安全（live [L1][L2]）", async (t) => {
-  const res = await tryImportSrc("client-entry.js");
-  if (failIfUnimplemented(t, res, WP, "SET-001 挂载形状")) return;
-  const mod = res.module;
+test("factory 面：factory(fakeRequire) 返回 {inject:[\"slots\"],apply}；fakeRequire 记 spec 'react'；幻影服务=红（[M1][M2][L3]）", async () => {
+  const registrations = await importSelfRegister("factory");
+  if (registrations.length !== 1) {
+    assert.fail(
+      `factory 面以自注册成立为前提（load 恰 1 次，见第 1 组；现 ${registrations.length} 次），红属预期（[M1]）`,
+    );
+  }
+  const { factory } = registrations[0];
+  if (typeof factory !== "function") {
+    assert.fail(`load 注册 factory 须为函数（现 ${typeof factory}），factory 面无从谈起（[M1]）`);
+  }
+  const { require, specs } = makeFakeRequire(makeFakeReact());
+  let product;
+  try {
+    product = factory(require);
+  } catch (e) {
+    assert.fail(`factory(fakeRequire) 不得抛——React 经注入的 require('react') 通道获取（[M1]）：${e && e.message}`);
+  }
+  assert.ok(product && typeof product === "object", "factory 须返回模块产物对象（模板 { inject, apply } 形态）");
+  assert.ok(Array.isArray(product.inject), "产物 inject 须为数组（模板 { inject, apply } 形态）");
+  for (const phantom of PHANTOM_SERVICES) {
+    assert.ok(!product.inject.includes(phantom), `inject 不得声明幻影服务 "${phantom}"（client 平台无此服务，[L3]）`);
+  }
+  assert.deepEqual(
+    [...product.inject].sort(),
+    ["slots"],
+    `factory 产物 inject 须恰为 ["slots"]；live client 服务目录 = ${CLIENT_SERVICE_CATALOG.join("/")}`,
+  );
+  assert.equal(typeof product.apply, "function", "产物 apply 须为函数");
+  assert.ok(
+    specs.includes("react"),
+    "factory 须经注入的 require('react') 取 React（模板逐字 const React=require('react')，[M1]）；" +
+      `实取 spec：${JSON.stringify(specs)}——现实现经 window.__ModuleLoader__.require 懒取，` +
+      "该属性在宿主 loader 上不存在（[M2]），红属预期",
+  );
+});
 
+// ────────────────────────────────────────────────────────────────────────────────────────
+// 4. 挂载形状（v0.2 T2 有效钉迁移到 factory 产物）+ 只读渲染树 + 无 react 降级
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」「插件」；无 react 安全降级；effect cleanup（[L1][L2]）", async () => {
+  const registrations = await importSelfRegister("mount");
+  if (registrations.length !== 1 || typeof registrations[0].factory !== "function") {
+    assert.fail(
+      `挂载形状以自注册/factory 面成立为前提（[M1]，见第 1/3 组；现 load ${registrations.length} 次），红属预期`,
+    );
+  }
+  const { require } = makeFakeRequire(makeFakeReact());
   const h = makeLiveClientCtx();
   const trap = installDomTrap();
   let failure = null;
   try {
+    const product = registrations[0].factory(require);
     try {
-      mod.apply(h.ctx);
+      product.apply(h.ctx);
     } catch (e) {
       assert.fail(
-        "apply(ctx) 在 live 形状 ctx（只有 slots/effect，[L3]）上直接抛错——现实现依赖 v0.1 幻影面 " +
-          `configEditor/credentials 建面板，红属预期（裁决：编辑走内置插件页，自定义区只读）：${e && e.message}`,
+        "apply(ctx) 在 live 形状 ctx（只有 slots/effect，[L3]）上直接抛错：" +
+          `${e && e.message}`,
       );
     }
-    // 恰 1 次 inject；注册懒挂载：apply 时点不得已 register（模板：lazy factory）。
+    // 恰 1 次 inject；注册懒挂载：apply 时点不得已 register（[M1] 模板：inject 懒回调）。
     assert.equal(
       h.injects.length,
       1,
-      `须恰调用 ctx.slots.inject 1 次；现 ${h.injects.length} 次——现实现按 PR#40 假形状直调 slots.register（并在幻影 ctx 面上建面板），红属预期`,
+      `须恰调用 ctx.slots.inject 1 次；现 ${h.injects.length} 次`,
     );
     assert.equal(h.injects[0].name, SLOT, `inject 槽名须为 "${SLOT}"`);
     assert.equal(typeof h.injects[0].factory, "function", "inject 第二参须为懒工厂函数");
@@ -265,9 +410,9 @@ test("挂载形状：经 inject 回调恰 1 次 register；registration 恰 {nam
     const rec = h.regs[0];
     assert.ok(rec.via === h.injects[0], "register 须发生在 inject 回调执行期间");
 
-    // registration 恰 {name,id,order,label}（[L1]）：title/panel 是 PR#40 假形状字段，live 不存在。
+    // registration 恰 {name,id,order,label}（[L1]）：title/panel 是 v0.1 假形状字段，live 不存在。
     const reg = rec.registration;
-    assert.equal(typeof reg, "object", "register 第一参须为 registration 对象（假形状传 (slot字符串, descriptor)，红属预期）");
+    assert.equal(typeof reg, "object", "register 第一参须为 registration 对象");
     assert.ok(!("title" in reg) && !("panel" in reg), "title/panel 为假形状键，不得出现在 live registration");
     assert.deepEqual(
       Object.keys(reg).sort(),
@@ -286,10 +431,21 @@ test("挂载形状：经 inject 回调恰 1 次 register；registration 恰 {nam
       assert.equal(reg.label, SECTION_TITLE, "SET-001：区域标题「网页搜索链」");
     }
 
-    // 第二参 = React 组件工厂；headless 调用（ownerProps 只给 { close }，[L1]）不得抛。
-    // React 须经浏览器模块表在组件内懒加载；node 无 React 时须安全短路返回（顶层 import 则 import 即炸，第 1 组已红）。
+    // 第二参 = React 组件工厂；经 factory 注入的假 react createElement 产出指示器节点树
+    // （v0.1 只读面：标题 + 指向内置插件页的指引，文案钉「网页搜索链」「插件」在场）。
     assert.equal(typeof rec.Component, "function", "register 第二参须为组件工厂函数（[L1]：panel 不是字段）");
-    rec.Component({ close() {} });
+    const tree = rec.Component({ close() {} });
+    assert.ok(
+      tree !== null && tree !== undefined,
+      "假 react 在场（factory 注入 require('react')）时组件须产出指示器节点树，不得恒 null",
+    );
+    const text = collectText(tree, []).join("");
+    for (const mark of COMPONENT_TEXT_MARKS) {
+      assert.ok(
+        text.includes(mark),
+        `组件文案须含「${mark}」（v0.1 只读面：标题 + 「设置→插件→…」编辑指引）；实收文本：${JSON.stringify(text)}`,
+      );
+    }
   } catch (e) {
     failure = e;
   } finally {
@@ -297,7 +453,7 @@ test("挂载形状：经 inject 回调恰 1 次 register；registration 恰 {nam
   }
   if (trap.touches.length > 0) {
     assert.fail(
-      "node headless 全程零 DOM 接触（apply→inject 回调→组件调用）被违反：" +
+      "node headless 全程零 DOM 接触（factory→apply→inject 回调→组件渲染）被违反：" +
         JSON.stringify(trap.touches) +
         (failure ? `（另有首错：${failure.message}）` : ""),
     );
@@ -326,24 +482,63 @@ test("挂载形状：经 inject 回调恰 1 次 register；registration 恰 {nam
     assert.fail(`cleanup 路径零 DOM 接触被违反：${JSON.stringify(trap2.touches)}`);
   }
   if (failure) throw failure;
+
+  // 无 react 安全降级：独立模块副本 + 模块表里没有 react 的 fakeRequire。
+  // 钉：factory/apply/mount 全程不抛，组件调用返回 null/空（headless 测试与无表宿主安全）。
+  const regs2 = await importSelfRegister("mount-noreact");
+  if (regs2.length !== 1 || typeof regs2[0].factory !== "function") {
+    assert.fail("降级面以自注册成立为前提（[M1]，见第 1 组）；本例钉组件调用不依赖 React 存在");
+  }
+  const { require: bareRequire } = makeFakeRequire(undefined); // 模块表里没有 react
+  const h2 = makeLiveClientCtx();
+  const trap3 = installDomTrap();
+  let failure2 = null;
+  try {
+    const product2 = regs2[0].factory(bareRequire);
+    assert.ok(product2 && typeof product2.apply === "function", "React 缺席时 factory 仍须产出 apply 面（factory 期不得抛）");
+    product2.apply(h2.ctx);
+    h2.mountInjected(0);
+    assert.equal(h2.regs.length, 1, "React 缺席时注册形状面不变（渲染降级 ≠ 挂载缺席）");
+    const out = h2.regs[0].Component({ close() {} });
+    const emptyish =
+      out === null || out === undefined || out === false || out === "" ||
+      (Array.isArray(out) && out.length === 0);
+    assert.ok(
+      emptyish,
+      `fakeRequire 无 react 时组件调用须安全降级为 null/空，不得抛、不得产出节点树；实返：${JSON.stringify(out)}`,
+    );
+  } catch (e) {
+    failure2 = e;
+  } finally {
+    trap3.restore();
+  }
+  if (trap3.touches.length > 0) {
+    assert.fail(`无 react 降级路径零 DOM 接触被违反：${JSON.stringify(trap3.touches)}`);
+  }
+  if (failure2) {
+    assert.fail(`fakeRequire 无 react 时 factory→apply→挂载→组件调用全程不得抛（安全降级）：${failure2 && failure2.message}`);
+  }
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
-// 3. 幂等
+// 5. 幂等（v0.2 T3 有效钉迁移到 factory 产物）
 // ────────────────────────────────────────────────────────────────────────────────────────
 
-test("幂等：同一 ctx 重复 apply 不双 inject；挂载后恰 1 注册；inject cleanup 纳管后清零且可重放", async (t) => {
-  const res = await tryImportSrc("client-entry.js");
-  if (failIfUnimplemented(t, res, WP, "SET-001 幂等")) return;
-  const mod = res.module;
+test("幂等：factory 产物同一 ctx 重复 apply 不双 inject；挂载后恰 1 注册；cleanup 纳管后清零", async () => {
+  const registrations = await importSelfRegister("idempotent");
+  if (registrations.length !== 1 || typeof registrations[0].factory !== "function") {
+    assert.fail("幂等面以自注册/factory 面成立为前提（[M1]，见第 1/3 组），红属预期");
+  }
+  const { require } = makeFakeRequire(makeFakeReact());
+  const product = registrations[0].factory(require);
   const h = makeLiveClientCtx();
   try {
-    mod.apply(h.ctx);
-    mod.apply(h.ctx); // 第二次 apply：不得产生第二个 inject
+    product.apply(h.ctx);
+    product.apply(h.ctx); // 第二次 apply：不得产生第二个 inject
   } catch (e) {
-    assert.fail(`apply(ctx) 在 live 形状 ctx 上直接抛错（幻影面连带，见第 2 组），红属预期：${e && e.message}`);
+    assert.fail(`apply(ctx) 在 live 形状 ctx 上直接抛错（见第 4 组）：${e && e.message}`);
   }
-  assert.equal(h.injects.length, 1, "重复 apply 不得双 inject（现实现无 inject 面，红属预期）");
+  assert.equal(h.injects.length, 1, "重复 apply 不得双 inject");
   h.mountInjected(0);
   assert.equal(h.regs.length, 1, "重复 apply + 挂载后仍恰 1 个 settings.section 注册");
   const cleanups = runEffects(h.effects);
@@ -356,7 +551,36 @@ test("幂等：同一 ctx 重复 apply 不双 inject；挂载后恰 1 注册；i
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
-// 4. 内置插件页编辑面（v0.1 编辑桥所在）：cordis.patch.yml 行声明 + Config schema 类型注记
+// 6. 装载线 manifest（[M4]）：dsh.client.inject 是装载包列表 —— 恰 []
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+test("manifest：dsh.client platform=web、inject 恰 []（装载包列表非服务名表，[M4]；owner 包顺序项属 H-5 可后补）", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  // 既有宿主面不动：包名与 "." 导出保持。
+  assert.equal(pkg.name, PACKAGE_ID);
+  assert.equal(pkg.exports["."], "./src/index.js");
+  // ./client 导出指向新入口（装载线落点）。
+  assert.equal(pkg.exports["./client"], "./src/client-entry.js");
+  // dsh.client 存在（模板字段：platform/inject 必备，immediately 出现则须为布尔）。
+  const client = pkg.dsh?.client;
+  assert.ok(client && typeof client === "object", "dsh.client 缺失：Client 产物不会被宿主装载（SET-001 缺口本体）");
+  assert.equal(client.platform, "web", "dsh.client.platform 须为 \"web\"（模板 decoration/package.json）");
+  assert.ok(Array.isArray(client.inject), "dsh.client.inject 须为数组（[M4]：装载包 id 列表）");
+  assert.deepEqual(
+    client.inject,
+    [],
+    "dsh.client.inject 是装载包列表而非服务名表（[M4]）：本包 factory 所需 React 由宿主模块表经 " +
+      "load 注入的 require 提供（[M1]），不是独立装载包。现 [\"slots\"] 让宿主装载 phantom 包 → " +
+      "模块整体不激活，红属预期。注记：owner 包顺序项属 H-5 实机核对，可后补（届时补钉，非本包职责）",
+  );
+  if ("immediately" in client) {
+    assert.equal(typeof client.immediately, "boolean");
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
+// 7. 内置插件页编辑面（v0.1 编辑桥所在）：cordis.patch.yml 行声明 + Config schema 类型注记
+//    —— v0.2 第 4 组有效钉，原样保留
 // ────────────────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -473,7 +697,7 @@ test("内置插件页编辑面（v0.1）：cordis.patch.yml 行声明 entries �
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
-// 5. 纯增量守卫
+// 8. 纯增量守卫（v0.2 第 5 组有效钉，原样保留）
 // ────────────────────────────────────────────────────────────────────────────────────────
 
 test("纯增量守卫：src/index.js 的 web provider 装配面不动", async () => {
