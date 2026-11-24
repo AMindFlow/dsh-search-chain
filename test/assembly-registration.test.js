@@ -1,0 +1,148 @@
+// WP6 装配面 — 任务 1：装配注册唯一 provider + 卸载 disposer + DSH-002 调用边界。
+// 规格依据：
+//   DSH-001（dsh-integration.md）：注册唯一 WebSearchProvider（id=search-chain）；卸载移除搜索
+//     注册并释放连接资源；重新装载后各只有一个注册项；插件只注册搜索 provider。
+//   DSH-002（dsh-integration.md）：每次调用处理一个查询；请求与 signal 透传；链终态错误原样上抛
+//     （同一错误对象，不吞不包装）。
+//   #12 清单 17/20/21：路由/终态错语义与 provider 面命名（{id,available,search,release} 已被宿主接受）。
+// 黑盒面：真实 src/index.js apply（宿主形态替身，A4 第三参注入 { chain, official } 仅为测试双）。
+// 实现方（WP6 dev）不得删断言/改 skip 使其通过。
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as C from "./helpers/contract.js";
+import { tryImportSrc, failIfUnimplemented } from "./helpers/impl.js";
+import { hostApply, makeWebError } from "./helpers/assembly-harness.js";
+
+const WP = "WP6 src/index.js";
+
+async function load(t) {
+  const res = await tryImportSrc("index.js");
+  if (failIfUnimplemented(t, res, WP, "DSH-001/DSH-002")) return null;
+  return res.module;
+}
+
+/** 记录型假链桩（装配层只负责选路与透传，不关心链内部）。 */
+function stubChain(behavior) {
+  const calls = [];
+  return {
+    calls,
+    released: 0,
+    async search(request, signal) {
+      calls.push({ request, signal });
+      if (typeof behavior === "function") return behavior(request, signal);
+      return behavior ?? { sources: C.makeSources(1), truncated: false };
+    },
+    release() {
+      this.released += 1;
+    },
+  };
+}
+
+function stubOfficial() {
+  const calls = [];
+  return { calls, async search(request, signal) { calls.push({ request, signal }); return { sources: [], truncated: false, content: "stub-official" }; } };
+}
+
+const CFG = C.makeSavedConfig([C.makeEntry({ id: "e-tav", type: "tavily", name: "合成 Tavily 线" })]);
+const REQ = { query: "合成查询", maxResults: 4, llmProvider: "custom-model-route" };
+
+test("DSH-001：apply 注册唯一 provider（id=search-chain），只注册搜索 provider", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const chain = stubChain();
+  const { host } = hostApply(mod, CFG, { chain, official: stubOfficial() });
+
+  assert.equal(host.searchRegistrationCount(), 1, "装载后恰好一个搜索 provider（DSH-001）");
+  assert.deepEqual(host.providerIds(), [C.PROVIDER_ID], "注册 id 必须为 search-chain");
+  assert.equal(host.searchRegistrations()[0].id, C.PROVIDER_ID);
+  // DSH-001「只注册搜索 provider」+ 设计决定「不得经 ctx.web.search 回流」：
+  assert.equal(host.traps.fetchProviderRegistrations, 0, "不得注册 fetch provider");
+  assert.equal(host.traps.toolRegistrations, 0, "不得注册工具");
+  assert.equal(host.traps.webSearch, 0, "不得经 ctx.web.search 回流（会选回自身）");
+  // DSH-003 配套：安装=注册，不自动保存
+  assert.equal(host.editor.calls.length, 0, "装载不得改写已保存配置");
+  await host.disposeAll();
+});
+
+test("DSH-001：卸载 disposer = 反注册 + release 链；重新装载后各只有一个注册项", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const chain = stubChain();
+  const { host } = hostApply(mod, CFG, { chain, official: stubOfficial() });
+  await host.disposeAll();
+
+  assert.equal(host.searchRegistrationCount(), 0, "卸载后注册表清空（DSH-001）");
+  assert.equal(host.disposedCount(C.PROVIDER_ID), 1, "必须执行 disposer 反注册，而非仅丢弃引用");
+  assert.equal(chain.released, 1, "卸载必须 release 链资源（连接释放，DSH-001/FB-003）");
+
+  // 重新装载（reload 路径）：仍是单一注册
+  const chain2 = stubChain();
+  const { host: hostB } = hostApply(mod, CFG, { chain: chain2, official: stubOfficial() });
+  assert.equal(hostB.searchRegistrationCount(), 1, "重载后单一注册，无残留（DSH-001）");
+  assert.equal(chain2.released, 0, "装载期间不得提前 release");
+  await hostB.disposeAll();
+});
+
+test("DSH-002（装配面）：单查询透传——请求不重写、结果原样返回（同一对象）", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const stubResult = { sources: C.makeSources(2), truncated: false, content: "链产出" };
+  const chain = stubChain(stubResult);
+  const { host, provider } = hostApply(mod, CFG, { chain, official: stubOfficial() });
+
+  const out = await provider.search(structuredClone(REQ), undefined);
+  assert.equal(chain.calls.length, 1, "每次宿主调用只允许一个查询（DSH-002/R8 单查询）");
+  assert.deepEqual(chain.calls[0].request, REQ, "请求必须透传，不得重写 query/maxResults/llmProvider");
+  assert.equal(out, stubResult, "链结果对象必须原样透传给宿主（DSH-002）");
+  await host.disposeAll();
+});
+
+test("DSH-002（装配面）：宿主取消 signal 透传到链；无 signal 调用不得崩溃", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const chain = stubChain();
+  const { host, provider } = hostApply(mod, CFG, { chain, official: stubOfficial() });
+
+  const ac = new AbortController();
+  await provider.search({ query: "q", llmProvider: "x" }, ac.signal);
+  assert.equal(chain.calls[0].signal, ac.signal, "宿主取消信号必须透传（DSH-002/FB-003 共享取消）");
+  await provider.search({ query: "q", llmProvider: "x" });
+  assert.equal(chain.calls.length, 2, "无 signal 调用同样可达链（不崩溃）");
+  await host.disposeAll();
+});
+
+test("DSH-002（装配面）：链 FB-004 终态错误原样上抛（同一错误对象，不吞不包装）", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const terminal = makeWebError(
+    C.CHAIN_CODES.UPSTREAM_FAILURES,
+    "全部条目失败：e-tav 限流",
+    [
+      {
+        entryId: "e-tav",
+        entryType: "tavily",
+        entryName: "合成 Tavily 线",
+        code: C.ENTRY_CODES.RATE_LIMITED,
+        reason: "429 限流",
+      },
+    ],
+  );
+  const chain = stubChain(() => {
+    throw terminal;
+  });
+  const { host, provider } = hostApply(mod, CFG, { chain, official: stubOfficial() });
+
+  let err;
+  try {
+    await provider.search({ query: "q", llmProvider: "custom-model-route" });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "链终态错误必须向宿主上抛（未抛出即为缺陷）");
+  assert.equal(err, terminal, "终态错误必须原样上抛：同一对象，不得吞掉/重包装/降级文本（DSH-002/FB-004）");
+  C.assertWebError(err, {
+    code: C.CHAIN_CODES.UPSTREAM_FAILURES,
+    attempts: [{ entryId: "e-tav", code: C.ENTRY_CODES.RATE_LIMITED }],
+  });
+  await host.disposeAll();
+});
