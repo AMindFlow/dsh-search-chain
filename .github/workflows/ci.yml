@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      # 仓库不提交锁文件（见 .gitignore），setup-node 的 cache: npm 需要锁文件，
+      # 因此这里以 package.json 为键缓存 npm 下载目录。
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      # 无锁文件时 npm ci 不可用；四个 @deepseek-ai/* 依赖为精确版本 pin，
+      # 依赖从默认 registry（registry.npmjs.org）解析，仓库内无 .npmrc。
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Test
+        run: npm test
