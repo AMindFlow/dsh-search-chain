@@ -19,7 +19,7 @@
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": []
+      "inject": ["slots"]
     }
   },
   "dependencies": {
