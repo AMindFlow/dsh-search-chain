@@ -7,8 +7,8 @@
 //   docs/specs/draft/providers.md      CAT-001（Exa 类型，凭据 EXA_API_KEY）
 // 契约：test/helpers/contract.js A5 —— Backend = { type, search(ctx) }，
 //   ctx = { entry, query, maxResults?, key, fetch, budgetMs, signal, clock, log }；
-//   成功 resolve { sources, truncated, content? }（空数组=明确无结果，FB-004；truncated 按 FB-002
-//   由适配器给出，oracle assertSearchResult 直接断言该布尔——见 TODO-EXA-6 裁决与报告契约补充意见）；
+//   成功 resolve { sources, truncated, content? }（空数组=明确无结果，FB-004；截断与 truncated 归链层
+//   FB-002，适配器返回全部来源、truncated 恒为 false——见 TODO-EXA-6）；
 //   失败 throw 携带 .code ∈ ENTRY_CODES 的错误；内部程序违约 throw 不带 code 的错误（FB-005）。
 // 运行时零 import test/：下方常量为 test helpers 的本地镜像（见同步义务）。
 //
@@ -21,10 +21,9 @@
 //             非空白字符串时映射为 publishedAt（已接受假设，若 WP0 主线定名再对齐）。
 // TODO-EXA-5  numResults：宿主提供（ctx.maxResults 为 ≥1 整数）时原值透传；适配层不做钳制
 //             （exa.md:5「在该类型支持范围内」的上限语义归链/宿主，测试只覆盖 1..10 透传）。
-// TODO-EXA-6  maxResults 截断责任：oracle assertSearchResult 要求适配器结果即带 truncated 布尔，
-//             故适配器按 FB-002 执行：有效来源超过 ctx.maxResults 时保留前 maxResults 条并置
-//             truncated: true，否则 false（测试只断言「上游顺序前缀」，截断位置由 FB-002 定）；
-//             链（WP5）可透传该值。
+// TODO-EXA-6  maxResults 截断责任（协调裁决，横向契约）：截断与 truncated 归链层（FB-002）。
+//             适配器返回全部映射来源，不本地切片；truncated 恒为 false 仅满足 A5 形状。
+//             oracle/contract 断言口径待 oracle 轮同步（见 WP9 报告）。
 // TODO-EXA-7  5xx 条目码：归类 ENTRY_BAD_RESPONSE（可降级，且非 CREDENTIALS/QUOTA/RATE_LIMITED；
 //             FB-005 未列 5xx，oracle 头注 14-15 行只断言可降级）。
 // TODO-EXA-8  缺 key 适配器级行为：零出站 + 抛 ENTRY_CREDENTIALS（FB-001 链级跳过发生在适配器之前，
@@ -112,6 +111,8 @@ function localClassifyUpstreamFailure(info) {
   if (status === 402) return ENTRY_CODE.QUOTA;
   if (status === 429) return upstreamCode === INSUFFICIENT_QUOTA ? ENTRY_CODE.QUOTA : ENTRY_CODE.RATE_LIMITED;
   if (typeof status === "number" && status >= 500 && status < 600) return ENTRY_CODE.BAD_RESPONSE; // TODO-EXA-7
+  // FB-005 统一规则：其余 4xx（400/404/422 等）归通道参数限制。
+  if (typeof status === "number" && status >= 400 && status < 500) return ENTRY_CODE.CHANNEL_LIMIT;
   return ENTRY_CODE.BAD_RESPONSE; // response 阶段其余状态（含 200 坏 JSON/坏结构）→ 异常响应
 }
 
@@ -209,6 +210,12 @@ function mapExaResults(results) {
 
 // ─── 适配器主体（A5 seam）────────────────────────────────────────────────────────────────────────────
 
+/** 真实时钟：无注入 clock 时的缺省（对齐 deepseek.js realClock），保证预算无条件生效。 */
+const realClock = Object.freeze({
+  setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),
+  clearTimeout: (id) => globalThis.clearTimeout(id),
+});
+
 /**
  * Exa 单次尝试（FB-001：最多一次出站；FB-003：预算/取消约束；EXA-001：请求与来源）。
  * @param {{ entry?: object, query?: unknown, maxResults?: unknown, key?: unknown,
@@ -258,7 +265,7 @@ async function search(ctx) {
     if (!internal.signal.aborted) internal.abort(signal.reason);
   };
   signal?.addEventListener?.("abort", onHostAbort, { once: true });
-  const clock = ctx.clock;
+  const clock = ctx.clock ?? realClock; // P1：无 clock 时用真实时钟，预算照常生效
   const budgetTimer = typeof clock?.setTimeout === "function"
     ? clock.setTimeout(() => {
         timedOut = true;
@@ -266,37 +273,60 @@ async function search(ctx) {
       }, budgetMs)
     : null;
 
+  // 取消/预算中止统一为 abortFailure 形状（TODO-EXA-9）。
+  const abortedError = (cause) =>
+    abortFailure(timedOut ? new Error("条目预算到期") : (signal?.reason ?? cause));
+  const isAbortLike = (err) => timedOut || signal?.aborted === true || err?.name === "AbortError";
+
   let response;
+  let text = "";
   try {
-    response = await ctx.fetch(EXA_ENDPOINT, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": key }, // EXA-001 鉴权头
-      body: JSON.stringify(payload),
-      signal: internal.signal,
-    });
-  } catch (err) {
-    if (timedOut || signal?.aborted || err?.name === "AbortError") {
-      // 取消/预算中止：不重试（FB-003），错误形状见 TODO-EXA-9。
-      throw abortFailure(timedOut ? new Error("条目预算到期") : (signal?.reason ?? err));
+    try {
+      response = await ctx.fetch(EXA_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": key }, // EXA-001 鉴权头
+        body: JSON.stringify(payload),
+        signal: internal.signal,
+      });
+    } catch (err) {
+      // 取消/预算中止：不重试（FB-003）。
+      if (isAbortLike(err)) throw abortedError(err);
+      const code = await classify({ phase: "transport", error: err });
+      log("warn", "exa entry request failed without response", { entryId: entry.id, code });
+      // CFG-003：不复述 err.message（上游/网络异常可能携带 key 或请求头）。
+      throw entryFailure(
+        code,
+        `Exa 条目「${entryRef}」${CODE_LABEL[code] ?? "请求失败"}：上游未返回 HTTP 响应。${CODE_CHECK[code] ?? "请核查该条目配置"}`,
+      );
     }
-    const code = await classify({ phase: "transport", error: err });
-    log("warn", "exa entry request failed without response", { entryId: entry.id, code });
-    // CFG-003：不复述 err.message（上游/网络异常可能携带 key 或请求头）。
-    throw entryFailure(
-      code,
-      `Exa 条目「${entryRef}」${CODE_LABEL[code] ?? "请求失败"}：上游未返回 HTTP 响应。${CODE_CHECK[code] ?? "请核查该条目配置"}`,
-    );
+    // 中止后才解析出的迟到响应不得被采纳（FB-003）。
+    if (isAbortLike()) throw abortedError(undefined);
+
+    // P0：响应体读取同样受预算/取消约束，cleanup 延后到 text() 完成或失败之后。
+    // CFG-003：原始响应体只参与解析与分类，任何原文不得进入错误文本或日志。
+    try {
+      text = await response.text();
+    } catch (err) {
+      if (isAbortLike(err)) throw abortedError(err);
+      if (response.ok) {
+        log("warn", "exa upstream body read failed", { entryId: entry.id, status: response.status });
+        throw entryFailure(
+          ENTRY_CODE.NETWORK,
+          `Exa 条目「${entryRef}」响应体读取失败（直连网络）。${CODE_CHECK[ENTRY_CODE.NETWORK]}`,
+        );
+      }
+      // 非 2xx 且读体失败：上游 body code 不可知，仅按状态码归类。
+      // 429 此时 quota 不可知（可能是 insufficient_quota），按限流归类（RATE_LIMITED）。
+      const code = await classify({ phase: "response", status: response.status });
+      log("warn", "exa upstream error body read failed", { entryId: entry.id, status: response.status, code });
+      throw entryFailure(
+        code,
+        `Exa 条目「${entryRef}」上游返回 HTTP ${response.status}，响应体读取失败，归类为${CODE_LABEL[code] ?? "失败"}（响应体不可读，额度与限流无法区分）。${CODE_CHECK[code] ?? "请核查该条目配置"}`,
+      );
+    }
   } finally {
     if (budgetTimer != null && typeof clock?.clearTimeout === "function") clock.clearTimeout(budgetTimer);
     signal?.removeEventListener?.("abort", onHostAbort);
-  }
-
-  // CFG-003：原始响应体只参与解析与分类，任何原文不得进入错误文本或日志。
-  let text = "";
-  try {
-    text = await response.text();
-  } catch {
-    text = "";
   }
   let data;
   try {
@@ -346,15 +376,9 @@ async function search(ctx) {
     );
   }
 
-  // FB-002：超过 request.maxResults 时保留前若干条并置 truncated: true，其余情况 false。
-  // （oracle assertSearchResult 要求适配器结果即携带 truncated 布尔；TODO-EXA-6 前缀语义由此满足，
-  //  链（WP5）可透传该值而无需重算。）纯来源适配器不携带通用 content（FB-002）。
-  let truncated = false;
-  if (Number.isInteger(ctx.maxResults) && ctx.maxResults >= 1 && sources.length > ctx.maxResults) {
-    sources.length = ctx.maxResults;
-    truncated = true;
-  }
-  return { sources, truncated };
+  // FB-002 截断与 truncated 归链层（协调裁决，横向契约）：本适配器返回全部映射来源，不做本地切片。
+  // truncated 恒为 false 仅为满足 A5 形状，由链层按 maxResults 重算。纯来源，不携带 content（FB-002）。
+  return { sources, truncated: false };
 }
 
 /** A5 后端形状（TODO-EXA-1：命名导出 exaBackend）。 */
