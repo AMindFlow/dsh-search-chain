@@ -4,6 +4,7 @@
 - [路线图](project/roadmap.md)记录交付顺序和首版完成条件。[开发 DAG](project/development-dag.md)用于切分 Issue、安排并行和收口。
 - [规格规则](specs/AGENTS.md)指向各维度草案和生效方式。[设置面板](specs/draft/settings-ui.md)与[首期工具目录](specs/draft/providers.md)是本轮审核入口。
 - [规格模板](templates/spec.md)用于编写独立验收的行为条款。[GitHub 协作](workflow/github.md)规定分支、Projects、用户 Issues 和 PR 的管理方式。
+- [用户文档](user/README.md)面向安装、启用、配置、排错和升级，随可安装版本发布。
 
 ## 项目标识
 
