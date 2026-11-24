@@ -19,7 +19,6 @@
 //   （访问受限）。BING-002 同时把「拦截页」与「非 RSS」写入，本裁决取拦截页一侧；与任务简报的
 //   BAD_RESPONSE 冲突已按样本在交付报告上报。
 // AMB-6 预算中止错误形状：条目预算到期 → 携带 code=ENTRY_TIMEOUT 的错误；宿主取消 → AbortError。
-// AMB-7 截断：适配器按 ctx.maxResults 返回上游顺序的前缀；truncated 由链级设置（FB-002）。
 // AMB-8 描述标记：解码后的原始标签（如 <b>）整体剥离，snippet 为可显示文本。
 // AMB-9 导出：bingBackend = { type: "bing", search(ctx) }（A5 首形态）。
 // TODO-BING-1 5xx：规格未列条目码。按 FB-005 逐类排除：5xx 不属凭据/权限、额度（仅 402 与
@@ -50,6 +49,12 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const NUMERIC_REF_MAX = 12;
 /** 429 额度判定标记（FB-005：429 + insufficient_quota 属额度）。只扫描，不保留响应体。 */
 const QUOTA_MARKER = "insufficient_quota";
+
+/** 无注入时钟时的回退（生产由链注入；缺省回落真实时钟，预算照常装定时器，禁静默跳过预算）。 */
+const SYSTEM_CLOCK = Object.freeze({
+  setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),
+  clearTimeout: (id) => globalThis.clearTimeout(id),
+});
 
 /** 条目级失败（A5）：携带 .code ∈ ENTRY_CODES；程序违约另抛无 code 的 Error。 */
 class BingEntryError extends Error {
@@ -90,13 +95,12 @@ async function search(ctx) {
   if (hostSignal) hostSignal.addEventListener("abort", onHostAbort, { once: true });
 
   let budgetTimer = null;
-  const clock = ctx?.clock;
+  const clock = ctx?.clock ?? SYSTEM_CLOCK;
   const budgetMs = ctx?.budgetMs;
   if (
     typeof budgetMs === "number" &&
     Number.isFinite(budgetMs) &&
     budgetMs > 0 &&
-    clock &&
     typeof clock.setTimeout === "function"
   ) {
     budgetTimer = clock.setTimeout(() => {
@@ -106,7 +110,7 @@ async function search(ctx) {
   }
 
   const cleanup = () => {
-    if (budgetTimer !== null && clock && typeof clock.clearTimeout === "function") {
+    if (budgetTimer !== null && typeof clock.clearTimeout === "function") {
       clock.clearTimeout(budgetTimer);
     }
     if (hostSignal) hostSignal.removeEventListener("abort", onHostAbort);
@@ -145,11 +149,7 @@ async function search(ctx) {
     cleanup();
   }
 
-  // AMB-7：按 maxResults 截断为上游顺序的前缀；truncated 由链级设置（FB-002）。
-  const maxResults = ctx?.maxResults;
-  if (typeof maxResults === "number" && Number.isFinite(maxResults) && maxResults >= 0) {
-    sources = sources.slice(0, Math.floor(maxResults));
-  }
+  // FB-002：全量返回上游映射来源，不按 maxResults 本地切片；截断与 truncated 由链统一执行。
   return { sources };
 }
 
@@ -203,10 +203,11 @@ async function toSources(response, signal) {
       `Bing RSS 上游服务器错误（HTTP ${status}）：按异常响应归类，可降级（FB-005；TODO-BING-1 裁决）`,
     );
   }
-  if (status >= 400) {
+  if (status >= 400 && status < 500) {
+    // FB-005 统一规则：其他 HTTP 4xx（400/422/404 等，401/402/403/429 已在上方特例）→ 通道参数限制。
     throw new BingEntryError(
-      ENTRY_CODES.BAD_RESPONSE,
-      `Bing RSS 返回未预期的 HTTP 状态 ${status}（FB-005 异常响应）`,
+      ENTRY_CODES.CHANNEL_LIMIT,
+      `Bing RSS 上游拒绝了本次请求参数（HTTP ${status}）：请检查该条目的通道设置（FB-005 统一规则）`,
     );
   }
   if (status < 200 || status >= 300) {
