@@ -31,16 +31,16 @@
 
 ## FB-005 失败分类与排查提示
 
-- **要求** 必须区分凭据或权限、额度、限流、代理、直连网络、通道参数限制、单项超时和异常响应。HTTP `401`/`403` 属凭据或权限。额度问题为 HTTP `402`，或上游码 `insufficient_quota`、`QUOTA_LIMITED`（后者来自第三方文档，实机样本待证认），无论有无状态码均按额度优先判定。其他 `429` 属限流。其他 HTTP `4xx`（含 `400`、`432`、`433` 等厂商码）由链统一归类为通道参数限制；具体接口的厂商码可由适配器按适配规格在本地重分类（Tavily 用量超限码 `432`/`433` 属适配器本地额度特例，见 [TAV-002](tavily.md#tav-002-结果映射与正常空结果)），链按适配器抛出的码消费。针对具体接口的错误细分由适配规格定义。错误须指出对应条目和可核查的配置，遵守 [CFG-003](config-network.md#cfg-003-凭据隔离和脱敏)。内部程序违约（不带条目分类码的错误）原样向调用方暴露，不包装、不再发起新的上游请求；`TRANSPORT_RELEASED` 与全局 `CONFIG_*` 两类带码错误的裸上抛去向同经此面，措辞见 [FB-006](#fb-006-条目执行期带码错误的降级与裸上抛)，本条不重述。
+- **要求** 必须区分凭据或权限、额度、限流、代理、直连网络、通道参数限制、单项超时和异常响应。HTTP `401`/`403` 属凭据或权限。额度问题为 HTTP `402`，或上游码 `insufficient_quota`、`QUOTA_LIMITED`（后者来自第三方文档，实机样本待证认），无论有无状态码均按额度优先判定。其他 `429` 属限流。其他 HTTP `4xx`（含 `400`、`432`、`433` 等厂商码）由链统一归类为通道参数限制；具体接口的厂商码可由适配器按适配规格在本地重分类（Tavily 用量超限码 `432`/`433` 属适配器本地额度特例，见 [TAV-002](tavily.md#tav-002-结果映射与正常空结果)），链按适配器抛出的码消费。针对具体接口的错误细分由适配规格定义。错误须指出对应条目和可核查的配置，遵守 [CFG-003](config-network.md#cfg-003-凭据隔离和脱敏)。内部程序违约（不带条目分类码的错误）原样向调用方暴露，不包装、不再发起新的上游请求。本句「不带条目分类码」不含条目执行期的 `ENTRY_*` 与 `CONFIG_*`（含 `PAC_*`）带码错误：这些按 [FB-006](#fb-006-条目执行期带码错误的降级与裸上抛)降级，不属本句裸上抛面。`TRANSPORT_RELEASED` 与全局 `CONFIG_*` 两类带码错误的裸上抛去向同经此面，措辞见 FB-006，本条不重述。
 - **来源** [原始需求 R5、R6](../../project/requirements.md)。
 - **验收** 对不同上游注入鉴权、额度、限流、代理、异常格式及程序错误。核对正常降级条件、终态原因与脱敏信息，程序错误后不得发起新的上游请求。
 
 ## FB-006 条目执行期带码错误的降级与裸上抛
 
-- **要求** 条目执行期适配器上抛携带 `ENTRY_*` 或 `CONFIG_*`（含 `PAC_*`）码的错误时，链必须按条目级失败处理：以原码记入 `attempts`（沿用 FB-004 的尝试顺序），该条目计为失败并在总预算内继续下一条目；不得整链终止，也不得把原码压平为 `ENTRY_*` 归因码。全链未获有效来源进入终态时，`WebError` 的 `details.attempts` 必须按尝试顺序携各条目的原码，不改写、不压平。（draft，裁决日期 2026-11-25，lead 裁决27，源于 PR#35 审阅 P2-b）
+- **要求** 条目执行期适配器上抛携带 `ENTRY_*` 或 `CONFIG_*`（含 `PAC_*`，见 [CFG-005](config-network.md#cfg-005-pac-代理路由)）码的错误时，链必须按条目级失败处理：以原码记入 `attempts`（沿用 FB-004 的尝试顺序），该条目计为失败并在总预算内继续下一条目；不得整链终止，也不得把原码压平为 `ENTRY_*` 归因码。`transport.open` 与代理建立期的 `CONFIG_*` 同属条目执行期，同样降级适用（[lead 裁决27](https://github.com/AMindFlow/dsh-search-chain/issues/13#issuecomment-7141533377)）。全链未获有效来源进入终态时，`WebError` 的 `details.attempts` 必须按尝试顺序携各条目的原码，不改写、不压平。
 - **要求** 两类带码错误不受本条降级，必须裸上抛——原错误对象原样暴露，不包装、不改码，且不产生条目级 `attempts` 记录、无出站请求：全局 `CONFIG_*`（链级配置快照读取自身失败，发生在条目循环之前，无条目上下文）；`TRANSPORT_RELEASED`（停机释放后拒发，属 FB-005 程序违约暴露面，不是条目分类）。
-- **来源** `test/chain-coded-failure-policy.test.js` P2-b①–⑤（lead 裁决27 落地 oracle）与 `src/search.js` 的 `isEntryPhaseCode`（条目执行期可降级码集）；全局面与释放面的裸上抛既有绿见 `test/transport-passthrough.test.js` P1-1 `raw` 行。CFG-005 只规定报阶段，条目执行期弹性归 FB 家族，本条为该补位。
-- **验收** 用条目替身分别抛 `ENTRY_PROXY`、`CONFIG_INVALID`、`PAC_ROUTE_FAILED`，核对降级到下一条目、成功结果照常返回、成功路径的尝试记录保留原码。构造两条目全败（一条目执行期 `CONFIG_INVALID` 加一条目网络失败），核对终态 `WebError.details.attempts` 按尝试顺序分别携两条原码。令链级配置读取自身抛 `CONFIG_INVALID`，核对原错误对象原样上抛、零条目执行、无 `attempts`。注入 `TRANSPORT_RELEASED`，核对同样裸上抛、不降级。
+- **来源** [lead 裁决27（Issue #13 评论）](https://github.com/AMindFlow/dsh-search-chain/issues/13#issuecomment-7141533377)。
+- **验收** 用条目替身分别抛 `ENTRY_PROXY`、`CONFIG_INVALID`、`PAC_ROUTE_FAILED`，核对降级到下一条目、成功结果照常返回、成功路径的尝试记录保留原码。构造两条目全败（一条目执行期 `CONFIG_INVALID` 加一条目网络失败），核对终态 `WebError.details.attempts` 按尝试顺序分别携两条原码。令链级配置读取自身抛 `CONFIG_INVALID`，核对原错误对象原样上抛、零条目执行、无 `attempts`。注入 `TRANSPORT_RELEASED`，核对同样裸上抛、不降级。令 `transport.open` 抛 `CONFIG_INVALID`（代理无效），核对降级到下一条目且成功路径的 `attempts` 保留原码。
 
 ## 设计决定
 
@@ -48,5 +48,8 @@
 - **适配器形状（A5）** `Backend = { type, search(ctx) }`，`ctx = { entry, query, maxResults, key, fetch, budgetMs, signal, clock, log }`。链经 `transport.open(entry)` 取得 `ctx.fetch` 后再调用适配器（A6），适配器不得自行建立连接。
 - **maxResults 下限守则** 宿主提供整数 `maxResults ≤ 0` 时，链钳为 1；非整数或未提供按不限处理（适配器收到的是 ≥ 1 的整数或无有效整数）。适配器不做钳制；向供应商发送请求参数（Tavily `max_results` 封顶 20、DeepSeek Search `count` 封顶 50、Brave `count` 封顶 20、Exa `numResults` 原值）按各适配规格执行。
 - **结果契约** 成功 `resolve { sources, content? }`，`sources` 为按供应商顺序的全量有效来源，适配器不本地切片；截断与 `truncated` 由链的 `buildSuccessResult` 统一执行（FB-002）。空数组表示明确无结果（FB-004）。
-- **错误契约** 可降级失败 `throw` 携带 `.code ∈ ENTRY_CODES` 的错误；宿主取消 `throw` `name = "AbortError"` 且不带 `.code` 的错误（不属条目分类），链据此终止整链并拒绝，不降级（FB-001/FB-003）；预算到期 `throw` 携带 `.code = "ENTRY_TIMEOUT"` 的错误（FB-003 条目到期，可继续后续条目）；内部程序违约 `throw` 无码错误，原样暴露（FB-005）。
+- **错误契约** 可降级失败 `throw` 携带 `.code ∈ ENTRY_CODES` 的错误；条目执行期 `CONFIG_*`（含 `PAC_*`）带码错误同属可降级条目级失败（FB-006），故 `attempts` 码 ∈ `ENTRY_CODES ∪ CONFIG_CODES`；`TRANSPORT_RELEASED` 与全局 `CONFIG_*` 为裸上抛面（FB-006），不记 `attempts`；宿主取消 `throw` `name = "AbortError"` 且不带 `.code` 的错误（不属条目分类），链据此终止整链并拒绝，不降级（FB-001/FB-003）；预算到期 `throw` 携带 `.code = "ENTRY_TIMEOUT"` 的错误（FB-003 条目到期，可继续后续条目）；内部程序违约 `throw` 无码错误，原样暴露（FB-005）。
 - **预算与取消接线** `ctx.budgetMs` 为条目预算（正整数毫秒，FB-003 剩余时间除以剩余启用条目数向下取整）；适配器须经 `ctx.clock` 调度预算并在 `ctx.signal` 与预算到期合并的中止下完成请求与读体，响应读取同样在预算之内；宿主取消与预算到期两种原因必须按错误契约区分，迟到结果不得改变已收敛的搜索（FB-003）。
+- **FB-006 裁决与生效**（draft，裁决日期 2026-11-25；lead 裁决27，源于 PR#35 审阅 P2-b）。本条待 WP7（#13）发布验收通过后随条款生效。
+- **FB-006 测试与代码路径** 条目执行期降级 oracle：`test/chain-coded-failure-policy.test.js` P2-b①–④；全局 `CONFIG_*` 裸上抛 oracle：同文件 P2-b⑤；`TRANSPORT_RELEASED` 裸上抛既有绿见 `test/transport-passthrough.test.js` P1-1 `raw` 行（该行现仅覆盖 `TRANSPORT_RELEASED`）。条目执行期可降级码集：`src/search.js` 的 `isEntryPhaseCode`（`ENTRY_PHASE_CODE_VALUES` = `ENTRY_CODES ∪ CONFIG_CODES`）。
+- **FB-006 open 期现状** `src/transport.js:125-134` 的 `classifyProxy` 分支抛 `CONFIG_INVALID`；`src/search.js:360` 的 `transport.open(entry)` 位于条目 `try` 之外，当前实现尚未按本条降级。修复在 `feat/open-degrade` 并行落地，本规格先行。CFG-005 只规定报阶段，条目执行期弹性归 FB 家族，本条为该补位。
