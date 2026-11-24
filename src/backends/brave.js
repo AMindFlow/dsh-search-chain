@@ -29,16 +29,16 @@
 //               FB-003:21「无可用时间时不得发出请求」）。
 // TODO-BRV-P7   宿主取消错误形状：name="AbortError" 且不带 ENTRY_* code（FB-001:8 宿主取消为终止类，
 //               链不得当作可降级失败继续；预取消与在途取消同形状）。
-// TODO-BRV-P8   截断责任：适配器输出 ≤ maxResults，超发保留前 maxResults 条并置 truncated:true，
-//               其余情况 false（FB-002:14；oracle assertSearchResult 对适配器结果断言 truncated 布尔）。
+// TODO-BRV-P8   截断责任（已裁决：归链）：适配器返回全量来源且 truncated:false；maxResults 截断与
+//               truncated 置位由链 WP5 buildSuccessResult 实现（FB-002 在插件边界满足；适配器不截断为全后端契约）。
 // TODO-BRV-P9   计数口径：字符数取 UTF-16 码元（JS String.length），词数取空白拆分后非空段计数；
 //               600/75 边界含；超限 → ENTRY_CHANNEL_LIMIT 且零出站（不得出站后截断，brave.md:5）。
 // ─── 其余 oracle 头注（test/helpers/brave-oracle.js）裁决 ──────────────────────────────────────────
 // TODO-BRV-1    导出形状：取 oracle 容忍顺序第一形态——命名导出 braveBackend = { type: "brave", search }。
 // TODO-BRV-2    freshness/时效参数：brave.md 未定义任何 freshness 参数 → 不发送（未指定参数省略而非 null，
 //               任务简报口径；若后续规格定名先回写 brave.md）。
-// TODO-BRV-3    publishedAt：brave.md 只写 url/title/description，未定 age/page_age 映射。本实现将非空白
-//               字符串 age 映射为 publishedAt（A1 宿主 WebSearchSource 形状），否则省略；测试不断言。
+// TODO-BRV-3    publishedAt：brave.md 只写 url/title/description，未定映射。本实现取 page_age（ISO 8601 校验，
+//               非 ISO 丢弃该字段），不回落相对时间文本 age（A1 WebSearchSource 形状）；测试不断言。
 // TODO-BRV-4    其余 4xx（非 401/402/403/429，如 400/422）本地镜像归类 ENTRY_CHANNEL_LIMIT
 //               （FB-005「通道参数限制」类目；Brave 请求参数为固定集合，4xx 即参数被拒；
 //               无 Brave 测试样本覆盖此档，WP5 classifyUpstreamFailure 合入后以其为准）。
@@ -53,7 +53,7 @@
 //   BRAVE_MAX_CHARS/WORDS   ↔ test/helpers/brave-oracle.js#BRAVE_MAX_CHARS/BRAVE_MAX_WORDS（brave.md:5）
 //   BRAVE_MAX_COUNT         ↔ test/helpers/brave-oracle.js#BRAVE_MAX_COUNT（brave.md:5「取其与 20 中较小值」）
 //   ENTRY_CODE.*            ↔ test/helpers/contract.js#ENTRY_CODES（fallback.md:34 码表语义）
-//   INSUFFICIENT_QUOTA      ↔ fallback.md:34 明文上游 code 字符串
+//   QUOTA_UPSTREAM_CODES    ↔ fallback.md:34 明文 insufficient_quota（+ 第三方文档 QUOTA_LIMITED，待 WP7 实机验证）
 // WP5 src/search.js 合入后 classifyUpstreamFailure 以该模块为准；本文件本地镜像成为死代码，
 // 去留（删除或保留为离线兜底）交协调方统一裁决（与 WP2/WP9 一致）。
 // ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -82,8 +82,11 @@ const ENTRY_CODE = Object.freeze({
   CONTENT_POLICY: "ENTRY_CONTENT_POLICY",
 });
 
-/** FB-005:34：上游额度 code 字符串（429 命中该 code 时归类额度）。 */
-const INSUFFICIENT_QUOTA = "insufficient_quota";
+/**
+ * FB-005:34：上游额度 code 字符串集合（429 且 code 命中即归类额度，其余 429 → 限流）。
+ * 注：QUOTA_LIMITED 来自第三方文档，Brave 实机样本待 WP7 验证；insufficient_quota 为规格明文。
+ */
+const QUOTA_UPSTREAM_CODES = Object.freeze(new Set(["insufficient_quota", "QUOTA_LIMITED"]));
 
 /** 条目码 → 中文短语（仅用于脱敏错误文本，不含 key/原始体/请求头名）。 */
 const CODE_LABEL = Object.freeze({
@@ -133,7 +136,10 @@ function localClassifyUpstreamFailure(info) {
   if (phase === "transport") return ENTRY_CODE.NETWORK; // TODO-BRV-P5
   if (status === 401 || status === 403) return ENTRY_CODE.CREDENTIALS; // FB-005 凭据或权限
   if (status === 402) return ENTRY_CODE.QUOTA; // FB-005:34 明文
-  if (status === 429) return upstreamCode === INSUFFICIENT_QUOTA ? ENTRY_CODE.QUOTA : ENTRY_CODE.RATE_LIMITED;
+  // P2-4：429 中 code ∈ {insufficient_quota, QUOTA_LIMITED} → 额度；其他 429 → 限流（实机样本待 WP7）。
+  if (status === 429) {
+    return QUOTA_UPSTREAM_CODES.has(upstreamCode) ? ENTRY_CODE.QUOTA : ENTRY_CODE.RATE_LIMITED;
+  }
   if (typeof status === "number" && status >= 500 && status < 600) return ENTRY_CODE.BAD_RESPONSE; // TODO-BRV-P4
   if (typeof status === "number" && status >= 400 && status < 500) return ENTRY_CODE.CHANNEL_LIMIT; // TODO-BRV-4
   return ENTRY_CODE.BAD_RESPONSE; // 其余（含 200 坏 JSON/坏结构）→ 异常响应
@@ -194,6 +200,15 @@ function programError(message) {
 
 // ─── 校验与映射（BRV-001 要求1/2）────────────────────────────────────────────────────────────────────
 
+/** TODO-BRV-3 / P2-3：page_age 须为 ISO 8601 日期或日期时间（可选时区）且可被 Date 解析，否则丢弃。 */
+const ISO_8601_PATTERN = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+function isoDateString(value) {
+  if (typeof value !== "string") return undefined;
+  const s = value.trim();
+  if (!ISO_8601_PATTERN.test(s) || Number.isNaN(Date.parse(s))) return undefined;
+  return s;
+}
+
 /** FB-002/A1：可解析的绝对 HTTP(S) URL。 */
 function isAbsoluteHttpUrl(value) {
   if (typeof value !== "string" || value.trim() === "") return false;
@@ -228,8 +243,8 @@ function mapBraveResults(results) {
     if (title !== undefined) source.title = title;
     const description = nonEmptyString(item.description);
     if (description !== undefined) source.snippet = description; // TODO-BRV-P1：description → snippet
-    const age = nonEmptyString(item.age);
-    if (age !== undefined) source.publishedAt = age; // TODO-BRV-3：规格沉默，按 A1 形状映射
+    const publishedAt = isoDateString(item.page_age);
+    if (publishedAt !== undefined) source.publishedAt = publishedAt; // TODO-BRV-3：page_age（ISO），不用 age
     sources.push(source);
   }
   return { sources, dropped };
@@ -283,15 +298,32 @@ function upstreamCodeOf(parsed) {
 // ─── 出站（FB-001 单次请求 / FB-003 预算与取消）────────────────────────────────────────────────────────
 
 /**
- * 唯一一次 GET（FB-001：不重试）。ctx.signal 与 ctx.clock 预算定时器合并为同一出站 signal；
- * 到期/取消都中止在途请求，并按原因区分结果（FB-003）。响应读取也在预算之内（FB-003「涵盖…请求和解析」）。
- * 只返回 { status, ok, text }；原始异常不外泄（CFG-003）。
+ * 唯一一次 GET（FB-001：不重试）。ctx.signal 与预算定时器合并为同一出站 signal；到期/取消都中止在途请求，
+ * 并按原因区分结果（FB-003）。响应读取也在预算之内（FB-003「涵盖…请求和解析」）。
+ *
+ * P1-1 竞速：fetch(headers) 与 res.text() 均与内部 abort promise 竞速，故即使上游/宿主 fetch 忽略 signal，
+ * 预算到期或宿主取消也立即结束等待；cleanup（清定时器、摘宿主监听）后置于 finally。
+ * P1-1 clock：定时器取 ctx.clock ?? globalThis，clock 缺省时不得静默跳过预算。
+ *
+ * 返回值：
+ *   { status, ok, text }          拿到响应且读体成功；
+ *   { failed: code }              未拿到 HTTP 响应（网络层，分类为条目码）；
+ *   { status, ok, bodyFailed:true } 已拿到状态码但读体失败（P5-6：归 ENTRY_BAD_RESPONSE）。
+ * 中止以 throw 表达：宿主取消 → 无码 AbortError；预算到期 → ENTRY_TIMEOUT（两者严格区分）。
+ * 只返回上列字段；原始异常不外泄（CFG-003）。
  */
 async function roundTrip(ctx, url, key) {
   const { fetch, budgetMs, signal } = ctx;
-  const clock = ctx.clock;
+  const clock = ctx.clock ?? globalThis;
   const ac = new AbortController();
   let cause = null; // "host" | "budget"
+  const abortError = () =>
+    cause === "host" ? hostCancelled() : entryFailure(ENTRY_CODE.TIMEOUT, MESSAGES.timeoutOutbound);
+  // 竞速源：ac 中止（先置 cause 再 abort）即以对应原因拒绝；未参与竞速的拒绝不得成为未处理拒绝。
+  const aborted = new Promise((_, reject) => {
+    ac.signal.addEventListener("abort", () => reject(abortError()), { once: true });
+  });
+  aborted.catch(() => {});
   const onHostAbort = () => {
     if (cause === null) cause = "host";
     ac.abort(signal?.reason);
@@ -300,28 +332,39 @@ async function roundTrip(ctx, url, key) {
     if (cause === null) cause = "budget";
     ac.abort(new Error("条目预算到期"));
   };
-  signal?.addEventListener?.("abort", onHostAbort, { once: true });
-  const timer =
-    typeof clock?.setTimeout === "function" ? clock.setTimeout(onBudget, budgetMs) : null;
+  let timer = null;
   try {
-    const res = await fetch(url, {
-      method: "GET",
-      // BRV-001 要求1：X-Subscription-Token 鉴权（key 只出现在此头，CFG-003）；不用 Authorization。
-      headers: { "x-subscription-token": key },
-      signal: ac.signal,
-    });
-    const text = await res.text();
-    return { status: res.status, ok: res.ok, text };
-  } catch (err) {
-    if (cause === "host" || (cause === null && signal?.aborted)) throw hostCancelled();
-    if (cause === "budget" || err?.name === "AbortError") {
-      throw entryFailure(ENTRY_CODE.TIMEOUT, MESSAGES.timeoutOutbound);
+    signal?.addEventListener?.("abort", onHostAbort, { once: true });
+    timer = clock.setTimeout(onBudget, budgetMs);
+
+    let res;
+    try {
+      res = await Promise.race([
+        fetch(url, {
+          method: "GET",
+          // BRV-001 要求1：X-Subscription-Token 鉴权（key 只出现在此头，CFG-003）；不用 Authorization。
+          headers: { "x-subscription-token": key },
+          signal: ac.signal,
+        }),
+        aborted,
+      ]);
+    } catch (err) {
+      if (cause !== null) throw abortError();
+      // 网络层故障：不复述 err.message（可能携带 URL/key），只输出分类后的脱敏错误。
+      return { failed: await classify({ phase: "transport", error: err }) };
     }
-    // 网络层故障：不复述 err.message（可能携带 URL/key），只输出分类后的脱敏错误。
-    const code = await classify({ phase: "transport", error: err });
-    return { failed: code };
+
+    let text;
+    try {
+      text = await Promise.race([res.text(), aborted]);
+    } catch {
+      if (cause !== null) throw abortError();
+      // P5-6：已拿到状态码，仅读体失败 → 调用方归 ENTRY_BAD_RESPONSE（不得记为未返回响应）。
+      return { status: res.status, ok: res.ok, bodyFailed: true };
+    }
+    return { status: res.status, ok: res.ok, text };
   } finally {
-    if (timer != null && typeof clock?.clearTimeout === "function") clock.clearTimeout(timer);
+    if (timer != null) clock.clearTimeout?.(timer);
     signal?.removeEventListener?.("abort", onHostAbort);
   }
 }
@@ -392,6 +435,14 @@ async function search(ctx) {
       `Brave 条目「${entryRef}」${CODE_LABEL[outcome.failed] ?? "请求失败"}：上游未返回 HTTP 响应。${CODE_CHECK[outcome.failed] ?? "请核查该条目配置"}`,
     );
   }
+  // P5-6：拿到状态码后读体失败 → ENTRY_BAD_RESPONSE（phase=response）；未拿到响应才是 ENTRY_NETWORK（上文）。
+  if (outcome.bodyFailed) {
+    log("warn", "brave upstream body read failed", { entryId: entry.id, status: outcome.status, phase: "response" });
+    throw entryFailure(
+      ENTRY_CODE.BAD_RESPONSE,
+      `Brave 条目「${entryRef}」上游响应体读取失败（HTTP ${outcome.status}），归类为${CODE_LABEL[ENTRY_CODE.BAD_RESPONSE]}。${CODE_CHECK[ENTRY_CODE.BAD_RESPONSE]}`,
+    );
+  }
   const { status, ok, text } = outcome;
 
   // CFG-003：原始响应体只参与解析与分类，任何原文不得进入错误文本或日志。
@@ -444,16 +495,12 @@ async function search(ctx) {
     );
   }
 
-  // TODO-BRV-P8/FB-002：适配器输出不超过 maxResults；超发保留前若干条并置 truncated:true，其余 false。
-  let truncated = false;
-  if (Number.isInteger(ctx.maxResults) && ctx.maxResults >= 1 && sources.length > ctx.maxResults) {
-    sources.length = ctx.maxResults;
-    truncated = true;
-  }
-  log("info", "brave upstream ok", { entryId: entry.id, status, sources: sources.length, truncated });
+  // TODO-BRV-P8（已裁决）：截断归链——适配器返回全量来源，truncated:false；
+  // maxResults 截断与 truncated 置位由链 WP5 buildSuccessResult 实现（FB-002 插件边界，适配器不截断为全后端契约）。
+  log("info", "brave upstream ok", { entryId: entry.id, status, sources: sources.length });
 
   // FB-002：Brave 为纯来源适配器，供应商正文（faq 等）不得作为通用 content。
-  return { sources, truncated };
+  return { sources, truncated: false };
 }
 
 /** A5 后端形状（TODO-BRV-1：命名导出 braveBackend）。 */
