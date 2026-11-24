@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 合成 Bing RSS 样本（BING-001）：3 个 item，URL 全部使用保留 TLD。非真实抓包。 -->
+<rss version="2.0">
+  <channel>
+    <title>synthetic bing results (fixture)</title>
+    <link>https://www.bing.synthetic.invalid/search?format=rss&amp;q=%E5%90%88%E6%88%90%E6%9F%A5%E8%AF%A2</link>
+    <description>fixture - synthetic, not a real capture</description>
+    <item>
+      <title>合成来源 1：接口文档</title>
+      <link>https://docs-one.host.test/api/reference?src=bing-fixture</link>
+      <description>第一个合成结果的描述文本，用于 snippet 映射与首段裁剪验证。</description>
+      <pubDate>Mon, 03 Nov 2025 08:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>合成来源 2：入门指南</title>
+      <link>https://docs-two.host.test/guide/getting-started?src=bing-fixture</link>
+      <description>
+
+        第二个合成结果。描述首段之前的空白应被适配器忽略（FB-002 首段规则）。
+
+        第二段落不应进入 snippet 首段。
+      </description>
+      <pubDate>Tue, 04 Nov 2025 09:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>合成来源 3：无发布日期</title>
+      <link>https://docs-three.host.test/changelog?src=bing-fixture</link>
+      <description>第三个合成结果，item 故意缺少 pubDate，验证 publishedAt 可缺省。</description>
+    </item>
+  </channel>
+</rss>

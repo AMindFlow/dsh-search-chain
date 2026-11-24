@@ -1,0 +1,10 @@
+{
+  "$comment": "Bing RSS 结局→分类映射（BING-001/002）。body 指向同目录 bing/ 的脱敏样本文件。",
+  "outcomes": [
+    { "id": "ok-with-items", "response": { "status": 200, "contentType": "application/rss+xml", "fixture": "bing/rss-with-items.xml" }, "expect": { "kind": "sources", "sourceCount": 3 } },
+    { "id": "empty-feed", "response": { "status": 200, "contentType": "application/rss+xml", "fixture": "bing/rss-empty.xml" }, "expect": { "kind": "empty", "degradable": false } },
+    { "id": "access-denied", "response": { "status": 403, "contentType": "text/html", "fixture": "bing/block-not-rss.html" }, "expect": { "kind": "degradable-failure", "code": "ENTRY_CREDENTIALS" } },
+    { "id": "blocked-200-html", "response": { "status": 200, "contentType": "text/html", "fixture": "bing/block-not-rss.html" }, "expect": { "kind": "degradable-failure", "code": "ENTRY_CREDENTIALS", "note": "200 的拦截页同属访问受限（BING-002）" } },
+    { "id": "malformed-xml", "response": { "status": 200, "contentType": "application/rss+xml", "fixture": "bing/rss-malformed.xml" }, "expect": { "kind": "degradable-failure", "code": "ENTRY_BAD_RESPONSE" } }
+  ]
+}
