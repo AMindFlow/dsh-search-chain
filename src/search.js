@@ -418,21 +418,21 @@ export function createSearchChain(deps) {
     const ref = typeof entry.credentialRef === "string" ? entry.credentialRef.trim() : "";
     if (ref) {
       const hit = await credentials.resolve(ref);
-      const value = hit?.value;
-      if (typeof value === "string" && value.trim() !== "") return value;
+      const value = typeof hit?.value === "string" ? hit.value.trim() : "";
+      if (value !== "") return value;
     }
     if (Object.hasOwn(env, envName)) {
-      const value = env[envName];
-      if (typeof value === "string" && value.trim() !== "") return value;
+      const value = typeof env[envName] === "string" ? env[envName].trim() : "";
+      if (value !== "") return value;
     }
     const hosted = await credentials.resolve(envName);
-    const hostedValue = hosted?.value;
-    if (typeof hostedValue === "string" && hostedValue.trim() !== "") return hostedValue;
+    const hostedValue = typeof hosted?.value === "string" ? hosted.value.trim() : "";
+    if (hostedValue !== "") return hostedValue;
     if (legacyYaml) {
       const supplier = supplierOfToolType(entry.type);
       if (LEGACY_YAML_SUPPLIERS.includes(supplier)) {
-        const value = legacyYaml[supplier];
-        if (typeof value === "string" && value.trim() !== "") return value;
+        const value = typeof legacyYaml[supplier] === "string" ? legacyYaml[supplier].trim() : "";
+        if (value !== "") return value;
       }
     }
     return null;
