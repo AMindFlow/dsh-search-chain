@@ -12,7 +12,9 @@
 //            （ENTRY_CONTENT_POLICY，验收：显式拒绝时后继条目无请求——链侧归 WP5 验收）。
 //   FB-005：异常响应属 ENTRY_BAD_RESPONSE。
 // 不覆盖：超发截断责任（待办 P5）；content 透传禁令的定名（待办 P11）；输入承载形状（待办 P3）。
-// 样本见 test/helpers/openai-oracle.js（合成内联，注释为指南嵌套 url_citation 形状）。
+// 样本见 test/helpers/openai-oracle.js（合成内联，注释为官方指南的扁平 url_citation 形状，
+// 见 developers.openai.com/api/docs/guides/tools-web-search.md「Output and citations」；
+// 历史嵌套形状仅用于 src 容错分支的兼容用例）。
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as C from "./helpers/contract.js";
@@ -22,6 +24,7 @@ import {
   assistantMessage,
   citationOf,
   completedResponse,
+  nestedCitationOf,
   expectedSourceOf,
   incompleteResponse,
   loadOpenAIBackend,
@@ -54,6 +57,22 @@ test("OAI-002 要求1：完成响应按数组顺序逐条映射 url/title/snippe
     normalizeSources(out.sources),
     SAMPLE_CITATIONS.map(expectedSourceOf),
     "OAI-002：sources 必须按 output/content/注释顺序，字段只有 url、可用 title、所在文本块首段 snippet",
+  );
+});
+
+test("OAI-002/FB-002 兼容：历史嵌套 url_citation 注释（src 容错分支）同样产出来源", async (t) => {
+  const backend = await loadOpenAIBackend(t, "OAI-002/FB-002");
+  if (!backend) return;
+  // 官方 Responses 形状以扁平为准；此处刻意用历史嵌套形状（字段在 url_citation 对象内），
+  // 钉住 src 的容错分支：扁平 url 缺失/无效时回退读 annotation.url_citation，映射期望与扁平样本一致（期望值不变）。
+  const output = SAMPLE_CITATIONS.map((c) =>
+    assistantMessage([outputText(c.text, [nestedCitationOf(c)])]),
+  );
+  const out = await runWith(backend, completedResponse(output));
+  assert.deepEqual(
+    normalizeSources(out.sources),
+    SAMPLE_CITATIONS.map(expectedSourceOf),
+    "FB-002 容错：嵌套 url_citation 注释须与扁平形状产出相同来源（url/可用 title/所在块首段 snippet），顺序不变",
   );
 });
 

@@ -14,10 +14,13 @@
 //   - 合成样本全部内联于本文件，未放入 test/fixtures/：fixtures 卫生规则 6 要求每个 fixture 文件登记到
 //     helpers/fixtures.js 的 FIXTURE_NAMES，而该文件属既有 test/，本轮禁止编辑。内联样本同样受
 //     openai-redaction.test.js 中的卫生检查约束（保留 TLD、无真实凭据形状）。
-//   - 响应样本形状对齐规格来源链接（OpenAI Web search「output and citations」指南）：
-//     url_citation 注释嵌套在 `url_citation` 对象内（{type:"url_citation", url_citation:{url,title,start_index,end_index}}），
+//   - 响应样本形状对齐官方指南（一手依据：developers.openai.com/api/docs/guides/tools-web-search.md
+//     「Output and citations」）：url_citation 注释为**扁平**形状
+//     {type:"url_citation", start_index, end_index, url, title}（字段与 type 平级），
 //     正文块为 {type:"output_text", text, annotations}，消息项为 {type:"message", role, content:[…]}，
-//     工具项为 {type:"web_search_call", …}。字段拼写以规格来源为准；结构容忍度（输入承载形状）见待办 P3。
+//     工具项为 {type:"web_search_call", …}。字段拼写以官方指南为准；结构容忍度（输入承载形状）见待办 P3。
+//     历史嵌套形状（{type:"url_citation", url_citation:{…}}）仅由 nestedCitationOf 构造，
+//     专供 src 容错分支（扁平 url 缺失/无效时回退嵌套对象）的兼容用例。
 import assert from "node:assert/strict";
 import * as C from "./contract.js";
 import { createFakeFetch, SYNTHETIC_KEY } from "./fake-fetch.js";
@@ -68,8 +71,25 @@ export const SAMPLE_CITATIONS = Object.freeze([
   },
 ]);
 
-/** 按期望描述造一条嵌套形状注释（指南格式：字段在 url_citation 对象内）。 */
+/**
+ * 按期望描述造一条扁平形状注释（官方 Responses 形状：start_index/end_index/url/title 与 type 平级；
+ * 一手依据 developers.openai.com/api/docs/guides/tools-web-search.md「Output and citations」）。
+ */
 export function citationOf(c) {
+  return {
+    type: "url_citation",
+    start_index: c.start ?? 0,
+    end_index: c.end ?? 12,
+    url: c.url,
+    ...(c.title !== undefined ? { title: c.title } : {}),
+  };
+}
+
+/**
+ * 历史嵌套形状注释（{type:"url_citation", url_citation:{…}}），仅供 src 容错分支的兼容用例，
+ * 不得作为默认样本（官方 Responses 形状以扁平为准）。
+ */
+export function nestedCitationOf(c) {
   return {
     type: "url_citation",
     url_citation: {

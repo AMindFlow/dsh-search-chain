@@ -13,7 +13,8 @@
 //                        本文件约束二者至少其一且形状合法（collectTaskTextParts 可识别）。
 //   P4  OAI-001          固定搜索指令的文本要求（列出引用与摘要、用查询的语言）无逐字规格。
 //                        推断：指令文本须可读地包含 引用/摘要/语言 三要素（关键词宽松匹配）。
-//   P5  OAI-002/FB-002   上游超发时截断责任（适配器 vs 链）未定；本文件推断适配器输出 ≤ maxResults。
+//   P5  OAI-002/FB-002   已裁决：截断与 truncated 置位归链层（WP5 统一执行）；适配器返回全部映射来源、
+//                        不本地截断（OpenAI 请求体本无 max_results 上游参数）。对应测试已按定案契约改写。
 //   P6  OAI-001/FB-001   缺 key 时适配器抛出的码未定（CREDENTIALS 或由链给 SKIPPED_NO_KEY）；本文件选 CREDENTIALS。
 //   P7  OAI-003          显式拒绝的载体未定：非 200 的 content_filter 错误体是否也按拒绝终态（而非可降级
 //                        CREDENTIALS/BAD_RESPONSE）；本文件推断 ENTRY_CONTENT_POLICY。200+refusal 形状已在
@@ -111,13 +112,14 @@ test("[待办 OAI-001] P4 固定搜索指令须可读地包含引用、摘要与
   assert.match(instr, /language|语言|语种/i, "[待办 P4] 固定指令应要求用查询的语言作答");
 });
 
-test("[待办 OAI-002/FB-002] P5 上游超发（3 条 > maxResults=2）：适配器输出不得超过 maxResults", async (t) => {
+test("OAI-002/FB-002 上游超发（3 条 > maxResults=2）：适配器返回全量来源不截断（截断与 truncated 归链层）", async (t) => {
   const backend = await loadOpenAIBackend(t, "OAI-002/FB-002");
   if (!backend) return;
   const { out } = await once(backend, { maxResults: 2 });
-  assert.ok(
-    out.sources.length <= 2,
-    `[待办 P5] 截断责任未定（OAI-002 只写「上限」引用 FB-002，FB-002 写在结果层）。推断适配器输出 ≤ maxResults，实际 ${out.sources.length} 条`,
+  assert.equal(
+    out.sources.length,
+    SAMPLE_CITATIONS.length,
+    `裁决（FB-002）：截断与 truncated 置位归链层（WP5）统一执行，适配器返回全部 ${SAMPLE_CITATIONS.length} 条映射来源、不本地截断，实际 ${out.sources.length} 条`,
   );
 });
 
