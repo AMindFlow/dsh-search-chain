@@ -1,47 +1,33 @@
-// WP5 本地契约常量（字符串值与 test/helpers/contract.js 的冻结值逐字一致）。
-//
-// 背景：运行时代码不得 import test/（WP0 约定，contract.js 头注释第 7 行：常量
-// 编号语义来自 docs/specs 草案，标识符拼写是 oracle 假设）。WP5 的 src/search.js
-// 按 A4「实现模块与导出」从本文件取常量；WP6 合并 src/config.js / src/index.js
-// 时把同源常量统一到单一模块（本文件届时删除或 re-export，见 WP6 任务）。
-//
-// 若认为某标识符应改名：必须在同一 PR 中同步修改本文件与 test/helpers/contract.js
-// 并给出理由（contract.js 头注释第 7 行；GitHub Flow 审阅）。
+// 共享常量（与 test/helpers/contract.js 保持同值；见 PR 交付记录的「常量复制」说明）。
+// 运行时代码不得 import test/ 下的任何文件，故在此复制一份。
 
-/** FB-005 失败分类（条目级）。与 test/helpers/contract.js ENTRY_CODES 同值。 */
-export const ENTRY_CODES = Object.freeze({
-  CREDENTIALS: "ENTRY_CREDENTIALS", // 凭据或权限
-  QUOTA: "ENTRY_QUOTA", // 额度：402 或 insufficient_quota
-  RATE_LIMITED: "ENTRY_RATE_LIMITED", // 其他 429
-  PROXY: "ENTRY_PROXY", // 代理
-  NETWORK: "ENTRY_NETWORK", // 直连网络
-  CHANNEL_LIMIT: "ENTRY_CHANNEL_LIMIT", // 通道参数限制
-  TIMEOUT: "ENTRY_TIMEOUT", // 单项超时
-  BAD_RESPONSE: "ENTRY_BAD_RESPONSE", // 异常响应
-  CONTENT_POLICY: "ENTRY_CONTENT_POLICY", // 明确的上游内容策略拒绝：FB-001 终止类，不降级
-});
+export const BUNDLE_NAME = "dsh-search-chain";
+export const PROVIDER_ID = "search-chain";
 
-/** FB-001：条目被跳过（缺必要 key）时的诊断标记，非失败分类。 */
-export const SKIPPED_NO_KEY = "SKIPPED_NO_KEY";
+/** dsh 宿主官方 DeepSeek Messages 搜索路由 id（inspect `web` 服务实证）。 */
+export const OFFICIAL_ROUTE_ID = "deepseek-official";
+/** 账号模式路由 id：DSH-005 要求走自定义链。 */
+export const DEEPSEEK_ACCOUNT_ROUTE_ID = "deepseek-account";
 
-/**
- * FB-004/FB-003 链级终态码。TODO(spec)：与宿主 WebError.code 的最终映射待 WP5
- * 宿主验收定名（WP0 风险①/HOST-5）；本文件先固定插件侧链码，见 search-classify
- * 末尾待办测试。
- */
-export const CHAIN_CODES = Object.freeze({
-  NOT_CONFIGURED: "CHAIN_NOT_CONFIGURED", // 空列表或全停用：未配置可用工具
-  ALL_KEYS_MISSING: "CHAIN_KEYS_MISSING", // 全因缺必要凭据跳过：须说明缺失项
-  UPSTREAM_FAILURES: "CHAIN_UPSTREAM_FAILURES", // 存在失败且全链未获有效来源
-  BUDGET_EXHAUSTED: "CHAIN_BUDGET_EXHAUSTED", // 总预算耗尽且无结果
-  CONTENT_POLICY: "CHAIN_CONTENT_POLICY", // 上游内容策略拒绝终止
-});
+/** CAT-001 八个类型 id（DeepSeek 两模式各占一个）。 */
+export const TOOL_TYPES = Object.freeze([
+  "openai",
+  "tavily",
+  "exa",
+  "brave",
+  "bing",
+  "gemini",
+  "deepseek-search",
+  "deepseek-agentic-search",
+]);
 
-/** FB-003 默认总预算（毫秒）。 */
-export const DEFAULT_TIMEOUT_MS = 25000;
+/** 类型 → 目录供应商（deepseek-* 归并到 deepseek）。 */
+export function supplierOfToolType(type) {
+  return type.startsWith("deepseek") ? "deepseek" : type;
+}
 
-/** CAT-001：需要 key 的类型 → 凭据名（环境变量/托管记录同名，providers.md 表）。 */
-export const KEY_ENV_BY_TYPE = {
+/** CAT-001 凭据环境变量名 / 托管记录名。 */
+export const KEY_ENV_BY_TYPE = Object.freeze({
   openai: "OPENAI_API_KEY",
   tavily: "TAVILY_API_KEY",
   exa: "EXA_API_KEY",
@@ -49,12 +35,53 @@ export const KEY_ENV_BY_TYPE = {
   gemini: "GEMINI_API_KEY",
   "deepseek-search": "DEEPSEEK_API_KEY",
   "deepseek-agentic-search": "DEEPSEEK_API_KEY",
-};
+});
 
-/** CFG-002：仅这三个供应商名有旧版 YAML 顶层兼容层（最后一级）。 */
-export const LEGACY_YAML_SUPPLIERS = ["openai", "tavily", "deepseek"];
+/** CFG-002：免 key 类型。 */
+export const KEYLESS_TYPES = Object.freeze(["bing"]);
 
-/** 按类型 id 归并到供应商（deepseek-search / deepseek-agentic-search → deepseek）。 */
-export function supplierOfToolType(type) {
-  return type.startsWith("deepseek") ? "deepseek" : type;
-}
+/** CFG-002：允许读取的进程环境变量白名单。 */
+export const TRUSTED_ENV_KEYS = Object.freeze([...new Set(Object.values(KEY_ENV_BY_TYPE))]);
+
+/** CFG-002：仅这三个供应商有旧版 YAML 顶层兼容。 */
+export const LEGACY_YAML_SUPPLIERS = Object.freeze(["openai", "tavily", "deepseek"]);
+
+/** FB-005 条目级失败分类。 */
+export const ENTRY_CODES = Object.freeze({
+  CREDENTIALS: "ENTRY_CREDENTIALS",
+  QUOTA: "ENTRY_QUOTA",
+  RATE_LIMITED: "ENTRY_RATE_LIMITED",
+  PROXY: "ENTRY_PROXY",
+  NETWORK: "ENTRY_NETWORK",
+  CHANNEL_LIMIT: "ENTRY_CHANNEL_LIMIT",
+  TIMEOUT: "ENTRY_TIMEOUT",
+  BAD_RESPONSE: "ENTRY_BAD_RESPONSE",
+  CONTENT_POLICY: "ENTRY_CONTENT_POLICY",
+});
+
+/** FB-001 跳过诊断标记（非失败分类）。 */
+export const SKIPPED_NO_KEY = "SKIPPED_NO_KEY";
+
+/** FB-004 链级终态码。 */
+export const CHAIN_CODES = Object.freeze({
+  NOT_CONFIGURED: "CHAIN_NOT_CONFIGURED",
+  ALL_KEYS_MISSING: "CHAIN_KEYS_MISSING",
+  UPSTREAM_FAILURES: "CHAIN_UPSTREAM_FAILURES",
+  BUDGET_EXHAUSTED: "CHAIN_BUDGET_EXHAUSTED",
+  CONTENT_POLICY: "CHAIN_CONTENT_POLICY",
+});
+
+/** CFG 配置与 PAC 阶段码。 */
+export const CONFIG_CODES = Object.freeze({
+  INVALID: "CONFIG_INVALID",
+  CREDENTIALS_UNREADABLE: "CONFIG_CREDENTIALS_UNREADABLE",
+  SAVE_FAILED: "CONFIG_SAVE_FAILED",
+  PAC_FETCH_FAILED: "PAC_FETCH_FAILED",
+  PAC_EVAL_FAILED: "PAC_EVAL_FAILED",
+  PAC_ROUTE_FAILED: "PAC_ROUTE_FAILED",
+  // B1′：宿主配置端口不可用或本行不在活行中——显式失败，禁止回退装载快照（回退即恢复 B1）。
+  ROW_UNAVAILABLE: "CONFIG_ROW_UNAVAILABLE",
+});
+
+/** FB-003 默认总预算（毫秒）。 */
+export const DEFAULT_TIMEOUT_MS = 25000;
