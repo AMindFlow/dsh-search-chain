@@ -12,6 +12,7 @@
 ## CFG-002 密钥来源和优先级
 
 - **要求** 编辑页允许用户填写该条目的 API key。用户明确保存输入后，用宿主凭据服务保存为该条目的凭据引用。请求期按条目引用、[目录中的进程环境变量](providers.md#cat-001-首期类型)、该名称的 DSH 托管 `refs` 依次解析。OpenAI、Tavily 和 DeepSeek 已有的同名旧版 YAML 顶层项用于最后兼容。纯空白等同于未提供。
+- 修订注（草案，裁决日期 2026-11-25）：上条第三层「该名称的 DSH 托管 `refs`」（早期草案与交付记录中亦称「DSH 托管记录」）裁决为托管引用——请求期以裸环境变量名在宿主凭据服务引用空间执行 `resolve(该环境变量名)`，命中取其 `value`；`readRecord` 记录空间移出解析链，不参与逐层解析（仍供非解析面使用）。裁决依据 @deepseek-ai/dsh-credentials README/types.ts @0.2.2-rc.5：README「a reference doubles as the environment name it resolves through」为权威出处；记录 key 语法 `<owner>/<id>` 无法承载裸 env 名。原条文保持原文可读，本注为该层唯一解释；验证见 test/credentials-oracle.test.js（WP7 凭据轮）。
 - **要求** 只为实际准备尝试的条目解析可用于出站的 key。需要 key 的条目在所有来源缺失时按 [FB-001](fallback.md#fb-001-自定义顺序与降级条件)跳过。需要读取但无法访问或解析的凭据文件须报告配置错误。Bing RSS 无 key。
 - **来源** [原始需求 R4及新版编辑和供应商要求 R9、R11](../../project/requirements.md)。
 - **验收** 添加同类型但使用不同 key 的两个条目。逐层撤掉条目引用、环境变量和托管 key，核对真正收到的 key。覆盖空值、带引号的 YAML、缺文件、文件损坏和无 key 条目。停用条目不得导致读 key 或出站。

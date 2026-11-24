@@ -5,6 +5,9 @@
 //   CFG-002：key 优先级 条目 credentialRef → 进程环境变量（仅 CAT-001 白名单名）→ DSH 托管记录
 //            → 旧版 YAML（仅 openai/tavily/deepseek）；纯空白=缺失；免 key 类型零凭据读取；
 //            凭据不可读/损坏 → CREDENTIALS_UNREADABLE 配置错误。
+//            （WP7 凭据轮裁决：「DSH 托管记录」＝托管 ref，第三层按裸 env 名 resolve(envName)——README
+//            「a reference doubles as the environment name it resolves through」；readRecord 不在解析链，
+//            真宿主记录 key 语法 <owner>/<id> 无法承载裸 env 名。规格修订注由项目维护者另行落地。）
 //   CFG-003：已保存配置只存引用；明文 key 绝不落盘、绝不回读。
 //   CFG-004：宿主插件配置为唯一事实源；写入走 configEditor(ctx.fiber.entry)；读数为冻结快照；
 //            保存失败已生效快照保持一致；顺序即 entries 数组顺序。
@@ -203,6 +206,7 @@ test("CFG-002：credentialRef → 环境 → 托管记录 → 旧版YAML 四层�
 
   const creds = createFakeCredentials({
     refs: { "ref:e1": K_REF },
+    // 同名记录种在原处：第三层必须经 resolve(envName) 命中托管 ref，记录即便存在也不得被读（裁决注记见文件头）。
     records: { OPENAI_API_KEY: K_REC },
   });
   const e1 = trackedEnv({ OPENAI_API_KEY: K_ENV });
@@ -213,25 +217,26 @@ test("CFG-002：credentialRef → 环境 → 托管记录 → 旧版YAML 四层�
     "第一层：条目 credentialRef 最高优先",
   );
   assert.equal(e1.reads.length, 0, "上层命中后不得再读环境变量（只解析实际需要的层）");
-  assert.deepEqual(creds.recordCalls, [], "上层命中后不得读托管记录");
+  assert.deepEqual(creds.recordCalls, [], "上层命中后不得读下层（裁决：解析链不含 readRecord）");
 
   creds.removeRef("ref:e1");
   const e2 = trackedEnv({ OPENAI_API_KEY: K_ENV });
   assert.deepEqual(
     await mod.resolveEntryApiKey(entry, { env: e2.env, credentials: creds, legacyYaml: l1.legacy }),
     { key: K_ENV },
-    "第二层：环境变量（须先于托管记录）",
+    "第二层：环境变量（须先于托管 ref）",
   );
-  assert.deepEqual(creds.recordCalls, [], "环境命中不得再读托管记录");
+  assert.deepEqual(creds.recordCalls, [], "环境命中不得再读下层（裁决：解析链亦不含 readRecord）");
 
   const e3 = trackedEnv({});
-  const creds3 = createFakeCredentials({ records: { OPENAI_API_KEY: K_REC } });
+  const creds3 = createFakeCredentials({ refs: { OPENAI_API_KEY: K_REC } });
   assert.deepEqual(
     await mod.resolveEntryApiKey(entry, { env: e3.env, credentials: creds3, legacyYaml: l1.legacy }),
     { key: K_REC },
-    "第三层：DSH 托管记录",
+    "第三层：DSH 托管 ref——裸 env 名 resolve(envName) 命中取 hit.value（WP7 凭据轮裁决）",
   );
-  assert.deepEqual(creds3.recordCalls, ["OPENAI_API_KEY"]);
+  assert.ok(creds3.resolveCalls.includes("OPENAI_API_KEY"), "第三层必须以裸 env 名 resolve 托管 ref");
+  assert.deepEqual(creds3.recordCalls, [], "裁决：readRecord 已移出解析链，解析不得经记录空间");
 
   const creds4 = createFakeCredentials({});
   const e4 = trackedEnv({});
@@ -266,7 +271,8 @@ test("CFG-002：纯空白一律视为缺失（各层同规则）", async (t) => 
     { key: K_ENV },
     "ref 解析为空白 = 缺失",
   );
-  const creds2 = createFakeCredentials({ records: { OPENAI_API_KEY: "" } });
+  // 第三层＝托管 ref（WP7 凭据轮裁决）：空 stored 值按 README 规则 absent（替身 resolve 已实现跳过），继续下一层。
+  const creds2 = createFakeCredentials({ refs: { OPENAI_API_KEY: "" } });
   const l2 = trackedLegacy({ openai: SYNTHETIC_KEY("legacy") });
   assert.deepEqual(
     await mod.resolveEntryApiKey(C.makeEntry({ id: "e", type: "openai" }), {
@@ -275,7 +281,7 @@ test("CFG-002：纯空白一律视为缺失（各层同规则）", async (t) => 
       legacyYaml: l2.legacy,
     }),
     { key: SYNTHETIC_KEY("legacy") },
-    "托管记录空串 = 缺失，继续下一层",
+    "托管 ref 空串 = 缺失（README 空值=absent），继续下一层",
   );
 });
 

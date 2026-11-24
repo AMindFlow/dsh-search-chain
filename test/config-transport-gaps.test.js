@@ -121,20 +121,22 @@ test("CFG-002：解析出的 key 去掉首尾空白（内部空白保留），�
     assert.deepEqual(out, { key: K }, `层值须去首尾空白后返回（CFG-002「纯空白=未提供」的补集：带空白须归一化），实际：${JSON.stringify(out)}`);
   }
   const inner = `${SYNTHETIC_KEY("keep")} inner`;
-  const creds = createFakeCredentials({ records: { OPENAI_API_KEY: inner } });
+  // 第三层＝托管 ref（WP7 凭据轮裁决）：以裸 env 名 seed refs，值经 resolve(envName) 命中取 hit.value。
+  const creds = createFakeCredentials({ refs: { OPENAI_API_KEY: inner } });
   const out = await mod.resolveEntryApiKey(C.makeEntry({ id: "e2", type: "openai" }), {
     env: {},
     credentials: creds,
     legacyYaml: {},
   });
-  assert.deepEqual(out, { key: inner }, "只去首尾空白：值内部空白原样保留（规格未授权改写 key 内容）");
+  assert.deepEqual(out, { key: inner }, "只去首尾空白：托管 ref 值内部空白原样保留（规格未授权改写 key 内容）");
 });
 
 test("CFG-002/A4：legacyYaml 为 undefined 时第四层安全跳过，不得抛错", async (t) => {
   const mod = await load(t);
   if (!mod) return;
   const K_REC = SYNTHETIC_KEY("rec");
-  const creds = createFakeCredentials({ records: { TAVILY_API_KEY: K_REC } });
+  // 第三层＝托管 ref（WP7 凭据轮裁决）：readRecord 不在解析链，托管 key 经 resolve(TAVILY_API_KEY) 提供。
+  const creds = createFakeCredentials({ refs: { TAVILY_API_KEY: K_REC } });
   assert.deepEqual(
     await mod.resolveEntryApiKey(C.makeEntry({ id: "e1", type: "tavily" }), { env: {}, credentials: creds, legacyYaml: undefined }),
     { key: K_REC },

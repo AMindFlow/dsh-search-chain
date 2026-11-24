@@ -112,17 +112,24 @@ test("fake-credentials：两 key 空间、读取记录、注入故障（CFG-002/
     records: { TAVILY_API_KEY: SYNTHETIC_KEY("tavily") },
     failRefReads: ["ref:broken"],
   });
-  assert.equal(await creds.resolve("ref:e1"), SYNTHETIC_KEY("openai"));
-  assert.equal((await creds.readRecord("TAVILY_API_KEY")).value, SYNTHETIC_KEY("tavily"));
+  // 真宿主形状（dsh-credentials README/types.ts @0.2.2-rc.5，WP7 实机发现）：
+  // resolve → { value, source }（不是裸字符串）；api-key 记录值在记录顶层 key（没有 .value/.payload）。
+  assert.deepEqual(await creds.resolve("ref:e1"), { value: SYNTHETIC_KEY("openai"), source: "user-env" });
+  assert.deepEqual(await creds.readRecord("TAVILY_API_KEY"), { kind: "api-key", key: SYNTHETIC_KEY("tavily") });
   assert.equal(await creds.readRecord("EXA_API_KEY"), undefined);
   assert.deepEqual(creds.resolveCalls, ["ref:e1"]);
   assert.deepEqual(creds.recordCalls, ["TAVILY_API_KEY", "EXA_API_KEY"], "未命中也必须留痕（可观察性）");
   creds.removeRef("ref:e1");
-  assert.equal(await creds.resolve("ref:e1"), undefined);
+  assert.equal(await creds.resolve("ref:e1"), undefined, "undefined 注入面：ref 缺失 → resolve 返回 undefined");
   await assert.rejects(creds.resolve("ref:broken"));
-  await creds.modifyRecord("OPENAI_API_KEY", (cur) => ({ name: "OPENAI_API_KEY", value: SYNTHETIC_KEY("openai") }));
-  assert.equal((await creds.readRecord("OPENAI_API_KEY")).value, SYNTHETIC_KEY("openai"));
+  // modifyRecord 是唯一记录写路径：next 为 CredentialRecord 真形（README）。
+  await creds.modifyRecord("OPENAI_API_KEY", () => ({ kind: "api-key", key: SYNTHETIC_KEY("openai") }));
+  assert.equal((await creds.readRecord("OPENAI_API_KEY")).key, SYNTHETIC_KEY("openai"));
   assert.equal(creds.totalReads(), 6, '3 resolve + 3 readRecord');
+  // 真宿主规则（README）：引用侧空 stored 值 = absent；空串不可存（记录侧无此规则）。
+  const strict = createFakeCredentials({ refs: { "ref:empty": "" } });
+  assert.equal(await strict.resolve("ref:empty"), undefined, "空的 stored 值等于不存在：resolve 跳过");
+  await assert.rejects(strict.set("ref:x", ""), "空串不可存储（真宿主规则）");
 });
 
 test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失败语义（DSH-001 面）", async () => {
