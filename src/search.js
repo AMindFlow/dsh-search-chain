@@ -357,7 +357,14 @@ export function createSearchChain(deps) {
         throw new TypeError(`[search-chain] 条目 ${entry.id}（${entry.type}）没有可用的后端适配器（程序违约）`);
       }
       const entryAc = new AbortController();
-      const handle = transport.open(entry);
+      // A6 seam 前：open 失败时尚无句柄、适配器未触及；带码错误交由下游 outcome.error 分支按条目降级，
+      // 无码/TRANSPORT_RELEASED 仍经同一分支裸上抛（不改全局位）。
+      let handle;
+      try {
+        handle = transport.open(entry);
+      } catch (error) {
+        return { kind: "error", error };
+      }
       const ctx = {
         entry,
         query,
