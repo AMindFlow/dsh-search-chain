@@ -24,13 +24,14 @@
 //   ⑤ 全局 CONFIG_*：链级配置读取自身失败（deps.getConfig 抛码，无条目上下文）→
 //      硬失败：原错误对象原样上抛、零条目执行、零出站。（现实现已如此 → 记绿防回归。）
 //
-// 语义边界（按本包指令不动，如实报来）：
-//   - 传输/适配器层「带码错误不压扁、原样透传」的期望（transport-passthrough.test.js
-//     P1-1 面）本轮不动；其链级 CONFIG 行（单条目链原样暴露、不包装）与④（全败终态
-//     WebError 携原码）在单条目全败特例上的张力属裁决落地既有问题，是否同改归实现落地包。
-//   - helpers/contract.js assertWebError 的 attempts 码白名单（ENTRY_CODES ∪
-//     {SKIPPED_NO_KEY}）尚未并入裁决的 CONFIG_*/PAC_* 原码面，故④直接断言
-//     details.attempts 原码；白名单同改属实现落地包，本包只落 test 期望。
+// 语义边界（PR#35 裁决补充，lead 同判——张力已清，本轮落地）：
+//   - transport-passthrough.test.js 链级 CONFIG 行与④（全败终态 WebError 携原码）在单条目全败
+//     特例上的张力已同判：条目执行期 CONFIG_*/PAC_* 与 PROXY 一律条目级降级，「原样暴露不包装」
+//     只对全局 CONFIG_*（链级配置读取失败，⑤）成立。该行已改为只钉防压扁面（原码裸原码或
+//     attempts 原码存活到终态），终态形状由④强制红；其传输/适配器级行（原码原样透传）不动。
+//   - helpers/contract.js assertWebError 的 attempts 码白名单已并入 CONFIG_CODES 原码面
+//     （ENTRY_CODES ∪ CONFIG_CODES ∪ {SKIPPED_NO_KEY}，含 PAC_*；A7 镜像注释同步）。
+//     ④ 维持直接断言 details.attempts 不借道 assertWebError，测试期望不因此改动。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_QUERY } from "./helpers/chain-harness.js";

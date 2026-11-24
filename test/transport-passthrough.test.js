@@ -4,14 +4,17 @@
 //   FB-005「必须区分……代理、直连网络」：代理路由的故障（ENTRY_PROXY）绝不能与直连网络故障（ENTRY_NETWORK）
 //     混同；已带归因码的错误在传输/适配器层必须原样透传，不得被压成 ENTRY_NETWORK。
 //   FB-005「内部程序违约（不带条目分类码的错误）原样向调用方暴露，不包装、不再发起新的上游请求」：
-//     CONFIG_CODES 码与 TRANSPORT_RELEASED 不是 ENTRY_* 分类 → 链必须原样拒绝（出口仍 v0.2，不改终态面）。
+//     TRANSPORT_RELEASED 不是条目分类 → 链仍原样暴露（出口仍 v0.2，不改终态面）。
+//     裁决补充（PR#35 同判，lead）：条目执行期 CONFIG_*/PAC_* 与 PROXY 一律条目级降级，
+//     「原样暴露不包装」只对全局 CONFIG_*（链级配置读取失败，P2-b⑤）成立；
+//     链级 CONFIG 行终态面与 P2-b④ 同判——本文件对该行只钉防压扁，终态形状由④强制红。
 //   #12-26（gap 清单）：透传先修，出口仍 v0.2 —— 本文件只钉「码不再被压扁」，不新增任何终态/包装。
 //   FB-001 每条目至多一次：每个场景出站恰好一次（程序错误后不得再发起上游请求）。
 //   A6 seam：链经 transport.open(entry) 取 ctx.fetch；本文件在链级把 ctx.fetch 替换为抛「带码错误」的
 //   注入面（fake-transport 直通 fake-fetch），另在传输层用真实 createEntryTransport 直接验证同一透传。
 //
 // 参数化：后端 7 家（openai / tavily / exa / brave / bing / gemini / deepseek-search）各 1 例，
-// 每例三种带码错误（ENTRY_PROXY、CONFIG_CODES 码、TRANSPORT_RELEASED）逐一注入，断链 attempts 码保留原码。
+// 每例三种带码错误（ENTRY_PROXY、CONFIG_CODES 码、TRANSPORT_RELEASED）逐一注入，断链终态保留原码。
 // 既有面不动：无码错误仍归 ENTRY_NETWORK（FB-005 直连网络兜底）——该行为本轮预期为绿。
 //
 // 预期红（dev 面，B 包实现修复后转绿）：P1-1 各例在 main 上把带码错误压成 ENTRY_NETWORK。
@@ -39,11 +42,19 @@ const BACKENDS = [
   },
 ];
 
-/** 每个后端注入的三种带码错误：一条 ENTRY_*（归因必须区分）、一条 CONFIG_CODES、一条 TRANSPORT_RELEASED。 */
+/**
+ * 每个后端注入的三种带码错误：一条 ENTRY_*（归因必须区分）、一条 CONFIG_CODES、一条 TRANSPORT_RELEASED。
+ * chain = 链级期望模式（PR#35 裁决补充，lead 同判）：
+ *   "attempts"     条目级降级，终态 attempts 携原码；
+ *   "same-as-p2b4" 与 P2-b④ 同判——本行只钉防压扁（原码存活到终态：裸原码或 attempts 原码），
+ *                  终态形状（降级 WebError 携原码）由 chain-coded-failure-policy④ 强制红，不在此双钉；
+ *   "raw"          原样暴露不包装（现仅 TRANSPORT_RELEASED；全局 CONFIG_* 的原样面在 P2-b⑤）。
+ * 传输层（适配器级）行不受 chain 影响：一律要求原码原样透传（不压扁，本轮不动）。
+ */
 const PASTHROUGH_CASES = [
-  { label: "ENTRY_PROXY（代理归因码，FB-005 必须区分代理）", code: C.ENTRY_CODES.PROXY, expectEntry: true },
-  { label: "CONFIG_CODES 码（CONFIG_INVALID，程序违约原样暴露）", code: C.CONFIG_CODES.INVALID, expectEntry: false },
-  { label: "TRANSPORT_RELEASED（释放后拒发，程序违约原样暴露）", code: TRANSPORT_RELEASED, expectEntry: false },
+  { label: "ENTRY_PROXY（代理归因码，FB-005 必须区分代理）", code: C.ENTRY_CODES.PROXY, chain: "attempts" },
+  { label: "CONFIG_CODES 码（CONFIG_INVALID，条目执行期→条目级降级，与 P2-b④ 同判）", code: C.CONFIG_CODES.INVALID, chain: "same-as-p2b4" },
+  { label: "TRANSPORT_RELEASED（释放后拒发，程序违约原样暴露）", code: TRANSPORT_RELEASED, chain: "raw" },
 ];
 
 /** 合成「带码」传输错误：message 固定脱敏文本，code 为被测透传对象。每场景新建实例（错误对象不复用）。 */
@@ -80,7 +91,7 @@ async function runChainWithFetchError(t, clauses, type, makeError) {
 }
 
 for (const { type } of BACKENDS) {
-  test(`P1-1 ${type}：ctx.fetch 带码错误（ENTRY_PROXY/CONFIG码/TRANSPORT_RELEASED）经链 attempts 保留原码，不压成 ENTRY_NETWORK（FB-005/#12-26）`, async (t) => {
+  test(`P1-1 ${type}：ctx.fetch 带码错误（ENTRY_PROXY/CONFIG码/TRANSPORT_RELEASED）经链终态保留原码（裸原码或 attempts 原码），不压成 ENTRY_NETWORK（FB-005/#12-26）`, async (t) => {
     const clauses = "P1-1/FB-005/#12-26";
     const problems = [];
     for (const c of PASTHROUGH_CASES) {
@@ -90,7 +101,7 @@ for (const { type } of BACKENDS) {
       if (calls !== 1) {
         problems.push(`${c.label}：出站应恰好 1 次，实测=${calls}`);
       }
-      if (c.expectEntry) {
+      if (c.chain === "attempts") {
         // ENTRY_PROXY 是可降级条目分类（FB-005 代理）：链终态仍 UPSTREAM_FAILURES（出口 v0.2 不变），
         // 但 attempts 码必须是 ENTRY_PROXY —— 压成 ENTRY_NETWORK 即违反「必须区分代理」。
         if (err?.code !== C.CHAIN_CODES.UPSTREAM_FAILURES) {
@@ -104,9 +115,25 @@ for (const { type } of BACKENDS) {
             `${c.label}：attempts[0].code 应保留原码 ${C.ENTRY_CODES.PROXY}（FB-005 必须区分代理），实测=${String(attempts[0].code)}`,
           );
         }
+      } else if (c.chain === "same-as-p2b4") {
+        // 条目执行期 CONFIG_*（PR#35 裁决补充，与 P2-b④ 同判）：一律条目级降级——单条目全败的
+        // 终态形状（WebError.attempts 携原码）由 chain-coded-failure-policy④ 强制红（现实现裸原码
+        // 上抛 → 属降级三例红面，实现落地包修复），本行不双钉形状，只钉 #12-26 本义「码不被压扁」：
+        // 原码必须存活到终态观察面（裸原码透传或 attempts 原码），绝不得压成 ENTRY_NETWORK 等改写。
+        const attempts = err?.details?.attempts;
+        const barePassthrough = err?.code === c.code && !Array.isArray(attempts);
+        const downgradedWithCode =
+          err?.code === C.CHAIN_CODES.UPSTREAM_FAILURES &&
+          Array.isArray(attempts) && attempts.length === 1 && attempts[0].code === c.code;
+        if (!barePassthrough && !downgradedWithCode) {
+          problems.push(
+            `${c.label}：链终态必须保留原码 ${c.code}（裸原码或 attempts[0].code，与 P2-b④ 同判），实测 code=${String(err?.code)} attempts=${JSON.stringify(attempts)}`,
+          );
+        }
       } else {
-        // 非 ENTRY_* 码（CONFIG_CODES / TRANSPORT_RELEASED）：程序违约原样暴露（FB-005），
+        // TRANSPORT_RELEASED：非条目分类、非 CONFIG_* 的程序违约（释放后拒发）仍原样暴露（FB-005），
         // 不得包装为带 attempts 的 WebError、不得改码；链出口保持 v0.2。
+        // （裁决补充：「原样暴露不包装」对 CONFIG_* 只对全局 CONFIG_* 成立，见 P2-b⑤。）
         if (err?.code !== c.code) {
           problems.push(
             `${c.label}：应以原码 ${c.code} 原样暴露（程序违约不包装），实测 code=${String(err?.code)}`,
