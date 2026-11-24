@@ -75,7 +75,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CONFIG_CODES, ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
+import { CONFIG_CODES, ENTRY_CODES, carriesPassthroughCode, readBoundedText, bodyTooLargeMessage } from "../constants.js";
 
 /** GMI-001：规定端点，精确匹配（无 query、无路径模型参数，模型置于 body）。 */
 const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
@@ -445,9 +445,10 @@ async function roundTrip(ctx, clock, payload) {
       body: payload,
       signal: ac.signal,
     });
-    const text = await Promise.race([res.text(), aborted]);
-    if (text === ABORTED) throw new Error("gemini body read aborted"); // 进入 catch，按 cause 分流
-    return { status: res.status, ok: res.ok, text };
+    // 字节上限（MAX_RESPONSE_BYTES，流式早停）：超限 tooLarge，2xx 在 search 归 BAD_RESPONSE 带尺寸诊断。
+    const body = await Promise.race([readBoundedText(res), aborted]);
+    if (body === ABORTED) throw new Error("gemini body read aborted"); // 进入 catch，按 cause 分流
+    return { status: res.status, ok: res.ok, text: body.text, tooLarge: body.tooLarge, limit: body.limit };
   } catch (err) {
     if (cause === "host" || (cause === null && signal?.aborted)) throw hostCancelled();
     if (cause === "budget") throw entryErrorFor(ENTRY_CODES.TIMEOUT, entryRefOf(ctx));
@@ -491,6 +492,10 @@ async function search(ctx) {
   if (!res.ok) {
     log("warn", "gemini upstream error status", { entryId: ctx.entry?.id, status: res.status });
     throw await httpFailure(res.status, res.text, entryRef);
+  }
+  if (res.tooLarge) {
+    log("warn", "gemini upstream body too large", { entryId: ctx.entry?.id, status: res.status, limit: res.limit });
+    throw coded(ENTRY_CODES.BAD_RESPONSE, withEntry(bodyTooLargeMessage(res.limit), entryRef));
   }
   const parsed = parseJson(res.text);
   if (parsed === undefined) {

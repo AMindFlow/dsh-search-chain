@@ -51,7 +51,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
+import { ENTRY_CODES, carriesPassthroughCode, readBoundedText, bodyTooLargeMessage } from "../constants.js";
 
 /** Exa Search API 端点（exa.md:5）。 */
 const EXA_ENDPOINT = "https://api.exa.ai/search";
@@ -290,6 +290,7 @@ async function search(ctx) {
 
   let response;
   let text = "";
+  let bodyTooLargeLimit = null;
   try {
     try {
       response = await ctx.fetch(EXA_ENDPOINT, {
@@ -317,7 +318,10 @@ async function search(ctx) {
     // P0：响应体读取同样受预算/取消约束，cleanup 延后到 text() 完成或失败之后。
     // CFG-003：原始响应体只参与解析与分类，任何原文不得进入错误文本或日志。
     try {
-      text = await response.text();
+      // 字节上限（MAX_RESPONSE_BYTES，流式早停）：超限时 text 为空，见下方 2xx 判定。
+      const body = await readBoundedText(response);
+      text = body.text;
+      if (body.tooLarge) bodyTooLargeLimit = body.limit;
     } catch (err) {
       if (isAbortLike(err)) throw abortedError(err);
       if (response.ok) {
@@ -340,6 +344,15 @@ async function search(ctx) {
     if (budgetTimer != null && typeof clock?.clearTimeout === "function") clock.clearTimeout(budgetTimer);
     signal?.removeEventListener?.("abort", onHostAbort);
   }
+  // 2xx 正文超上限 → ENTRY_BAD_RESPONSE，诊断含尺寸线索（非 2xx 超限仍按状态码分类，见下）。
+  if (bodyTooLargeLimit !== null && response.ok) {
+    log("warn", "exa upstream body too large", { entryId: entry.id, status: response.status, limit: bodyTooLargeLimit });
+    throw entryFailure(
+      ENTRY_CODE.BAD_RESPONSE,
+      `Exa 条目「${entryRef}」${bodyTooLargeMessage(bodyTooLargeLimit)}。${CODE_CHECK[ENTRY_CODE.BAD_RESPONSE]}`,
+    );
+  }
+
   let data;
   try {
     data = text === "" ? undefined : JSON.parse(text);

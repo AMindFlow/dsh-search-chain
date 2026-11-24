@@ -14,7 +14,7 @@
 // 修改任一值须同时修改 contract.js 并在同一 PR 说明。
 
 import vm from "node:vm";
-import { carriesPassthroughCode } from "./constants.js";
+import { carriesPassthroughCode, readBoundedText } from "./constants.js";
 
 const PAC_CODES = Object.freeze({
   FETCH_FAILED: "PAC_FETCH_FAILED",
@@ -272,10 +272,19 @@ export function createEntryTransport(entry, deps = {}) {
           `条目${label}PAC 下载失败：${endpointOf(pacUrl)}（HTTP ${res?.status ?? "未知"}）`,
         );
       }
+      // 字节上限（MAX_RESPONSE_BYTES，流式早停）：超限归 PAC_FETCH_FAILED 并带尺寸诊断，不落成 EVAL 类。
       let script;
       try {
-        script = await raceAbort(Promise.resolve().then(() => res.text()), signal);
+        const body = await raceAbort(readBoundedText(res), signal);
+        if (body.tooLarge) {
+          throw new TransportError(
+            PAC_CODES.FETCH_FAILED,
+            `条目${label}PAC 脚本超出大小上限（${body.limit} 字节），已中止下载：${endpointOf(pacUrl)}`,
+          );
+        }
+        script = body.text;
       } catch (err) {
+        if (err instanceof TransportError) throw err;
         if (isAbort(err, signal)) throw abortError();
         throw new TransportError(PAC_CODES.FETCH_FAILED, `条目${label}PAC 脚本读取失败：${endpointOf(pacUrl)}`);
       }

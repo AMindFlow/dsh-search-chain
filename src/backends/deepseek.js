@@ -11,7 +11,7 @@
 // 改一处须同时改另一处。运行时不得 import test/ 下任何文件；ENTRY_CODES 取自本包镜像 ../constants.js。
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
+import { ENTRY_CODES, carriesPassthroughCode, readBoundedText, bodyTooLargeMessage } from "../constants.js";
 
 // ─── 规格常量（DSK-001..DSK-004 字面值）──────────────────────────────────────
 const DSK_AGENTIC_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
@@ -220,15 +220,16 @@ async function postOnce(ctx, url, body) {
     } catch (cause) {
       throw await fail(cause);
     }
-    let text;
+    // 字节上限（MAX_RESPONSE_BYTES，流式早停）：超限 tooLarge，2xx 在调用方归 BAD_RESPONSE 带尺寸诊断。
+    let resBody;
     try {
-      text = await response.text();
+      resBody = await readBoundedText(response);
     } catch (cause) {
       throw await fail(cause);
     }
     if (expired) throw entryError(ENTRY_CODES.TIMEOUT, MESSAGES[ENTRY_CODES.TIMEOUT]);
     if (ctx.signal?.aborted) throw hostAbortError();
-    return { status: response.status, ok: response.ok, text };
+    return { status: response.status, ok: response.ok, text: resBody.text, tooLarge: resBody.tooLarge, limit: resBody.limit };
   } finally {
     clock.clearTimeout(timer);
   }
@@ -283,6 +284,7 @@ async function searchApi(ctx) {
     throw err;
   }
 
+  if (res.tooLarge) throw entryError(ENTRY_CODES.BAD_RESPONSE, `DeepSeek ${bodyTooLargeMessage(res.limit)}`);
   const parsed = parseJson(res.text);
   if (!isPlainObject(parsed) || !Array.isArray(parsed.results)) {
     throw entryError(ENTRY_CODES.BAD_RESPONSE, `${MESSAGES[ENTRY_CODES.BAD_RESPONSE]}：缺少 results 数组`);
@@ -326,6 +328,7 @@ async function searchAgentic(ctx) {
   }
 
   const bad = (why) => entryError(ENTRY_CODES.BAD_RESPONSE, `${MESSAGES[ENTRY_CODES.BAD_RESPONSE]}：${why}`);
+  if (res.tooLarge) throw entryError(ENTRY_CODES.BAD_RESPONSE, `DeepSeek ${bodyTooLargeMessage(res.limit)}`);
   const parsed = parseJson(res.text);
   if (!isPlainObject(parsed) || !Array.isArray(parsed.content)) throw bad("缺少 content 数组");
 
