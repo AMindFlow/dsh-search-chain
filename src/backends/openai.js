@@ -176,6 +176,11 @@ function buildBody(model, query) {
  */
 async function roundTrip(ctx, clock, payload) {
   const { fetch, key, budgetMs, signal } = ctx;
+  // FB-005 程序违约暴露：注入的 fetch 缺失属于装配错误，不是网络故障，因此不得落入下方 catch
+  // 被吞成 ENTRY_NETWORK；此处在发出任何请求、挂接计时器之前直接抛出无码错误。
+  if (typeof fetch !== "function") {
+    throw programError("ctx.fetch 必须是函数（程序违约，非网络故障）");
+  }
   const ac = new AbortController();
   let cause = null; // "host" | "budget"
   const onHostAbort = () => {
@@ -267,6 +272,20 @@ function hasRefusal(output) {
 }
 
 /**
+ * 取一条 url_citation 注释的来源字段承载对象。
+ * 官方 Responses 形状为扁平（url/title 与 type 平级，见 developers.openai.com 工具指南「Output and citations」），
+ * 故优先读扁平字段。兼容分支：历史 Chat-Completions 形状容错，官方 Responses 形状以扁平为准，
+ * 仅当扁平 url 缺失或无效而嵌套 annotation.url_citation.url 存在时才使用嵌套对象。两形都缺 → null。
+ */
+function citationOf(annotation) {
+  if (validHttpUrl(annotation.url) !== null) return annotation;
+  if (isObj(annotation.url_citation) && validHttpUrl(annotation.url_citation.url) !== null) {
+    return annotation.url_citation;
+  }
+  return null;
+}
+
+/**
  * OAI-002：按 output → 消息 content → 注释 的数组顺序，从 output_text 的 url_citation 提取来源。
  * 工具项与正文裸链接不产生来源；同一 URL 字符串只保留首现（仅有效来源参与去重）。
  */
@@ -279,8 +298,9 @@ function collectSources(output) {
       if (!isObj(part) || part.type !== "output_text" || !Array.isArray(part.annotations)) continue;
       const snippet = firstParagraph(part.text);
       for (const annotation of part.annotations) {
-        if (!isObj(annotation) || annotation.type !== "url_citation" || !isObj(annotation.url_citation)) continue;
-        const citation = annotation.url_citation;
+        if (!isObj(annotation) || annotation.type !== "url_citation") continue;
+        const citation = citationOf(annotation);
+        if (citation === null) continue;
         const url = validHttpUrl(citation.url);
         if (url === null || seen.has(url)) continue;
         seen.add(url);
