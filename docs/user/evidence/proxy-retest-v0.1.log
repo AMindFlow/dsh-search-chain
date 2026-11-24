@@ -1,0 +1,9 @@
+proxy-retest-v0.1 · node v26.13.0 · 2026-11-24T20:07:59.517Z
+pac 服务器命中: [["/proxy.pac",1],["/big.pac",2]]
+echo 代理端口连接数（全程）: 0
+PASS  A 固定代理条目 → attempts 记 ENTRY_PROXY（reason 提示不会自动改走直连）、代理端口零连接、终态 CHAIN_UPSTREAM_FAILURES —— reason="代理失败：请检查条目「A代理」的 proxy 配置（该条目不会自动改走直连）" / log="warn: 条目「A代理」(a-proxy)经代理 127.0.0.1:55098 请求失败（PROXY_UNSUPPORTED）"
+PASS  B PAC→PROXY：PAC 直连下载恰 1 次，命中代理后 ENTRY_PROXY（PAC 代理 host:port + PROXY_UNSUPPORTED 入日志）、零出站 —— log="warn: 条目「B PAC」(b-pac)经PAC 代理 127.0.0.1:55098 请求失败（PROXY_UNSUPPORTED）"
+PASS  C PAC 超 2MiB → 条目 attempts 记 PAC_FETCH_FAILED（原码保留、链继续） —— reason="PAC 获取失败（PAC_FETCH_FAILED）：请检查条目「C PAC」的配置项（条目执行期失败，链已降级到下一条目，原码保留于 attempts）"
+PASS  C' 传输层原始原因含上限 2097152 字节与「已中止下载」 —— message="条目「C」(c)PAC 脚本超出大小上限（2097152 字节），已中止下载：127.0.0.1:55097"
+PASS  D 接缝：PAC 下载 route={direct,pac-download}；SOCKS5 跳过、DIRECT 命中 pacIndex=1；目标 route={direct,viaPac:true}
+共 5 项断言组全部通过

@@ -18,13 +18,21 @@
 
 ## 2. 启用
 
-1. 在插件设置中启用 dsh-search-chain。
+1. 在插件设置中启用 dsh-search-chain。启用后「设置」页出现「网页搜索链」区域（v0.1 只读指示器，见第 3.1 节）。
 2. 若要让搜索使用本插件，把 `web.searchProvider` 设为 `search-chain`（依据 `docs/specs/draft/dsh-integration.md` 的 DSH-003；本包代码不修改 `web` 行）。
 3. 新开一个会话，发起一次搜索验证。
 
 回退：把 `web.searchProvider` 改回原值即可，已安装的其他搜索插件和配置不受影响。手工编辑 profile 配置前请先备份。
 
 ## 3. 配置条目
+
+### 3.1 编辑入口（v0.1 实态）
+
+启用本插件后，DSH 的「设置」页会出现「网页搜索链」区域，但 v0.1 中它是**只读指示器**：只显示标题和一句指引（"编辑请使用 设置→插件→dsh-search-chain 配置区"）。该区域由插件的 client 产物（`src/client-entry.js`）经宿主模块装载器自注册，不经宿主配置写入面。
+
+**所有条目编辑都在「设置 → 插件 → dsh-search-chain」的配置区进行**，直接编辑下面描述的 JSON 对象（`entries` 数组等）。带列表、开关、拖拽排序和 API key 输入框的「网页搜索链」设置面板是 v0.2 的内容：它的数据层已实现并有测试（`src/client.js`、`src/settings/panel.js`），但 v0.1 的入口没有挂载这个编辑界面。
+
+### 3.2 配置形状
 
 插件的配置对象由三个顶层键组成：
 
@@ -43,10 +51,10 @@
 | `name` | 否 | 显示名，字符串。缺省时等于 `type`。 |
 | `enabled` | 否 | 布尔。缺省 `true`。为 `false` 时该条目不解析凭据、不出站，但保留在列表中的位置。 |
 | `credentialRef` | 否 | 凭据引用名（字符串），首尾空白会被去掉。空串视为未设置。见第 4 节。 |
-| `proxy` | 否 | 省略或空白表示直连；`"http://..."` 或 `"https://..."` 表示代理 URL；`{ "pac": "http(s)://..." }` 表示 PAC 文件。其他形状为 `CONFIG_INVALID`。**当前版本的代理限制见第 7 节。** |
+| `proxy` | 否 | 省略或空白表示直连；`"http://..."` 或 `"https://..."` 表示 HTTP(S) 代理 URL；`{ "pac": "http(s)://..." }` 表示 PAC 文件地址（查询参数会原样保留）。其他形状为 `CONFIG_INVALID`（`src/config.js` 的 `normalizeProxy`、`src/transport.js` 的 `classifyProxy`）。**代理与 PAC 在当前版本实际能走到哪一步，见第 7 节。** |
 | 其他标量参数 | 否 | 字符串、数字、布尔值按原样保留，供对应适配器读取。对象和数组会被丢弃。 |
 
-键名为 `apiKey`、`api_key`、`key`、`secret`、`token`、`password`、`auth`、`authorization`（大小写不敏感）的字段在读取时被丢弃，**既不会被使用，也不会迁移到凭据服务**。因此如果旧配置里有这类明文字段，需要在设置中重新输入 key（见 [升级指南](upgrade.md)）。保存后请检查配置中是否仍含这些字段；面板保存会保留草稿中的原字段，若仍在，请手动删除。
+键名为 `apiKey`、`api_key`、`key`、`secret`、`token`、`password`、`auth`、`authorization`（大小写不敏感）的字段在读取时被丢弃，**既不会被使用，也不会迁移到凭据服务，也不会从已保存的配置中自动清除**。因此如果旧配置里有这类明文字段，需要在配置区重建时自行删掉这些字段，并按第 4 节另行补 key（见 [升级指南](upgrade.md)）。
 
 配置形状示意（不是 profile 文件的原文）：
 
@@ -63,11 +71,11 @@
 }
 ```
 
-设置面板的列表状态只表示配置是否完整，不代表 key 有效：
+v0.1 没有列表界面，条目是否配置完整请按 `entries` 数组自查（v0.2 面板将用同样的三态展示，见 `src/settings/catalog.js` 的 `entryStatus`）：
 
 - **已关闭**：`enabled` 为 `false`。
-- **缺凭据引用**：启用的条目需要 key，但没有 `credentialRef`。Bing RSS 免 key，不会显示这个状态。
-- **就绪**：启用且配置完整。Key 是否有效要在一次真实搜索中验证。
+- **缺凭据引用**：启用的条目需要 key，但没有 `credentialRef`。Bing RSS 免 key，不算缺。
+- **就绪**：启用且配置完整。Key 是否有效要在一次真实搜索中验证；这三态都只反映本地配置，不验证 key 有效性。
 
 ## 4. 凭据
 
@@ -90,17 +98,20 @@
 1. **条目引用**：条目的 `credentialRef`，通过宿主凭据服务 `resolve(ref)` 读取，取返回对象的 `value`。
 2. **进程环境变量**：上表中对应的环境变量。
 3. **DSH 托管引用**：以该环境变量名作为引用名，执行宿主凭据服务的 `resolve(环境变量名)`。
-4. **旧版 YAML 顶层项**（仅 `openai`、`tavily`、`deepseek`）：代码中保留了这一层，但**当前生产装配没有传入旧版 YAML，因此本版不生效**。
+4. **旧版 YAML 顶层项**（仅 `openai`、`tavily`、`deepseek`）：链侧保留了这一层的代码（`src/search.js` 的 `resolveKey`），但生产装配没有传入旧版 YAML 数据源，**v0.1 不自动导入旧 YAML**。旧 YAML 里的 key 请在配置区手动重建：写入条目引用、环境变量或托管引用。TODO（发布验收）：见 [Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)。
 
 纯空白的值视为未提供。宿主凭据服务返回 `undefined` 时同样视为未提供。以上三层都没有 key 的条目会记为 `SKIPPED_NO_KEY` 并跳过，不发出请求。
 
-注意：条目引用的优先级高于环境变量。如果引用指向的是旧 key，即使环境变量是正确的，也不会被使用。解决办法是在设置中重新保存该条目的 key。
+注意：条目引用的优先级高于环境变量。如果引用指向的是旧 key，即使环境变量是正确的，也不会被使用。解决办法是在配置区把 `credentialRef` 改指向含新 key 的引用（v0.2 面板则直接重新保存该条目的 key）。
 
-### 4.3 在设置面板中输入 key
+### 4.3 v0.1 如何提供 key
 
-设置面板的 API key 输入框是只写的：输入后不会再显示，保存时 key 写入宿主凭据服务，配置中只保留引用。每次保存带 key 的条目都会生成新的 `credentialRef`，旧引用不会被删除。移除条目不会删除宿主凭据服务中的 key，因为同一个 key 可能被其他条目或插件使用。
+v0.1 的编辑面是插件配置区（第 3.1 节），**没有 API key 输入框**。可用方式：
 
-要使用第 4.2 节的第 3 层（托管引用），需要在宿主凭据服务中以环境变量名（例如 `DEEPSEEK_API_KEY`）作为引用名保存 key。本仓库没有提供这一步的界面，宿主中的具体入口需要实机确认。
+- **进程环境变量**（第 4.2 节第 2 层）：让 DSH 进程环境带有表中对应的变量，例如 `TAVILY_API_KEY`。
+- **条目引用 / 托管引用**（第 1、3 层）：在配置区把条目的 `credentialRef` 写成宿主凭据服务中已存在的引用名；或以环境变量名作为引用名在宿主凭据服务中保存 key。本仓库没有提供写凭据的界面，宿主中的具体入口需要实机确认。
+
+带 API key 输入框的面板编辑是 v0.2 的内容。其数据层已冻结的语义（供了解）：输入框只写不读，保存时 key 经宿主凭据服务落为新引用、配置中只保留引用；每次带 key 保存生成新 `credentialRef`，旧引用不删除；移除条目也不会删除宿主凭据服务中的 key，因为同一个 key 可能被其他条目或插件复用。
 
 ## 5. DeepSeek 官方分支
 
@@ -111,7 +122,7 @@
 
 官方分支使用宿主 `web-search-deepseek` 配置行中的 key、`baseURL` 等设置，本插件不读取也不修改这些值。如果该行未挂载或宿主组件无法加载，搜索返回 `WEB_PROVIDER_UNAVAILABLE`，**不会回退到条目链**。这种情况下可在宿主插件设置中启用该行，或把 `useOfficialDeepSeekSearch` 设为 `false` 改用条目链。
 
-设置面板中的开关文案说明：官方搜索不另按次收费，模型用量仍按 token 计费。
+v0.2 面板将在开关旁显示如下文案（数据层已定稿）：官方搜索仅对 DeepSeek 官方 API 会话生效、关闭后相关会话改用工具链；官方搜索不另按次收费，模型用量仍按 token 计费。
 
 ## 6. 搜索如何降级，以及 `timeoutMs`
 
@@ -129,11 +140,16 @@
 
 ## 7. 已知限制（当前版本）
 
-以下限制来自 `main` 的现行实现，发布前需要实机确认：
+以下每条都对照 `main` 提交 `05c97ac` 的实现核对过：
 
-- **代理与 PAC 当前不可用于出站**。本包不引入代理分发器，凡需要经代理出站的请求（包括 `proxy` 为代理 URL，或 PAC 结果为代理）都会以 `ENTRY_PROXY` 失败，且不发出请求，也不会自动改走直连。只有直连条目，以及 PAC 返回 `DIRECT` 的请求（代码路径，未在实机验证），能正常出站。
-- **设置面板的挂载未接线**。面板的数据逻辑已实现并有测试，但当前的插件入口（`src/index.js`）没有调用设置区域的挂载函数。宿主“设置”页中的“网页搜索链”区域是否出现，需要实机核对。在此之前，条目配置以上述形状为准。
-- **旧版 YAML 凭据层不生效**（见第 4.2 节）。
+- **代理配置可填、PAC 链路真实执行，但"经代理出站"本身在 v0.1 不可用**。拆开说：
+  - 配置与解析全部生效：`proxy` 三形态校验（`src/config.js` 的 `normalizeProxy`）、代理分类（`src/transport.js` 的 `classifyProxy`，`http:`/`https:` 为固定代理）已合并。
+  - PAC 会真实执行：首次出站前以**直连** GET 下载 PAC（查询参数原样保留，响应上限 2 MiB），在隔离 `vm` 中求值 `FindProxyForURL`，按顺序选第一个受支持指令（`DIRECT`、`PROXY host:port`、`HTTPS host:port`；`SOCKS` 等被跳过）。失败按条目级降级，原码进 `attempts`（`PAC_FETCH_FAILED` / `PAC_EVAL_FAILED` / `PAC_ROUTE_FAILED`）。
+  - 但生产装配（`src/index.js` 的 `productionFetch`）零依赖、未接代理分发器：**凡最终需要经代理出站的路由（固定代理 URL，或 PAC 命中 `PROXY`/`HTTPS` 指令）都显式失败、零出站、绝不静默改走直连**；条目记 `ENTRY_PROXY` 并降级到下一条目。只有直连条目、以及 PAC 返回 `DIRECT` 的请求能正常出站。
+  - 本节结论有本地 headless 复测支撑（只连回环地址，无真实供应商）：fixture [evidence/proxy-retest-v0.1.mjs](evidence/proxy-retest-v0.1.mjs)，输出 [evidence/proxy-retest-v0.1.log](evidence/proxy-retest-v0.1.log)。复测与上述描述一致，未发现额外缺陷；代理分发器接入前的版本，代理条目请停用或改直连。
+- **响应体上限 2 MiB**（`src/constants.js` 的 `MAX_RESPONSE_BYTES`，PAC 与六家供应商正文共用）：超限立即停止读取。供应商 2xx 正文超限按异常响应记 `ENTRY_BAD_RESPONSE`（原因含尺寸线索），PAC 超限记 `PAC_FETCH_FAILED`。
+- **设置页的「网页搜索链」区域是只读指示器**；编辑一律走「设置 → 插件 → dsh-search-chain」配置区，面板编辑 UI 是 v0.2（见第 3.1 节）。
+- **v0.1 不自动导入旧版 YAML 凭据**（见第 4.2 节；TODO 见 [Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)）。
 - **额度判定中的 `QUOTA_LIMITED` 待证认**。它在代码中作为额度证据码出现，但来源是第三方文档，尚未取得实机样本。Gemini 在 429 下按消息含 `quota` 判为额度的做法也是待复核的临时口径。详见 [排错指南](troubleshooting.md)。
 - 本页不包含真实供应商的实网验收结果。
 
