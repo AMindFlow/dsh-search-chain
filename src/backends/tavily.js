@@ -1,5 +1,11 @@
 // WP3 Tavily 适配器（seam A5：{ type, search(ctx) }）。
 //
+// 契约注记（修复轮 P1-1/P1-2/P2）：
+//   - 截断归链：适配器返回全部映射来源，不按 maxResults 本地切片；truncated 由 WP5 链层统一设置（FB-002）。
+//     maxResults 仍写入请求体（上游参数，封顶 20）。
+//   - 预算/取消覆盖正文读取：正文 text() 在 fetch+body 全程受合并信号约束（FB-003）。
+//   - key 先 trim 再判空与发送。
+//
 // 规格来源：
 //   docs/specs/draft/tavily.md           TAV-001 单查询与服务上限 / TAV-002 结果映射与正常空结果
 //   docs/specs/draft/fallback.md         FB-001 缺 key 零出站、每条目最多一次 / FB-002 绝对 HTTP(S) 与顺序 /
@@ -155,10 +161,41 @@ function makeEntryError(code, { status } = {}) {
 
 function makeHostCancelError() {
   const err = new Error("宿主取消了本次搜索：须终止，不得降级到后续条目（FB-001/FB-003）");
-  err.name = "HostCancelledError";
+  // 映射既有取消语义：与 fetch 中止同名（AbortError），便于链层与原生取消一致识别。
+  err.name = "AbortError";
   // [待办 P3] 宿主取消的错误形状规格未定。oracle 推断：不得携带可降级 ENTRY_* 码
   // （否则链会当作可降级失败继续下一条）。此错误因此刻意不设 .code（属性不存在）。
   return err;
+}
+
+/**
+ * 让 promise 在信号中止时以 AbortError 拒绝（正文读取可能不响应 init.signal 的实现也能被预算/取消终止）。
+ * promise 迟到的结果被忽略；监听在任一结局后移除。
+ */
+function rejectOnAbort(promise, signal) {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      const err = new Error("Tavily 正文读取已中止");
+      err.name = "AbortError";
+      reject(err);
+    };
+    if (signal.aborted) {
+      onAbort();
+      promise.catch(() => {});
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 // ─── 请求成形（TAV-001）────────────────────────────────────────────────────
@@ -245,7 +282,9 @@ async function searchTavily(ctx) {
       : null;
 
   // FB-001/CFG-002：缺 key（undefined/非字符串/纯空白）条目由链跳过，适配器不得发无鉴权请求。
-  if (typeof key !== "string" || key.trim().length === 0) {
+  // key 先 trim 再判空与发送：首尾空白不进入 Bearer 头（CFG-003 之外的卫生项，见交付记录）。
+  const apiKey = typeof key === "string" ? key.trim() : "";
+  if (apiKey.length === 0) {
     // [待办 P4] 缺 key 的码规格未定（CREDENTIALS 或链层 SKIPPED_NO_KEY）；待办文件选 CREDENTIALS。
     logWarn?.("tavily 条目缺 key，零出站", { entryId: entry && entry.id });
     throw makeEntryError(ENTRY_CODES.CREDENTIALS);
@@ -286,7 +325,7 @@ async function searchTavily(ctx) {
     response = await fetch(TAVILY_ENDPOINT, {
       method: "POST", // TAV-001
       headers: {
-        authorization: `Bearer ${key}`, // TAV-001：Bearer 鉴权（key 只进鉴权头，CFG-003）
+        authorization: `Bearer ${apiKey}`, // TAV-001：Bearer 鉴权（key 只进鉴权头，CFG-003）
         "content-type": "application/json",
       },
       body: JSON.stringify(buildRequestBody(query, maxResults)),
@@ -306,10 +345,23 @@ async function searchTavily(ctx) {
     logWarn?.("tavily 请求失败（传输层）", { entryId: entry && entry.id, code });
     throw makeEntryError(code);
   }
-  cleanup();
-
+  // 正文读取同样处于预算与宿主取消之下（FB-003）：cleanup 推迟到 text() 完成或合并信号中止之后，
+  // 正文挂起时预算到期 → TIMEOUT；宿主取消 → 无码 AbortError 上抛（不降级）。
   // 响应体只读一次；原始文本永不进入错误/日志（CFG-003），仅用于解析与额度标记检测。
-  const text = await response.text().catch(() => "");
+  let text = "";
+  try {
+    text = await rejectOnAbort(response.text(), merged.signal);
+  } catch {
+    if (hostCancelled) throw makeHostCancelError();
+    if (budgetExpired) {
+      logWarn?.("tavily 单项预算到期（正文读取）", { entryId: entry && entry.id });
+      throw makeEntryError(ENTRY_CODES.TIMEOUT);
+    }
+    // 非中止类读取失败：沿用既有语义，视为空体（下游按 ok/解析规则判定）。
+    text = "";
+  } finally {
+    cleanup();
+  }
 
   if (!response.ok) {
     const code = await classifyFailure({
@@ -340,16 +392,13 @@ async function searchTavily(ctx) {
     throw makeEntryError(ENTRY_CODES.BAD_RESPONSE, { status: response.status });
   }
 
-  // [待办 P1] 截断责任规格未定（FB-002 写在结果层）；oracle 推断适配器输出 ≤ maxResults。
-  // truncated 标记由链层按 FB-002 设置；本适配器按 A5 只返回 sources（不返回 truncated）。
-  const limited =
-    typeof maxResults === "number" && Number.isFinite(maxResults) && maxResults >= 0
-      ? sources.slice(0, Math.floor(maxResults))
-      : sources;
+  // 截断归链（协调裁决 P1-2，FB-002；与 WP8 agentic「截断归链」对齐）：
+  // 适配器不按 maxResults 本地切片，返回全部映射来源；截断与 truncated 置位由 WP5 链层统一执行。
+  // maxResults 仍入请求体（TAV-001 上游参数），仅不在本地裁剪。
 
   // [待办 P2] Tavily 为纯来源适配器：answer/供应商生成正文不得作为通用 content（FB-002），
   // 故结果永不带 content 字段（TAV-001 亦固定 include_answer:false）。
-  return { sources: limited };
+  return { sources };
 }
 
 /** A5 后端形状：{ type, search(ctx) }。type 与 CAT-001 目录 id 一致。 */
