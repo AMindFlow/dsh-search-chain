@@ -104,3 +104,68 @@ test("WP7 oracle：resolve 返回 undefined 时条目按 SKIPPED_NO_KEY 跳过�
     "跳过前恰 resolve 两次：ref 层 + 第三层裸 env 名 resolve(envName)（undefined = 该层缺失）",
   );
 });
+
+// ─── WP7 凭据轮补口（审阅 P1-1/P1-2）：链级 trim 与第三层命中覆盖 ──────────────────────
+// P1-1 链级 trim：CFG-002「纯空白等同于未提供」的同句语义要求可信层值的首尾空白不参与鉴权——
+// 链下发给适配器的 ctx.key 必须是 trim 后值，与 config.js resolveEntryApiKey（nonblank 先 trim）口径一致；
+// 粘贴 key 常带尾随换行，空白泄漏即出站鉴权头形状错误。src/search.js resolveKey 现返回原值未 trim
+// → 本组两条断言应红（oracle 纪律同本文件头：修正 src 前不得弱化或改 skip）。
+test("WP7 oracle：ref 层 seed 带尾随换行，链下发 ctx.key 为 trim 后值（CFG-002 链级 trim）", async (t) => {
+  const K = SYNTHETIC_KEY("trim-ref");
+  const h = await chainHarness(t, "WP7 oracle", {
+    entries: [keyedEntry("e-a", "openai", "条目甲")],
+    // 粘贴场景：托管侧存有尾随换行的原值，链须在下发前 trim。
+    credentialRefs: { [refOf("e-a")]: `${K}\n` },
+    steps: { "e-a": [stepSuccess({ sources: makeSources(1, "https://synthetic-a.invalid/doc") })] },
+  });
+  await h.runToValue(h.search({ query: DEFAULT_QUERY }));
+  assert.equal(h.executionCount("e-a"), 1, "ref 层命中即应执行");
+  assert.equal(
+    h.ctxFor("e-a").key,
+    K,
+    "链级 trim：ctx.key = trim 后值（与 config.resolveEntryApiKey 的 nonblank 口径一致，首尾空白不得进鉴权头）",
+  );
+});
+
+test("WP7 oracle：第三层托管 refs 带首尾空白换行，链下发 ctx.key 为 trim 后值（CFG-002 链级 trim）", async (t) => {
+  const K = SYNTHETIC_KEY("trim-tier3");
+  const h = await chainHarness(t, "WP7 oracle", {
+    entries: [makeEntry({ id: "e-b", type: "tavily", name: "条目乙", enabled: true })], // 无 credentialRef
+    env: { SOME_UNRELATED: "x" }, // env 层不命中（无 TAVILY_API_KEY）
+    credentialRefs: { TAVILY_API_KEY: `  ${K}\r\n` }, // 第三层：裸 env 名 seed 带首尾空白与换行
+    steps: { "e-b": [stepSuccess({ sources: makeSources(1, "https://synthetic-b.invalid/doc") })] },
+  });
+  await h.runToValue(h.search({ query: DEFAULT_QUERY }));
+  assert.equal(h.executionCount("e-b"), 1, "第三层命中即应执行");
+  assert.equal(
+    h.ctxFor("e-b").key,
+    K,
+    "链级 trim：第三层命中值同样须 trim 后下发（ref/env/托管各层同一口径）",
+  );
+});
+
+// P1-2 第三层链级命中覆盖：既有链级用例的 key 均来自 ref 层，「条目无 ref、env 不命中、仅第三层命中」
+// 这一裁决主路径无链级断言——删掉 search.js 的 resolve(envName) 第三层也全绿（覆盖洞）。
+// 本条即补该洞：命中值必须原样到达 ctx.key，各层 resolve 轨迹一并钉死。
+test("WP7 oracle：无 ref 且 env 不命中，第三层裸 env 名托管 refs 命中，ctx.key 即命中值（CFG-002 裁决）", async (t) => {
+  const K_HOSTED = SYNTHETIC_KEY("tier3-hit");
+  const h = await chainHarness(t, "WP7 oracle", {
+    entries: [makeEntry({ id: "e-c", type: "openai", name: "条目丙", enabled: true })], // 无 credentialRef
+    env: {}, // env 层不命中
+    credentialRefs: { OPENAI_API_KEY: K_HOSTED }, // 第三层：托管 refs 以裸 env 名为 ref（裁决：resolve(envName)）
+    steps: { "e-c": [stepSuccess({ sources: makeSources(2, "https://synthetic-c.invalid/doc") })] },
+  });
+  await h.runToValue(h.search({ query: DEFAULT_QUERY }));
+  assert.equal(
+    h.executionCount("e-c"),
+    1,
+    "第三层命中不得按缺 key 跳过（删除第三层则本条红——覆盖洞补齐目标）",
+  );
+  assert.equal(h.ctxFor("e-c").key, K_HOSTED, "ctx.key = resolve(OPENAI_API_KEY) 命中的 value（CFG-002 第三层裁决）");
+  assert.deepEqual(
+    h.credentials.resolveCalls,
+    ["OPENAI_API_KEY"],
+    "无 ref 不 resolve ref；env 层不经 resolve；全程唯一一次 resolve 是第三层裸 env 名",
+  );
+  assert.equal(h.credentials.recordCalls.length, 0, "裁决：解析不得经记录空间（readRecord 已移出解析链）");
+});
