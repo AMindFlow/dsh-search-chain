@@ -66,6 +66,9 @@ const SECRET_FIELD_NAMES = Object.freeze([
 
 const KNOWN_ENTRY_FIELDS = Object.freeze(["id", "type", "name", "enabled", "credentialRef", "proxy"]);
 
+/** 本插件写入宿主配置的键：与 normalizeConfig 输出键集一致。写入时先从宿主当前 raw 删除这些键再并入归一化值，宿主负载里的其余（未知）键保留。 */
+const OWN_CONFIG_KEYS = Object.freeze(["entries", "useOfficialDeepSeekSearch", "timeoutMs"]);
+
 // ── 错误 ─────────────────────────────────────────────────────────────────────
 
 /** 配置错误。message 只含可操作原因与条目名，绝不含 key、代理认证、原始报错体（CFG-003）。 */
@@ -233,14 +236,20 @@ export async function readConfig(settings) {
 
 /**
  * CFG-004：经宿主配置编辑器保存（唯一入口 configEditor(ctx.fiber.entry)）。
+ * 宿主 edit 第二参是变异函数 (raw, inherited) => newRawLayer：返回整体新 raw 对象并落 override 层。
+ * 本插件只替换自有键（OWN_CONFIG_KEYS，即 normalizeConfig 输出键集），宿主负载里的未知键原样保留。
  * 非法结构在保存前抛 CONFIG_INVALID；宿主拒绝保存则抛 CONFIG_SAVE_FAILED 且不含原始负载。
- * @param {{ editor: { edit: (target: unknown, change: Function) => Promise<unknown> }, entry: unknown }} settings
+ * @param {{ editor: { edit: (target: unknown, change: (raw: unknown, inherited: unknown) => unknown) => Promise<unknown> }, entry: unknown }} settings
  * @param {unknown} next
  */
 export async function writeConfig(settings, next) {
   const normalized = normalizeConfig(next);
   try {
-    await settings.editor.edit(settings.entry, () => cloneJson(normalized, "config"));
+    await settings.editor.edit(settings.entry, (raw) => {
+      const merged = { ...(raw ?? {}) };
+      for (const k of OWN_CONFIG_KEYS) delete merged[k]; // 本插件自有键：先删后写
+      return { ...merged, ...normalized };
+    });
   } catch {
     // 不附带宿主错误原文：宿主报错可能回显负载（含明文 key），CFG-003。
     throw new ConfigError(
