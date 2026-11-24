@@ -204,9 +204,9 @@ export async function resolveEntryApiKey(entry, { env, credentials, legacyYaml }
   if (!envName) return null;
 
   if (entry.credentialRef) {
-    let value;
+    let hit;
     try {
-      value = await credentials.resolve(entry.credentialRef);
+      hit = await credentials.resolve(entry.credentialRef);
     } catch (cause) {
       throw new ConfigError(
         CONFIG_CODES.CREDENTIALS_UNREADABLE,
@@ -214,7 +214,7 @@ export async function resolveEntryApiKey(entry, { env, credentials, legacyYaml }
         { cause },
       );
     }
-    const key = nonblank(value);
+    const key = nonblank(hit?.value);
     if (key) return { key };
   }
 
@@ -223,14 +223,14 @@ export async function resolveEntryApiKey(entry, { env, credentials, legacyYaml }
     if (key) return { key };
   }
 
-  let record;
+  let hosted;
   try {
-    record = await credentials.readRecord(envName);
+    hosted = await credentials.resolve(envName);
   } catch (cause) {
     throw new ConfigError(CONFIG_CODES.CREDENTIALS_UNREADABLE, `DSH 托管凭据 ${envName} 无法读取`, { cause });
   }
-  const recordKey = nonblank(record?.value);
-  if (recordKey) return { key: recordKey };
+  const hostedKey = nonblank(hosted?.value);
+  if (hostedKey) return { key: hostedKey };
 
   const supplier = supplierOfToolType(entry.type);
   if (legacyYaml && LEGACY_YAML_SUPPLIERS.includes(supplier)) {

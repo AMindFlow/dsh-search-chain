@@ -417,15 +417,17 @@ export function createSearchChain(deps) {
   async function resolveKey(entry, envName) {
     const ref = typeof entry.credentialRef === "string" ? entry.credentialRef.trim() : "";
     if (ref) {
-      const value = await credentials.resolve(ref);
+      const hit = await credentials.resolve(ref);
+      const value = hit?.value;
       if (typeof value === "string" && value.trim() !== "") return value;
     }
     if (Object.hasOwn(env, envName)) {
       const value = env[envName];
       if (typeof value === "string" && value.trim() !== "") return value;
     }
-    const record = await credentials.readRecord(envName);
-    if (record && typeof record.value === "string" && record.value.trim() !== "") return record.value;
+    const hosted = await credentials.resolve(envName);
+    const hostedValue = hosted?.value;
+    if (typeof hostedValue === "string" && hostedValue.trim() !== "") return hostedValue;
     if (legacyYaml) {
       const supplier = supplierOfToolType(entry.type);
       if (LEGACY_YAML_SUPPLIERS.includes(supplier)) {
