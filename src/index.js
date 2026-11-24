@@ -39,14 +39,81 @@ export function liveOwnConfig(ctx) {
   return { ...row.inherited, ...row.override };
 }
 
-/** 行配置声明（JSON Schema 形态；宿主 Config 投影校验的实机形态见 PR「未验证项」）。 */
-export const Config = {
+/**
+ * 行配置声明。
+ *
+ * 实机缺陷（0.2.2-rc.5，wp0-verify 首挂）：激活 search-chain 时失败，报
+ *   `runtime.Config["~standard"].validate is not a function`。
+ * 宿主 resolveConfig 原文（asar 实证）：
+ *   if (!runtime.Config) return config;
+ *   const result = runtime.Config["~standard"].validate(config);
+ *   if ("then" in result) throw new TypeError("Async config validation is not supported");
+ *   if (result.issues) throw new ValidationError(result.issues);
+ *   else return result.value
+ * 即宿主要求 Config 实现 Standard Schema 字面（`~standard.validate`，同步）。宿主自家插件使用的
+ * @deepseek-ai/schemastery（zod 形状）在注册表版本（3.x）与 bundle 版本（0.2.x）间不对齐，且跨副本
+ * volatile 标记不确定，因此这里零依赖手写 Standard Schema 字面。
+ *
+ * 分界：validate 只做形状钉存（plain object、已知键、类型与正整数），不深校验 entries 每项；
+ * 深校验归 config.js normalizeConfig。validate 纯检查，原样返回 { value }，缺省字段不补值。
+ * 同步：绝不返回 thenable。
+ *
+ * toJSON() 仅保留 JSON Schema 投影，供 WP12 设置面板做投影（volatileForm / schema.toJSON()）。
+ * 宿主表单与 role 标记需要 schemastery 面；WP12 决策是否精确 pin @deepseek-ai/schemastery@3.19.0 并核对
+ * 宿主实际解析版本。本 Config 本身不提供宿主表单标记。
+ */
+const CONFIG_KEYS = ["entries", "useOfficialDeepSeekSearch", "timeoutMs"];
+
+const CONFIG_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
     entries: { type: "array", description: "有序搜索条目（CFG-004）" },
     useOfficialDeepSeekSearch: { type: "boolean", default: true, description: "SET-005 官方 DeepSeek 搜索开关" },
     timeoutMs: { type: "integer", minimum: 1, default: 25000, description: "FB-003 总预算（毫秒）" },
+  },
+};
+
+function isPlainConfigObject(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+export const Config = {
+  "~standard": {
+    version: 1,
+    vendor: "dsh-search-chain",
+    validate(value) {
+      if (!isPlainConfigObject(value)) {
+        return { issues: [{ message: "配置必须是对象" }] };
+      }
+      const issues = [];
+      for (const key of Object.keys(value)) {
+        if (!CONFIG_KEYS.includes(key)) issues.push({ message: `未知配置项：${key}`, path: [key] });
+      }
+      if (value.entries !== undefined) {
+        if (!Array.isArray(value.entries)) {
+          issues.push({ message: "entries 必须是数组", path: ["entries"] });
+        } else {
+          value.entries.forEach((entry, i) => {
+            if (!isPlainConfigObject(entry)) issues.push({ message: "entries 每项必须是对象", path: ["entries", i] });
+          });
+        }
+      }
+      if (value.useOfficialDeepSeekSearch !== undefined && typeof value.useOfficialDeepSeekSearch !== "boolean") {
+        issues.push({ message: "useOfficialDeepSeekSearch 必须是布尔值", path: ["useOfficialDeepSeekSearch"] });
+      }
+      if (
+        value.timeoutMs !== undefined &&
+        !(Number.isSafeInteger(value.timeoutMs) && value.timeoutMs > 0)
+      ) {
+        issues.push({ message: "timeoutMs 必须是正整数毫秒", path: ["timeoutMs"] });
+      }
+      if (issues.length > 0) return { issues };
+      return { value };
+    },
+  },
+  toJSON() {
+    return CONFIG_JSON_SCHEMA;
   },
 };
 
