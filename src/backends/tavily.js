@@ -21,18 +21,10 @@
 //（TAVILY_URL / TAVILY_MAX_RESULTS_CAP）保持同值；改动任一值必须在同一 PR 同步 test/ 对应文件（GitHub Flow 审阅）。
 // ─────────────────────────────────────────────────────────────────────────
 
-/** FB-005 条目级失败分类（与 test/helpers/contract.js ENTRY_CODES 同值；同步义务见上）。 */
-export const ENTRY_CODES = Object.freeze({
-  CREDENTIALS: "ENTRY_CREDENTIALS",
-  QUOTA: "ENTRY_QUOTA",
-  RATE_LIMITED: "ENTRY_RATE_LIMITED",
-  PROXY: "ENTRY_PROXY",
-  NETWORK: "ENTRY_NETWORK",
-  CHANNEL_LIMIT: "ENTRY_CHANNEL_LIMIT",
-  TIMEOUT: "ENTRY_TIMEOUT",
-  BAD_RESPONSE: "ENTRY_BAD_RESPONSE",
-  CONTENT_POLICY: "ENTRY_CONTENT_POLICY",
-});
+// P1-3：ENTRY_CODES 单一权威为 src/constants.js，本文件不再导出镜像（删除第二权威）。
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
 
 const ENTRY_CODE_VALUES = Object.freeze(Object.values(ENTRY_CODES));
 
@@ -59,21 +51,31 @@ const SYSTEM_CLOCK = Object.freeze({
  * WP5 合入并稳定后，应删除本地兜底或由协调方裁决保留为防御层（见交付报告）。
  */
 const SEARCH_JS_URL = new URL("../search.js", import.meta.url).href;
-let generalClassifierState = "pending"; // "pending" | "ready" | "absent"
-let generalClassifierImpl = null;
+const SEARCH_MODULE_PATH = fileURLToPath(new URL("../search.js", import.meta.url));
+let generalClassifierPromise = null;
 
-async function generalClassifier() {
-  if (generalClassifierState === "pending") {
-    try {
-      const mod = await import(SEARCH_JS_URL);
-      generalClassifierImpl = typeof mod.classifyUpstreamFailure === "function" ? mod.classifyUpstreamFailure : null;
-      generalClassifierState = generalClassifierImpl ? "ready" : "absent";
-    } catch {
-      generalClassifierImpl = null; // WP5 尚未合入（模块不存在）或加载失败：走本地兜底
-      generalClassifierState = "absent";
-    }
+/**
+ * 解析通用分类函数（与 openai/exa/brave/gemini/deepseek 同口径，A4）：
+ * - ../search.js 不存在 → 本地兜底（resolve null）；
+ * - 文件存在但导入失败或未导出 classifyUpstreamFailure → 程序违约上抛（不带 ENTRY 码，不静默兜底）。
+ * #12-25：加载失败（rejected）不得永久缓存；失败即重置，下一次调用重新探测。
+ */
+function generalClassifier() {
+  if (!generalClassifierPromise) {
+    const pending = existsSync(SEARCH_MODULE_PATH)
+      ? import(SEARCH_JS_URL).then((mod) => {
+          if (typeof mod.classifyUpstreamFailure !== "function") {
+            throw new Error("程序违约：src/search.js 未导出 classifyUpstreamFailure（A4 违约）");
+          }
+          return mod.classifyUpstreamFailure;
+        })
+      : Promise.resolve(null);
+    generalClassifierPromise = pending;
+    pending.catch(() => {
+      if (generalClassifierPromise === pending) generalClassifierPromise = null;
+    });
   }
-  return generalClassifierImpl;
+  return generalClassifierPromise;
 }
 
 /**
@@ -100,8 +102,8 @@ function localGeneralCode({ status, upstreamCode, phase }) {
  *  1) Tavily/通道特例面（测试钉死、规格未交给通用分类器）本地裁决：
  *     432/433→额度（TAV-002 验收）、403→凭据或权限（FB-005「凭据或权限」）、
  *     400→通道参数限制（待办 P5 推断）；
- *  2) 通用部分委托 WP5 classifyUpstreamFailure（A4）；
- *  3) WP5 不可用时用本地兜底（localGeneralCode）。
+ *  2) 通用部分委托 WP5 classifyUpstreamFailure（A4）；分类器异常或返回非 ENTRY 码 → 程序违约上抛；
+ *  3) 仅 WP5 文件缺失时用本地兜底（localGeneralCode）。
  */
 async function classifyFailure(info) {
   const { status } = info;
@@ -109,15 +111,14 @@ async function classifyFailure(info) {
   if (status === 403) return ENTRY_CODES.CREDENTIALS;
   if (status === 400) return ENTRY_CODES.CHANNEL_LIMIT;
   const general = await generalClassifier();
-  if (general) {
-    try {
-      const code = general(info);
-      if (typeof code === "string" && ENTRY_CODE_VALUES.includes(code)) return code;
-    } catch {
-      // 通用分类器异常时退回本地兜底（防御；不吞错不重试，FB-001 每条目最多一次）
-    }
+  if (!general) return localGeneralCode(info);
+  // A4 输出校验（与 openai/exa/brave/gemini 四先例同构）：分类器自身异常原样传播（不 try/catch 吞掉）；
+  // 返回非 ENTRY 码（含 undefined）→ 无码程序违约上抛，不回退 localGeneralCode。
+  const code = general(info);
+  if (!ENTRY_CODE_VALUES.includes(code)) {
+    throw new Error(`程序违约：src/search.js 的 classifyUpstreamFailure 返回了未知分类码（A4 违约）：${String(code)}`);
   }
-  return localGeneralCode(info);
+  return code;
 }
 
 // ─── 错误构造（CFG-003 脱敏）──────────────────────────────────────────────
@@ -346,6 +347,8 @@ async function searchTavily(ctx) {
       logWarn?.("tavily 单项预算到期", { entryId: entry && entry.id });
       throw makeEntryError(ENTRY_CODES.TIMEOUT);
     }
+    // P1-1：已带码的错误原样上抛（ENTRY_PROXY/CONFIG 码/TRANSPORT_RELEASED），不压成 ENTRY_NETWORK。
+    if (carriesPassthroughCode(error)) throw error;
     // 传输层故障（无 HTTP 状态）→ FB-005 直连网络/代理。
     // 原始错误（可能含 key 回显，CFG-003）不读取、不挂 cause。
     const code = await classifyFailure({ phase: "transport" });

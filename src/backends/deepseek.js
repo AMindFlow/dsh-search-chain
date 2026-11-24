@@ -9,7 +9,9 @@
 //
 // 同步义务：本文件的 DSK_* 常量与 test/helpers/deepseek-oracle.js 中同名常量必须保持同值，
 // 改一处须同时改另一处。运行时不得 import test/ 下任何文件；ENTRY_CODES 取自本包镜像 ../constants.js。
-import { ENTRY_CODES } from "../constants.js";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
 
 // ─── 规格常量（DSK-001..DSK-004 字面值）──────────────────────────────────────
 const DSK_AGENTIC_ENDPOINT = "https://api.deepseek.com/anthropic/v1/messages";
@@ -62,12 +64,29 @@ function programError(message) {
 }
 
 // ─── FB-005 分类（优先复用 src/search.js 的共享映射，缺失时用本地镜像兜底）──────
+const SEARCH_MODULE_PATH = fileURLToPath(new URL("../search.js", import.meta.url));
 let sharedClassifier;
+/**
+ * 解析共享分类函数（与 openai/exa/brave/gemini 同口径，A4）：
+ * - ../search.js 不存在 → 本地镜像兜底（resolve null）；
+ * - 文件存在但导入失败或未导出 classifyUpstreamFailure → 程序违约上抛（不带 ENTRY 码，不静默兜底）。
+ * #12-25：加载失败（rejected）不得永久缓存；失败即重置，下一次调用重新探测。
+ */
 function loadSharedClassifier() {
-  sharedClassifier ??= import("../search.js").then(
-    (mod) => (typeof mod.classifyUpstreamFailure === "function" ? mod.classifyUpstreamFailure : null),
-    () => null,
-  );
+  if (!sharedClassifier) {
+    const pending = existsSync(SEARCH_MODULE_PATH)
+      ? import("../search.js").then((mod) => {
+          if (typeof mod.classifyUpstreamFailure !== "function") {
+            throw programError("src/search.js 未导出 classifyUpstreamFailure（A4 违约）");
+          }
+          return mod.classifyUpstreamFailure;
+        })
+      : Promise.resolve(null);
+    sharedClassifier = pending;
+    pending.catch(() => {
+      if (sharedClassifier === pending) sharedClassifier = undefined;
+    });
+  }
   return sharedClassifier;
 }
 
@@ -83,13 +102,19 @@ function localClassify({ status, upstreamCode, phase }) {
   return ENTRY_CODES.BAD_RESPONSE;
 }
 
+/**
+ * 共享分类器输出校验（A4，与 openai/exa/brave/gemini 四先例同构）：
+ * 返回值不在 ENTRY_CODES 内（含 undefined/非字符串）→ 无码程序违约上抛，消息嵌入 String(code)；
+ * 分类器自身抛异常 → 原样传播（不吞、不兜底）。仅共享分类器文件缺失时才用本地镜像。
+ */
 async function classifyFailure(info) {
   const shared = await loadSharedClassifier();
-  if (shared) {
-    const code = shared({ ...info });
-    if (typeof code === "string") return code;
+  if (!shared) return localClassify(info);
+  const code = shared({ ...info });
+  if (!Object.values(ENTRY_CODES).includes(code)) {
+    throw programError(`classifyUpstreamFailure 返回了未知分类码（A4 违约）：${String(code)}`);
   }
-  return localClassify(info);
+  return code;
 }
 
 /** 从错误体取上游码（只用于分类，不进入任何文本）。 */
@@ -174,6 +199,8 @@ async function postOnce(ctx, url, body) {
     if (expired || cause?.name === "AbortError") {
       return entryError(ENTRY_CODES.TIMEOUT, MESSAGES[ENTRY_CODES.TIMEOUT]);
     }
+    // P1-1：已带码的错误原样上抛（ENTRY_PROXY/CONFIG 码/TRANSPORT_RELEASED），不压成 ENTRY_NETWORK。
+    if (carriesPassthroughCode(cause)) return cause;
     const code = await classifyFailure({ phase: "transport", error: cause });
     return entryError(code, MESSAGES[code] ?? MESSAGES[ENTRY_CODES.NETWORK]);
   };

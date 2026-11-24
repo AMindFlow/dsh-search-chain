@@ -60,6 +60,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
 
 /** BRV-001 要求1：固定端点（规格原文）。 */
 const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
@@ -69,18 +70,8 @@ const BRAVE_MAX_WORDS = 75;
 /** BRV-001 要求1：count 取宿主结果数与 20 中较小值。 */
 const BRAVE_MAX_COUNT = 20;
 
-/** FB-005 条目级失败码（镜像 test/helpers/contract.js#ENTRY_CODES 拼写）。 */
-const ENTRY_CODE = Object.freeze({
-  CREDENTIALS: "ENTRY_CREDENTIALS",
-  QUOTA: "ENTRY_QUOTA",
-  RATE_LIMITED: "ENTRY_RATE_LIMITED",
-  PROXY: "ENTRY_PROXY",
-  NETWORK: "ENTRY_NETWORK",
-  CHANNEL_LIMIT: "ENTRY_CHANNEL_LIMIT",
-  TIMEOUT: "ENTRY_TIMEOUT",
-  BAD_RESPONSE: "ENTRY_BAD_RESPONSE",
-  CONTENT_POLICY: "ENTRY_CONTENT_POLICY",
-});
+/** FB-005 条目级失败码：单一权威为 src/constants.js（P1-3；本地别名仅保留引用名，值零变化）。 */
+const ENTRY_CODE = ENTRY_CODES;
 
 /**
  * FB-005:34：上游额度 code 字符串集合（429 且 code 命中即归类额度，其余 429 → 限流）。
@@ -357,6 +348,8 @@ async function roundTrip(ctx, url, key) {
       ]);
     } catch (err) {
       if (cause !== null) throw abortError();
+      // P1-1：已带码的错误原样上抛（ENTRY_PROXY/CONFIG 码/TRANSPORT_RELEASED），不压成 ENTRY_NETWORK。
+      if (carriesPassthroughCode(err)) throw err;
       // 网络层故障：不复述 err.message（可能携带 URL/key），只输出分类后的脱敏错误。
       return { failed: await classify({ phase: "transport", error: err }) };
     }

@@ -13,13 +13,16 @@
 //   - 条目到期中止其 signal，剩余预算允许时继续；迟到结果不得改变已收敛的搜索（FB-003）；
 //   - 宿主取消传播到在途条目并立即终止整链，之后不再出站（FB-003）；
 //   - 空列表/全停用/全缺 key/明确无结果/全链失败/内容策略拒绝的终态（FB-004/FB-005）；
-//   - 程序违约（适配器 throw 无 ENTRY_CODES 码的错误）原样暴露，不包装、不再发起新请求（FB-005）；
+//   - 程序违约（适配器 throw 无条目可降级码的错误）原样暴露，不包装、不再发起新请求（FB-005）；
+//   - 条目执行期带 ENTRY_*/CONFIG_*（含 PAC_*）码的适配器错误按条目级失败降级，原码进 attempts（PR#35 裁决补充）；
+//     TRANSPORT_RELEASED（停机释放）与全局 CONFIG_*（链级配置读取失败）仍裸上抛；
 //   - 输出脱敏：错误与日志只含链自产的条目级文本，不带上游原始报文（CFG-003）。
 //
 // 运行时代码不 import test/；常量来自 ./constants.js（运行时共享常量唯一来源，与 test/helpers/contract.js 同值）。
 
 import {
   ENTRY_CODES,
+  CONFIG_CODES,
   SKIPPED_NO_KEY,
   CHAIN_CODES,
   KEY_ENV_BY_TYPE,
@@ -29,6 +32,26 @@ import {
 } from "./constants.js";
 
 const ENTRY_CODE_VALUES = new Set(Object.values(ENTRY_CODES));
+
+/**
+ * 条目执行期可降级的带码错误（PR#35 lead 裁决补充）：ENTRY_* 与 CONFIG_*（含 PAC_*）。
+ * 原码原样进 attempts，按条目级失败降级到下一条目；全败时终态 WebError.attempts 携各条原码。
+ * 不在此集合内的带码错误走裸上抛（FB-005 程序违约原样暴露）：
+ *   - TRANSPORT_RELEASED：停机释放语义，既有绿面（transport-passthrough P1-1 raw 行）要求裸上抛；
+ *   - 全局 CONFIG_*（链级 getConfig 自身失败）：search() 入口同步上抛，无条目上下文，不经本路径。
+ */
+const ENTRY_PHASE_CODE_VALUES = new Set([...ENTRY_CODE_VALUES, ...Object.values(CONFIG_CODES)]);
+
+// CONFIG_* 与 PAC_* 条目执行期码的诊断文案（仅链自产文本，不带上游原文，CFG-003）。
+const CONFIG_PHASE_DESC = {
+  [CONFIG_CODES.INVALID]: "配置违约",
+  [CONFIG_CODES.CREDENTIALS_UNREADABLE]: "凭据配置不可读",
+  [CONFIG_CODES.SAVE_FAILED]: "配置保存失败",
+  [CONFIG_CODES.PAC_FETCH_FAILED]: "PAC 获取失败",
+  [CONFIG_CODES.PAC_EVAL_FAILED]: "PAC 求值失败",
+  [CONFIG_CODES.PAC_ROUTE_FAILED]: "PAC 路由/建连失败",
+  [CONFIG_CODES.ROW_UNAVAILABLE]: "配置行不可用",
+};
 
 /**
  * FB-002 内容模式判定（oracle 假设③，裁决：规格沉默 → 链侧本地表）。
@@ -53,6 +76,10 @@ const FAILURE_REASON = {
   [ENTRY_CODES.CONTENT_POLICY]: (entry) =>
     `上游内容策略明确拒绝（此类失败不降级，搜索链已终止）：条目「${entry.name}」`,
 };
+for (const [code, desc] of Object.entries(CONFIG_PHASE_DESC)) {
+  FAILURE_REASON[code] = (entry) =>
+    `${desc}（${code}）：请检查条目「${entry.name}」的配置项（条目执行期失败，链已降级到下一条目，原码保留于 attempts）`;
+}
 
 /** FB-002 接管提示里对前序条目的一字概括（脱敏）。 */
 const ISSUE_DESC = {
@@ -66,6 +93,7 @@ const ISSUE_DESC = {
   [ENTRY_CODES.BAD_RESPONSE]: "响应异常",
   [ENTRY_CODES.CONTENT_POLICY]: "内容策略拒绝",
 };
+for (const [code, desc] of Object.entries(CONFIG_PHASE_DESC)) ISSUE_DESC[code] = `${desc}（${code}）`;
 
 /** 终态 WebError（A7 形状；宿主类的最终封装属宿主核对项 HOST-5，见文末待办）。 */
 class WebError extends Error {
@@ -223,9 +251,9 @@ export function createSearchChain(deps) {
           continue; // FB-003：剩余总预算允许时继续下一条
         }
         if (outcome.kind === "error") {
-          const code = isEntryCode(outcome.error?.code) ? outcome.error.code : null;
+          const code = isEntryPhaseCode(outcome.error?.code) ? outcome.error.code : null;
           if (code === null) {
-            // A5/FB-005：程序违约（无 ENTRY_CODES 码）原样暴露，不包装、不再发起新上游请求。
+            // A5/FB-005：程序违约（无条目可降级的码，含 TRANSPORT_RELEASED）原样暴露，不包装、不再发起新上游请求。
             throw outcome.error;
           }
           recordFailure(entry, code, FAILURE_REASON[code](entry));
@@ -498,8 +526,8 @@ function attemptOf(entry, code, reason) {
   return { entryId: entry.id, entryType: entry.type, entryName: entry.name, code, reason };
 }
 
-function isEntryCode(code) {
-  return typeof code === "string" && ENTRY_CODE_VALUES.has(code);
+function isEntryPhaseCode(code) {
+  return typeof code === "string" && ENTRY_PHASE_CODE_VALUES.has(code);
 }
 
 /** FB-003：总预算须为正整数毫秒，默认 25000（非法快照值防御性回退默认）。 */

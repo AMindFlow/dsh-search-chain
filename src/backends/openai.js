@@ -15,7 +15,7 @@
 // 去留交协调（见 PR 交付记录「已接受假设」）。
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CONFIG_CODES, ENTRY_CODES } from "../constants.js";
+import { CONFIG_CODES, ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
 
 /** OAI-001：固定端点，无查询串；key 只进 Authorization 头（CFG-003）。 */
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
@@ -209,9 +209,11 @@ async function roundTrip(ctx, clock, payload) {
     });
     const text = await res.text();
     return { status: res.status, ok: res.ok, text };
-  } catch {
+  } catch (err) {
     if (cause === "host" || (cause === null && signal?.aborted)) throw hostCancelled();
     if (cause === "budget") throw coded(ENTRY_CODES.TIMEOUT, MESSAGES[ENTRY_CODES.TIMEOUT]);
+    // P1-1：已带码的错误原样上抛（ENTRY_PROXY/CONFIG 码/TRANSPORT_RELEASED），不压成 ENTRY_NETWORK。
+    if (carriesPassthroughCode(err)) throw err;
     // 网络层故障：不保留原始 error（可能含 key 或 cause 链），只输出分类后的脱敏错误。
     throw await transportFailure();
   } finally {

@@ -17,6 +17,7 @@ export const DEFAULT_QUERY = "合成查询 openai 文档";
  *   entries?: object[], useOfficialDeepSeekSearch?: boolean, timeoutMs?: number, extraConfig?: object,
  *   steps?: Record<string, object[]>, env?: object, credentialRefs?: object, credentialRecords?: object,
  *   legacyYaml?: any, defaultFetch?: "never"|object, clockNow?: number,
+ *   getConfigThrows?: Error,  // 链级配置读取自身失败（无条目上下文的全局面）：getConfig 每次读取原样抛出
  * }} [spec]
  */
 export function createChainHarness(createSearchChain, spec = {}) {
@@ -29,6 +30,7 @@ export function createChainHarness(createSearchChain, spec = {}) {
   let configReads = 0;
   const getConfig = () => {
     configReads += 1;
+    if (spec.getConfigThrows !== undefined) throw spec.getConfigThrows;
     return saved;
   };
 

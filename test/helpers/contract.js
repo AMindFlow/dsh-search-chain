@@ -68,7 +68,9 @@
 // A6 链调用适配器前经 transport.open(entry) 取得 ctx.fetch；适配器自身用 ctx.fetch 出站。
 // A7 错误形状（FB-004/DSH-002）：search() 终态抛错
 //    { name: "WebError", code: CHAIN_CODES 之一, message: 脱敏文本,
-//      details: { attempts: [{ entryId, entryType, entryName, code: ENTRY_CODE|"SKIPPED_NO_KEY",
+//      details: { attempts: [{ entryId, entryType, entryName,
+//                               code: ENTRY_CODE|CONFIG_CODES 原码（含 PAC_*；条目执行期带码错误
+//                                     条目级降级，PR#35 裁决补充）|"SKIPPED_NO_KEY",
 //                               reason }] } }（attempts 按尝试顺序，FB-004）。
 //    最终 WebError 由宿主类构造的细节属宿主核对项（checklist HOST-5）。
 // A8 预算（FB-003）：deps.clock = { now, setTimeout, clearTimeout, abortSignal }，测试注入受控时钟。
@@ -242,7 +244,13 @@ export function assertSearchResult(t, result, expect = {}) {
   }
 }
 
-const ALLOWED_ATTEMPT_CODES = new Set([...Object.values(ENTRY_CODES), SKIPPED_NO_KEY]);
+// PR#35 裁决补充（lead 同判）：条目执行期 CONFIG_*/PAC_* 按条目级降级进 attempts →
+// attempts 码白名单并入 CONFIG_CODES 原码面（含 PAC_*）；全局 CONFIG_* 仍硬失败原样上抛，不经 attempts。
+const ALLOWED_ATTEMPT_CODES = new Set([
+  ...Object.values(ENTRY_CODES),
+  ...Object.values(CONFIG_CODES),
+  SKIPPED_NO_KEY,
+]);
 
 /**
  * 断言终态错误形状（A7）。FB-004：抛 WebError，attempts 按尝试顺序附条目与脱敏原因。
@@ -265,7 +273,7 @@ export function assertWebError(err, expect) {
     const want = expect.attempts[i];
     assert.ok(
       ALLOWED_ATTEMPT_CODES.has(a.code),
-      `attempts[${i}].code 必须属于 ENTRY_CODES ∪ {SKIPPED_NO_KEY}（A7/FB-005），实际：${a.code}`,
+      `attempts[${i}].code 必须属于 ENTRY_CODES ∪ CONFIG_CODES ∪ {SKIPPED_NO_KEY}（A7/FB-005/PR#35 裁决补充），实际：${a.code}`,
     );
     assert.equal(typeof a.entryType, "string", `attempts[${i}].entryType 须存在（FB-005 可定位）`);
     assert.equal(typeof a.entryName, "string", `attempts[${i}].entryName 须存在（FB-005 可定位）`);
