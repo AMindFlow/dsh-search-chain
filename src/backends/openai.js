@@ -325,9 +325,8 @@ function mapResponse(json, maxResults) {
   if (json.status !== "completed" || !Array.isArray(json.output)) throw badResponse();
   const sources = collectSources(json.output);
   if (sources.length === 0) throw badResponse();
-  // 截断到 maxResults（待办 P5）；规格未定义结果数参数，故只作用于返回结果，不进入请求正文。
-  const limit = Number.isFinite(maxResults) && maxResults >= 1 ? Math.floor(maxResults) : undefined;
-  return { sources: limit === undefined ? sources : sources.slice(0, limit) };
+  // 返回全部映射来源；截断与 truncated 由链层统一执行（横向契约，FB-002）。
+  return { sources };
 }
 
 // ─── 入口 ────────────────────────────────────────────────────────────────────
