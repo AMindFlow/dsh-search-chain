@@ -79,17 +79,19 @@ class WebError extends Error {
 
 /**
  * FB-005 上游结局 → 条目级分类码。
- * 钉死规则（search-classify 已定部分 + FB-005 规格）：
+ * 判定顺序（优先级自上而下）：
  *   - phase "timeout" → TIMEOUT；
  *   - 响应解析失败（A4 解析失败信号 = phase "response" + error 为 SyntaxError）→ BAD_RESPONSE；
  *   - phase "transport"（无 HTTP 状态的网络层失败）→ NETWORK；
- *   - HTTP 402 → QUOTA（优先于上游限流文案）；
- *   - 上游 code = insufficient_quota → QUOTA（无论状态码，FB-005 明文）；
- *   - 其他 429 → RATE_LIMITED；
- *   - 401/403 → CREDENTIALS；
- *   - 其余 HTTP 状态（未枚举）→ BAD_RESPONSE（异常响应，FB-005 兜底）。
- * 待办（WP0 风险①，见 search-classify 末尾测试）：PROXY / CONTENT_POLICY /
- * CHANNEL_LIMIT 的上游输入信号形态尚未定名，本分类器暂不产出这三个码——
+ *   - 上游 code = insufficient_quota / QUOTA_LIMITED → QUOTA（无论有无状态码，额度优先）；
+ *   - HTTP 402 → QUOTA；
+ *   - HTTP 429 → RATE_LIMITED；
+ *   - HTTP 401/403 → CREDENTIALS；
+ *   - 其他 HTTP 4xx（含 400、432、433 等厂商码，裁决：不做通用特例）→ CHANNEL_LIMIT；
+ *   - 其余 HTTP 状态（5xx 等）→ BAD_RESPONSE；
+ *   - 已到响应相位（phase "response"）但无状态码、无 error → BAD_RESPONSE；
+ *   - 无阶段、无状态码的未知失败 → NETWORK（直连网络兜底，可定位到条目）。
+ * PROXY / CONTENT_POLICY 的上游输入信号形态尚未定名，本分类器不产出；
  * 它们只能由适配器按各 backends 规格在抛出时直接赋码（A5），链按码消费。
  */
 export function classifyUpstreamFailure(info = {}) {
@@ -97,13 +99,15 @@ export function classifyUpstreamFailure(info = {}) {
   if (phase === "timeout") return ENTRY_CODES.TIMEOUT;
   if (error instanceof SyntaxError) return ENTRY_CODES.BAD_RESPONSE;
   if (phase === "transport") return ENTRY_CODES.NETWORK;
+  if (upstreamCode === "insufficient_quota" || upstreamCode === "QUOTA_LIMITED") return ENTRY_CODES.QUOTA;
   if (typeof status === "number") {
     if (status === 402) return ENTRY_CODES.QUOTA;
-    if (upstreamCode === "insufficient_quota") return ENTRY_CODES.QUOTA;
     if (status === 429) return ENTRY_CODES.RATE_LIMITED;
     if (status === 401 || status === 403) return ENTRY_CODES.CREDENTIALS;
+    if (status >= 400 && status <= 499) return ENTRY_CODES.CHANNEL_LIMIT;
     return ENTRY_CODES.BAD_RESPONSE;
   }
+  if (phase === "response") return ENTRY_CODES.BAD_RESPONSE;
   // 无阶段、无状态码的未知失败：按直连网络兜底（可定位到条目，FB-005）。
   return ENTRY_CODES.NETWORK;
 }
@@ -133,7 +137,8 @@ export function createSearchChain(deps) {
       // 参数违约（宿主判定查询无效的边界在 provider 层，DSH-002）：无出站请求，原样暴露（FB-005）。
       throw new TypeError("search(request): query 必须为非空字符串");
     }
-    const maxResults = Number.isInteger(request.maxResults) && request.maxResults > 0 ? request.maxResults : null;
+    // 链层下限守则：整数 maxResults ≤0 钳到 1；非整数/缺省视为不限制（null）。
+    const maxResults = Number.isInteger(request.maxResults) ? Math.max(1, request.maxResults) : null;
 
     if (externalSignal?.aborted) return rejectAborted(externalSignal);
 
@@ -178,6 +183,8 @@ export function createSearchChain(deps) {
             credentialReadError = err;
           }
         }
+        // FB-003 取消闸：await resolveKey 期间宿主可能已取消；此处复查，已取消则零出站、不进入 transport.open。
+        if (externalSignal?.aborted || state.cancelled) throw abortError(externalSignal);
         if (credentialReadError) {
           // CFG-002「需要读取但无法访问或解析的凭据文件须报告配置错误」：
           // 链级映射为该条目凭据失败（可降级），原文不入错误/日志（CFG-003）。
