@@ -203,7 +203,7 @@ export function createFakeHost(opts = {}) {
     },
   };
   if (hostShape) {
-    // 宿主实证形态：活配置的唯一读取面是 configuration()（行 {entry, config}）；不暴露 saved()。
+    // 宿主实证形态：活配置的唯一读取面是 configuration()（行 {entry, inherited, override}）；不暴露 saved()。
     editor.configuration = configuration;
   } else {
     // 旧默认形态保留：仅供既有纯 config 面测试与断言 saved() 的自测使用。
