@@ -23,6 +23,10 @@
 //      按尝试顺序携各条原码。（新增；现实现于首个 CONFIG_* 即原样上抛 → 预期红。）
 //   ⑤ 全局 CONFIG_*：链级配置读取自身失败（deps.getConfig 抛码，无条目上下文）→
 //      硬失败：原错误对象原样上抛、零条目执行、零出站。（现实现已如此 → 记绿防回归。）
+//   ⑥ transport.open 相位带码错误（裁决27补充面）：open 在 try 外（审阅探针实证 search.js:360，
+//      classifyProxy 对无效 proxy 同步抛 TransportError(CONFIG_INVALID)）→ 现在整链裸拒、
+//      后续条目零尝试。裁决27：open 与执行期同为条目上下文，「该条目 broken」不变 →
+//      条目级降级、attempts 保留原码。（新增；现实现 open 仍在 try 外 → 本用例预期红。）
 //
 // 语义边界（PR#35 裁决补充，lead 同判——张力已清，本轮落地）：
 //   - transport-passthrough.test.js 链级 CONFIG 行与④（全败终态 WebError 携原码）在单条目全败
@@ -32,6 +36,19 @@
 //   - helpers/contract.js assertWebError 的 attempts 码白名单已并入 CONFIG_CODES 原码面
 //     （ENTRY_CODES ∪ CONFIG_CODES ∪ {SKIPPED_NO_KEY}，含 PAC_*；A7 镜像注释同步）。
 //     ④ 维持直接断言 details.attempts 不借道 assertWebError，测试期望不因此改动。
+//
+// 裁决27补充（本工作包落地——open 期降级，见⑥）：
+//   - 审阅探针实证：src/search.js runEntry 的 transport.open 在 try 外（search.js:360）；
+//     生产接线（src/index.js:194）下 createEntryTransport → classifyProxy 对无效 proxy 地址
+//     同步抛 TransportError(CONFIG_INVALID)（src/transport.js:125/129/134），该抛错不经任何
+//     条目失败记录 → search() 整链裸拒、后续启用条目零尝试。
+//   - 全败面并入既有④语义，不单列新用例：open 期带码错误与执行期带码错误收敛于同一
+//     「条目失败→attempts」记录面（recordFailure 同点汇聚），终态形状由④钉住
+//     （CHAIN_UPSTREAM_FAILURES + details.attempts 按尝试顺序携各条原码）——open 败 + 他条
+//     网络败即④的 attempts[0] 换为 open 期原码，同码同构，④ 已覆盖该终态面；本轮红预算
+//     集中于⑥（降级主例，lead：一条即可，注记由④覆盖）。
+//   - 全局面不回退注记：链级配置读取自身失败（deps.getConfig 抛码，无条目上下文）仍原错误
+//     原样上抛硬失败——既有⑤绿面勿动；⑥ 只钉条目级 open 败面，不改全局面语义。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_QUERY } from "./helpers/chain-harness.js";
@@ -44,6 +61,7 @@ import {
   makeSources,
 } from "./helpers/contract.js";
 import { chainHarness, keyedEntry, refsFor } from "./helpers/search-oracle.js";
+import { tryImportSrc, failIfUnimplemented } from "./helpers/impl.js";
 
 // ─── ① ENTRY_PROXY：条目级失败 → 降级下一条目 ─────────────────────────────────────────
 
@@ -271,3 +289,88 @@ test("P2-b⑤：全局 CONFIG_*（deps.getConfig 读取自身失败，无条目�
   assert.equal(h.executions().length, 0, "全局配置失败：一个条目都不得执行（无条目上下文不谈降级）");
   assert.equal(h.fetchFn.count(), 0, "全局配置失败：零出站");
 });
+
+// ─── ⑥ 裁决27补充面：transport.open 相位同步抛带码错误 → 条目级降级（现实现预期红） ─────
+
+test("P2-b⑥（裁决27补充）：e1 transport.open 同步抛 CONFIG_INVALID（真 classifyProxy 无效 proxy 面，search.js:360 try 外）→ 条目级降级；e2 成功 → 成功结果 + attempts[0].code=CONFIG_INVALID + 接管提示可诊断；后续条目不得零尝试", async (t) => {
+  // 可钉面选择（lead 二选一）：经真 transport 无效 proxy 构造——e1 携带连 URL 都解析不了的
+  // proxy，open 时由 src/transport.js 真 classifyProxy 同步抛 TransportError(CONFIG_INVALID)，
+  // 错误形状、码与同步性全由被测实现自己给出（审阅探针实证的正是这条生产路径：
+  // index.js:194 open → createEntryTransport → classifyProxy，search.js:360 在 try 外）。
+  const s = makeSources(2, "https://synthetic-oc.invalid/doc");
+  const tRes = await tryImportSrc("transport.js");
+  failIfUnimplemented(t, tRes, "WP1 src/transport.js", "裁决27补充-open期降级");
+  const { createEntryTransport } = tRes.module;
+
+  const h = await chainHarness(t, "裁决27补充/FB-001/FB-002/FB-005", {
+    entries: [
+      keyedEntry("oc-e1", "openai", "条目甲", { proxy: "synthetic-invalid-proxy" }),
+      keyedEntry("oc-e2", "tavily", "条目乙"),
+      keyedEntry("oc-e3", "exa", "条目丙"),
+    ],
+    credentialRefs: refsFor("oc-e1", "oc-e2", "oc-e3"),
+    steps: {
+      // oc-e1 无脚本步骤：open 失败发生在适配器 seam 之前（A6），backend 本就不该被调用。
+      "oc-e2": [stepSuccess({ sources: s })],
+      "oc-e3": [stepSuccess({ sources: makeSources(1, "https://synthetic-oc-c.invalid/doc") })],
+    },
+  });
+
+  // 只把 e1 的 open 换为真 createEntryTransport（与生产接线 index.js:194 同款），让真
+  // classifyProxy 现场产出带码同步抛；其余条目保持假 transport（A6 生命周期面不动）。
+  const fakeOpen = h.transport.open.bind(h.transport);
+  const openAttempts = [];
+  h.transport.open = (entry) => {
+    openAttempts.push(entry.id);
+    if (entry.id === "oc-e1") return createEntryTransport(entry, { fetch: h.fetchFn, clock: h.clock });
+    return fakeOpen(entry);
+  };
+
+  // 期望转正：open 同步抛 CONFIG_INVALID 是条目级失败（该条目 broken ≠ 其他条目 broken，
+  // 裁决27弹性优先）→ 降级到 e2 → 成功结果照常返回。现实现 open 在 try 外：整链裸拒
+  // TransportError(CONFIG_INVALID)、e2/e3 零尝试——本用例因 runToValue 抛出该裸错误而红。
+  const res = await h.runToValue(h.search({ query: DEFAULT_QUERY }));
+
+  assertSearchResult(t, res, { sources: s, truncated: false, entryName: "条目乙" });
+
+  // 降级执行面：e1 open 败 → e2 被 open 且成功即停；e3 不 open、不执行。
+  assert.deepEqual(
+    openAttempts,
+    ["oc-e1", "oc-e2"],
+    "P2-b⑥：e1 open 同步抛不得裸拒整链——后续启用条目须被继续尝试（审阅探针实证缺口：零尝试即红），e3 因首个有效来源即停（FB-001）",
+  );
+  assert.deepEqual(
+    h.executions().map((c) => c.entryId),
+    ["oc-e2"],
+    "open 失败在适配器 seam 之前（A6）：仅成功条目实际执行适配器，e1 后端零调用",
+  );
+  assert.equal(h.executionCount("oc-e1"), 0, "open 败条目不得触及其适配器（失败归因于条目自身的 open 期）");
+  assert.equal(h.executionCount("oc-e3"), 0, "FB-001：首个有效来源之后的条目不得发出请求");
+  assert.equal(h.fetchFn.count(), 0, "open 期失败无句柄即无出站；降级路径同样不漏发请求");
+
+  // attempts[0].code=CONFIG_INVALID：成功路径无 WebError，attempts 可观察面 = warn 日志（与①/②同面）。
+  const rec = h.logCapture.entries.find(
+    (e) => e.message === "search-chain 条目失败" && e.rest?.[0]?.entryId === "oc-e1",
+  );
+  assert.ok(rec, "open 降级条目须留下一次条目尝试记录（成功路径的 attempts 可观察面）");
+  assert.equal(
+    rec.rest[0].code,
+    CONFIG_CODES.INVALID,
+    `attempts[0].code 须原样保留 open 期原码 ${CONFIG_CODES.INVALID}（裁决27：open 与执行期同待——attempts 保留原码原样），不得改写为 ${ENTRY_CODES.PROXY}/${ENTRY_CODES.NETWORK} 等`,
+  );
+
+  // 首条失败原因可诊断：FB-002 接管提示首行须标注失败条目与配置面归因（字面措辞不限，须可定位）。
+  const firstLine = res.content.split("\n")[0];
+  assert.match(firstLine, /条目甲/, "接管提示须标注失败的条目名（FB-002）");
+  assert.match(
+    firstLine,
+    /配置|CONFIG/,
+    "open 期失败原因可诊断：首行须让使用者看出前序条目因配置面失败被降级（CONFIG_* 归因不得静默或错标成代理/网络失败）",
+  );
+  assert.doesNotMatch(firstLine, /undefined/, "失败描述缺映射导致 undefined 泄漏即不可诊断（FB-002 接管提示）");
+});
+
+// ⑥ 的姊妹面（不单列用例，见文件头「裁决27补充」注记）：
+//   - open 败 + 他条网络败的全败终态（WebError.attempts 携各条原码）＝ ④ 的 attempts[0]
+//     原码来源从执行期换成 open 期，汇聚点与终态形状完全同构，由 ④ 覆盖，避免双红。
+//   - 链级 config 读败仍裸上抛的全局面不回退，由 ⑤ 绿面守护，勿动。
