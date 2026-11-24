@@ -248,6 +248,19 @@ test("fake-host inject 收敛：只挂声明服务，缺省零挂载；inject �
   assert.ok(bare.ctx.fiber, "ctx.fiber 是装载结构，不经 inject（index.js 的 inject 亦不含 fiber）");
   assert.ok(bare.editor && bare.entry, "editor/entry 测试观测面恒在");
 
+  // 非数组 inject 显式 TypeError（fake-host 入口闸）：字符串可迭代，new Set("web") 会裂成
+  // {"w","e","b"} 单字符集合——一切挂不上且零报错，比零挂载更难查；null 同样不得静默放行。
+  assert.throws(
+    () => createFakeHost({ inject: "web" }),
+    (e) => e instanceof TypeError && /inject 必须是字符串数组/.test(e.message),
+    "inject 传字符串必须抛 TypeError，不得按可迭代对象裂成单字符服务名",
+  );
+  assert.throws(
+    () => createFakeHost({ inject: null }),
+    (e) => e instanceof TypeError && /inject 必须是字符串数组/.test(e.message),
+    "inject 传 null 同样抛 TypeError（!== undefined，非数组即拒）",
+  );
+
   // 假模块：inject 声明 web/configEditor，故意缺 credentials（WP13 实机 P0 的形状）。
   const fakeModule = {
     inject: ["web", "configEditor"],
