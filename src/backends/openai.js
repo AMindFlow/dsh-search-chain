@@ -15,7 +15,7 @@
 // 去留交协调（见 PR 交付记录「已接受假设」）。
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CONFIG_CODES, ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
+import { CONFIG_CODES, ENTRY_CODES, carriesPassthroughCode, readBoundedText, bodyTooLargeMessage } from "../constants.js";
 
 /** OAI-001：固定端点，无查询串；key 只进 Authorization 头（CFG-003）。 */
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/responses";
@@ -207,8 +207,9 @@ async function roundTrip(ctx, clock, payload) {
       body: payload,
       signal: ac.signal,
     });
-    const text = await res.text();
-    return { status: res.status, ok: res.ok, text };
+    // 字节上限（MAX_RESPONSE_BYTES，流式早停）：超限 tooLarge，2xx 在 search 归 BAD_RESPONSE 带尺寸诊断。
+    const body = await readBoundedText(res);
+    return { status: res.status, ok: res.ok, text: body.text, tooLarge: body.tooLarge, limit: body.limit };
   } catch (err) {
     if (cause === "host" || (cause === null && signal?.aborted)) throw hostCancelled();
     if (cause === "budget") throw coded(ENTRY_CODES.TIMEOUT, MESSAGES[ENTRY_CODES.TIMEOUT]);
@@ -354,6 +355,10 @@ async function search(ctx) {
   const res = await roundTrip(ctx, clock, buildBody(model, query));
   log?.("info", "openai responses", { entryId: entry?.id, status: res.status });
   if (!res.ok) throw await httpFailure(res.status, res.text);
+  if (res.tooLarge) {
+    log?.("warn", "openai body too large", { entryId: entry?.id, status: res.status, limit: res.limit });
+    throw coded(ENTRY_CODES.BAD_RESPONSE, `OpenAI ${bodyTooLargeMessage(res.limit)}`);
+  }
   return mapResponse(parseJson(res.text), maxResults);
 }
 

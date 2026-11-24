@@ -34,7 +34,7 @@
 //   - CDATA 按文本保留（不做实体解码）；XML 声明 / 注释 / PI 消费跳过。
 //   - 解析错误只携带行号与（受名称字符集限制的）标签名，永不回显响应文本（CFG-003）。
 
-import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
+import { ENTRY_CODES, MAX_RESPONSE_BYTES, carriesPassthroughCode } from "../constants.js";
 
 /** BING-001：端点精确为 https://www.bing.com/search。 */
 const BING_ENDPOINT = "https://www.bing.com/search";
@@ -44,7 +44,7 @@ const RSS_FORMAT_PARAM = "rss";
  * 响应体字节上限（流式累计；真实 Bing RSS 样本为数十 KB）。超限即 cancel 并按异常响应处理，
  * 防止异常体耗尽内存。429 额度扫描遇超限视为「无额度标记」，不因体积改判。
  */
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_BODY_BYTES = MAX_RESPONSE_BYTES; // 单源：constants.js（与 PAC/六家同值）
 /** 数字字符引用体（# 之后）的最大长度，防止畸形长引用拖慢扫描；超出按字面保留。 */
 const NUMERIC_REF_MAX = 12;
 /** 额度判定标记（FB-005：insufficient_quota 无论有无状态码均属额度；非 2xx 先于状态门扫描）。只扫描，不保留响应体。 */

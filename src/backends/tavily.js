@@ -24,7 +24,7 @@
 // P1-3：ENTRY_CODES 单一权威为 src/constants.js，本文件不再导出镜像（删除第二权威）。
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
+import { ENTRY_CODES, carriesPassthroughCode, readBoundedText, bodyTooLargeMessage } from "../constants.js";
 
 const ENTRY_CODE_VALUES = Object.freeze(Object.values(ENTRY_CODES));
 
@@ -359,8 +359,12 @@ async function searchTavily(ctx) {
   // 正文挂起时预算到期 → TIMEOUT；宿主取消 → 无码 AbortError 上抛（不降级）。
   // 响应体只读一次；原始文本永不进入错误/日志（CFG-003），仅用于解析与额度标记检测。
   let text = "";
+  let bodyTooLargeLimit = null;
   try {
-    text = await rejectOnAbort(response.text(), merged.signal);
+    // 字节上限（MAX_RESPONSE_BYTES，流式早停）：超限时 text 为空，2xx 见下方判定，非 2xx 仍按状态分类。
+    const body = await rejectOnAbort(readBoundedText(response), merged.signal);
+    text = body.text;
+    if (body.tooLarge) bodyTooLargeLimit = body.limit;
   } catch {
     if (hostCancelled) throw makeHostCancelError();
     if (budgetExpired) {
@@ -371,6 +375,16 @@ async function searchTavily(ctx) {
     text = "";
   } finally {
     cleanup();
+  }
+
+  // 2xx 正文超上限 → ENTRY_BAD_RESPONSE，诊断含尺寸线索。
+  if (bodyTooLargeLimit !== null && response.ok) {
+    logWarn?.("tavily 响应体超上限", { entryId: entry && entry.id, status: response.status, limit: bodyTooLargeLimit });
+    const err = new Error(`Tavily ${bodyTooLargeMessage(bodyTooLargeLimit)}（HTTP ${response.status}）`);
+    err.name = "TavilyEntryError";
+    err.code = ENTRY_CODES.BAD_RESPONSE;
+    err.status = response.status;
+    throw err;
   }
 
   if (!response.ok) {

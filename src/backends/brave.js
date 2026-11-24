@@ -60,7 +60,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
+import { ENTRY_CODES, carriesPassthroughCode, readBoundedText, bodyTooLargeMessage } from "../constants.js";
 
 /** BRV-001 要求1：固定端点（规格原文）。 */
 const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
@@ -354,15 +354,16 @@ async function roundTrip(ctx, url, key) {
       return { failed: await classify({ phase: "transport", error: err }) };
     }
 
-    let text;
+    // 字节上限（MAX_RESPONSE_BYTES）：流式早停，超限 tooLarge（2xx 在 search 归 BAD_RESPONSE；非 2xx 仍按状态分类）。
+    let body;
     try {
-      text = await Promise.race([res.text(), aborted]);
+      body = await Promise.race([readBoundedText(res), aborted]);
     } catch {
       if (cause !== null) throw abortError();
       // P5-6：已拿到状态码，仅读体失败 → 调用方归 ENTRY_BAD_RESPONSE（不得记为未返回响应）。
       return { status: res.status, ok: res.ok, bodyFailed: true };
     }
-    return { status: res.status, ok: res.ok, text };
+    return { status: res.status, ok: res.ok, text: body.text, tooLarge: body.tooLarge, limit: body.limit };
   } finally {
     if (timer != null) clock.clearTimeout?.(timer);
     signal?.removeEventListener?.("abort", onHostAbort);
@@ -444,6 +445,15 @@ async function search(ctx) {
     );
   }
   const { status, ok, text } = outcome;
+
+  // 2xx 正文超上限 → ENTRY_BAD_RESPONSE，诊断含尺寸线索（非 2xx 超限仍按状态码分类，见下）。
+  if (outcome.tooLarge && ok) {
+    log("warn", "brave upstream body too large", { entryId: entry.id, status, limit: outcome.limit });
+    throw entryFailure(
+      ENTRY_CODE.BAD_RESPONSE,
+      `Brave 条目「${entryRef}」${bodyTooLargeMessage(outcome.limit)}。${CODE_CHECK[ENTRY_CODE.BAD_RESPONSE]}`,
+    );
+  }
 
   // CFG-003：原始响应体只参与解析与分类，任何原文不得进入错误文本或日志。
   if (!ok) {

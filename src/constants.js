@@ -83,6 +83,12 @@ export const CONFIG_CODES = Object.freeze({
   ROW_UNAVAILABLE: "CONFIG_ROW_UNAVAILABLE",
 });
 
+/**
+ * 响应体字节上限（PAC 下载与六家供应商正文的跨模块单源；BING-002 先例同值 2MiB）。
+ * 超限即 reader.cancel 早停，不读满全量（见下方 readBoundedText）。修改须同步 test/body-size-cap.test.js 的 MAX_EXPECTED。
+ */
+export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+
 /** FB-003 默认总预算（毫秒）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
 
@@ -104,4 +110,59 @@ const PASSTHROUGH_CODE_VALUES = new Set([
  */
 export function carriesPassthroughCode(err) {
   return typeof err?.code === "string" && PASSTHROUGH_CODE_VALUES.has(err.code);
+}
+
+// ─── 响应体有界读取（PAC 与六家正文共用；BING-002 先例）────────────────────────────────────
+// 流式主路超限即 reader.cancel 早停（tooLarge），退化路只能读后判长。超限不是异常：调用方据 tooLarge 归类。
+// 放在 constants.js 而非独立模块：staging 测试只复制 backends/<name>.js 与 constants.js（见 classifier-*.test.js）。
+
+/**
+ * @param {unknown} response 含 body 流或 text() 的响应对象
+ * @param {{ maxBytes?: number }} [opts]
+ * @returns {Promise<{ text: string, tooLarge: boolean, limit: number, observedBytes: number }>}
+ *   tooLarge=false：text 为完整正文；tooLarge=true：text 为空串，observedBytes 为已观测字节数（流式为下界）。
+ */
+export async function readBoundedText(response, { maxBytes = MAX_RESPONSE_BYTES } = {}) {
+  const stream = response?.body;
+  if (stream && typeof stream.getReader === "function") {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let total = 0;
+    let out = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+        total += bytes.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel("body too large").catch(() => {});
+          return { text: "", tooLarge: true, limit: maxBytes, observedBytes: total };
+        }
+        out += decoder.decode(bytes, { stream: true });
+      }
+      out += decoder.decode();
+      return { text: out, tooLarge: false, limit: maxBytes, observedBytes: total };
+    } catch (err) {
+      // 读取异常：尽力终止底层流后原样上抛（cancel 失败不覆盖原因）。
+      await reader.cancel(err).catch(() => {});
+      throw err;
+    }
+  }
+
+  const text = await response.text();
+  // UTF-8 字节数 ≥ UTF-16 长度，故长度已超限即可直接判定，免去编码开销。
+  if (text.length > maxBytes || utf8ByteLength(text) > maxBytes) {
+    return { text: "", tooLarge: true, limit: maxBytes, observedBytes: utf8ByteLength(text) };
+  }
+  return { text, tooLarge: false, limit: maxBytes, observedBytes: utf8ByteLength(text) };
+}
+
+/** 超限诊断文本（不含正文内容，仅尺寸线索；CFG-003）。 */
+export function bodyTooLargeMessage(limit) {
+  return `响应体超出大小上限（${limit} 字节），已中止读取，按异常响应处理`;
+}
+
+function utf8ByteLength(text) {
+  return new TextEncoder().encode(text).byteLength;
 }
