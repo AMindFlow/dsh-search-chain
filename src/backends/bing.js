@@ -47,7 +47,7 @@ const RSS_FORMAT_PARAM = "rss";
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** 数字字符引用体（# 之后）的最大长度，防止畸形长引用拖慢扫描；超出按字面保留。 */
 const NUMERIC_REF_MAX = 12;
-/** 429 额度判定标记（FB-005：429 + insufficient_quota 属额度）。只扫描，不保留响应体。 */
+/** 额度判定标记（FB-005：insufficient_quota 无论有无状态码均属额度；非 2xx 先于状态门扫描）。只扫描，不保留响应体。 */
 const QUOTA_MARKER = "insufficient_quota";
 
 /** 无注入时钟时的回退（生产由链注入；缺省回落真实时钟，预算照常装定时器，禁静默跳过预算）。 */
@@ -177,6 +177,16 @@ function isAbortError(err) {
  */
 async function toSources(response, signal) {
   const status = Number(response?.status);
+  const is2xx = status >= 200 && status < 300;
+
+  // FB-005 额度优先（先于状态门，与 deepseek.js 同款结构）：非 2xx 先扫体码，命中 insufficient_quota
+  // 即归 ENTRY_QUOTA，不论 400/401/403/429 等状态；未命中再进入下方状态门。
+  if (!is2xx && (await errorBodyHasQuotaMarker(response, signal))) {
+    throw new BingEntryError(
+      ENTRY_CODES.QUOTA,
+      `Bing RSS 额度不足（HTTP ${status} 且含 insufficient_quota，FB-005）`,
+    );
+  }
 
   if (status === 401 || status === 403) {
     throw new BingEntryError(
@@ -188,13 +198,8 @@ async function toSources(response, signal) {
     throw new BingEntryError(ENTRY_CODES.QUOTA, "Bing RSS 返回 HTTP 402：额度或计费受限（FB-005）");
   }
   if (status === 429) {
-    const quotaExceeded = await bodyHasQuotaMarker(response, signal);
-    throw new BingEntryError(
-      quotaExceeded ? ENTRY_CODES.QUOTA : ENTRY_CODES.RATE_LIMITED,
-      quotaExceeded
-        ? "Bing RSS 触发额度限制（429 且含 insufficient_quota 语义，FB-005）"
-        : "Bing RSS 被限流（HTTP 429），请稍后重试（FB-005）",
-    );
+    // 429 + insufficient_quota 已在上方额度优先分支归 QUOTA；此处为纯限流。
+    throw new BingEntryError(ENTRY_CODES.RATE_LIMITED, "Bing RSS 被限流（HTTP 429），请稍后重试（FB-005）");
   }
   if (status >= 500) {
     // TODO-BING-1 裁决：5xx 属上游自身「异常响应」，可降级（见文件头）。
@@ -259,21 +264,23 @@ async function toSources(response, signal) {
 }
 
 /**
- * 429 额度语义扫描：只判定是否存在 insufficient_quota，响应体不保留、不进错误（CFG-003）。
- * 读取失败（传输/取消）照常上抛由 classify 映射；仅体积超限（BAD_RESPONSE）视为「无额度标记」。
+ * 非 2xx 额度证据扫描（FB-005）：只判定体内是否含 insufficient_quota，响应体不保留、不进错误（CFG-003）。
+ * 体积超限或读取失败视为「无额度标记」，由状态门按 HTTP 状态分类（状态分类不丢失）；
+ * 仅宿主取消 / 预算到期（signal 已中止）上抛，交 classify 映射。
  */
-async function bodyHasQuotaMarker(response, signal) {
+async function errorBodyHasQuotaMarker(response, signal) {
+  let text;
   try {
-    const text = await readBodyText(response, signal);
-    return text.includes(QUOTA_MARKER);
+    text = await readBodyText(response, signal);
   } catch (err) {
-    if (err instanceof BingEntryError && err.code === ENTRY_CODES.BAD_RESPONSE) return false;
-    throw err;
+    if (signal.aborted) throw err;
+    return false;
   }
+  return text.includes(QUOTA_MARKER);
 }
 
 /**
- * 响应体读取（FB-003 取消 + BING-002 体积上限），2xx 与 429 共用。
+ * 响应体读取（FB-003 取消 + BING-002 体积上限），2xx 解析与非 2xx 额度扫描共用。
  *   流式（response.body 为 ReadableStream）：逐块累计字节，超 MAX_BODY_BYTES 即 cancel + BAD_RESPONSE；
  *     每次 read 与 signal abort 竞速，abort 时 reader.cancel() 终止流。
  *   无流（仅 text()）：同样与 abort 竞速；text 完成后判长（先看 UTF-16 长度的快速上界，再算 UTF-8 字节数）。
