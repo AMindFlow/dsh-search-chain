@@ -274,9 +274,16 @@ test("SET-002：移除条目不删除复用的宿主凭据（引用与托管记�
   assert.equal(await O.trySave(panel), null);
 
   assert.deepEqual(O.savedIds(h), ["b"], "此处配置已移除");
-  assert.equal(await creds.resolve("synthetic-ref:shared"), K_REF, "复用的凭据引用不得被移除（SET-002）");
+  // 真宿主形状（dsh-credentials README/types.ts @0.2.2-rc.5，WP7 实机发现）：
+  // resolve → { value, source }；api-key 记录值在记录顶层 key。
+  assert.deepEqual(
+    await creds.resolve("synthetic-ref:shared"),
+    { value: K_REF, source: "user-env" },
+    "复用的凭据引用不得被移除（SET-002）",
+  );
   const rec = await creds.readRecord("OPENAI_API_KEY");
-  assert.equal(rec?.value, K_REC, "宿主托管记录不得被移除");
+  assert.equal(rec?.kind, "api-key", "宿主托管记录不得被移除（真宿主形状 record.kind）");
+  assert.equal(rec?.key, K_REC, "宿主托管记录不得被移除（真宿主形状 record.key）");
 });
 
 test("SET-002：选择 Bing RSS 无需 key，保存成功且状态不因缺 key 显示为缺凭据", async (t) => {
@@ -585,7 +592,12 @@ test("SET-004/CFG-003：key 只写不读；保存后存入凭据引用，视图�
   assert.equal(await O.trySave(panel), null);
   const ref = entriesOf(h)[0].credentialRef;
   assert.ok(typeof ref === "string" && ref.length > 0, "保存后条目须持有凭据引用（CFG-002）");
-  assert.equal(await creds.resolve(ref), K, "明文 key 须经宿主凭据服务保存到该引用");
+  // 真宿主形状（dsh-credentials README，WP7 实机发现）：resolve → { value, source }（不是裸字符串）。
+  assert.deepEqual(
+    await creds.resolve(ref),
+    { value: K, source: "user-env" },
+    "明文 key 须经宿主凭据服务保存到该引用",
+  );
   assertNoSecrets(t, O.snapshot(h), [K], "已保存的宿主配置");
 
   const reopened = await O.openPanel(mod, h);
