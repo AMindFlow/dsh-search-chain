@@ -18,7 +18,8 @@
 //   失败 throw 携带 .code ∈ ENTRY_CODES 的错误（FB-005）；宿主取消 throw 不带 ENTRY 码的
 //     AbortError（FB-001/P-14）；内部程序违约 throw 不带 code 的错误（FB-005）。
 //   出站恰一次（GMI-001/FB-001）；init.signal = ctx.signal 与预算中止的合并信号（FB-003）；
-//   预算只经 ctx.clock.setTimeout 调度（受控时钟，禁止全局 setTimeout/Date.now）。
+//   预算只经 ctx.clock.setTimeout 调度（受控时钟，禁止全局 setTimeout/Date.now）；
+//   res.text() 与合并 signal 竞速——race 是对无视 signal 的 fetch 实现的防御，undici 正常路径不触发。
 //
 // 运行时零 import test/：ENTRY_CODES 复用 src/constants.js 本地镜像（镜像 test/helpers/contract.js，
 // 同步义务见该文件头注）。
@@ -402,10 +403,15 @@ function mapResponse(json, entryRef) {
 
 // ─── 预算与取消（FB-003）──────────────────────────────────────────────────────────────────────────
 
+/** 正文竞速哨兵：合并 signal 先中止时 res.text() 尚未完成所用的唯一标记。 */
+const ABORTED = Symbol("aborted");
+
 /**
  * 发出唯一一次 POST（FB-001：不重试）。ctx.signal 与预算中止合并到同一内部 AbortController：
  * 预算到期 → ENTRY_TIMEOUT（P-13 语义的终态）；宿主取消 → AbortError 无码（P-14）。
  * 读取响应正文也在预算之内；任何原因都不得二次提交查询。
+ * res.text() 与合并 signal 竞速（race 是对无视 signal 的 fetch 实现的防御，undici 正常路径不触发）：
+ * abort 后以 cause 决定既有形态；text 其他失败仍经下方 catch → transportFailure（ENTRY_NETWORK，既有映射）。
  */
 async function roundTrip(ctx, clock, payload) {
   const { fetch, key, budgetMs, signal } = ctx;
@@ -421,6 +427,9 @@ async function roundTrip(ctx, clock, payload) {
   };
   signal?.addEventListener("abort", onHostAbort, { once: true });
   const timer = clock.setTimeout(onBudget, budgetMs);
+  const aborted = new Promise((resolve) => {
+    ac.signal.addEventListener("abort", () => resolve(ABORTED), { once: true });
+  });
   try {
     const res = await fetch(GEMINI_ENDPOINT, {
       method: "POST",
@@ -429,7 +438,8 @@ async function roundTrip(ctx, clock, payload) {
       body: payload,
       signal: ac.signal,
     });
-    const text = await res.text();
+    const text = await Promise.race([res.text(), aborted]);
+    if (text === ABORTED) throw new Error("gemini body read aborted"); // 进入 catch，按 cause 分流
     return { status: res.status, ok: res.ok, text };
   } catch {
     if (cause === "host" || (cause === null && signal?.aborted)) throw hostCancelled();
