@@ -75,8 +75,10 @@ function loadSharedClassifier() {
 function localClassify({ status, upstreamCode, phase }) {
   if (phase === "timeout") return ENTRY_CODES.TIMEOUT;
   if (phase === "transport") return ENTRY_CODES.NETWORK;
+  // FB-005：上游错误码 insufficient_quota 优先于任何 HTTP 状态码分支。
+  if (upstreamCode === "insufficient_quota") return ENTRY_CODES.QUOTA;
   if (status === 401 || status === 403) return ENTRY_CODES.CREDENTIALS;
-  if (status === 402 || (status === 429 && upstreamCode === "insufficient_quota")) return ENTRY_CODES.QUOTA;
+  if (status === 402) return ENTRY_CODES.QUOTA;
   if (status === 429) return ENTRY_CODES.RATE_LIMITED;
   return ENTRY_CODES.BAD_RESPONSE;
 }
