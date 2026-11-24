@@ -47,8 +47,8 @@ test("FB-001/CFG-004（装配面，生产链）：运行时条目增删（生产
   // 行增（A）：下一次查询生效——全部启用条目缺 key → KEYS_MISSING 且说明缺失项
   await cfgMod.writeConfig(port, { entries: structuredClone(entries), useOfficialDeepSeekSearch: true });
   err = await searchErr(provider, "custom-model-route");
-  assert.equal(err.code, C.CHAIN_CODES.KEYS_MISSING, "增行 A（openai，无 key）后下一次查询读到新列表（FB-001/CFG-004）");
-  C.assertWebError(err, { code: C.CHAIN_CODES.KEYS_MISSING, attempts: [{ entryId: "e-a", code: C.SKIPPED_NO_KEY }] });
+  assert.equal(err.code, C.CHAIN_CODES.ALL_KEYS_MISSING, "增行 A（openai，无 key）后下一次查询读到新列表（FB-001/CFG-004）");
+  C.assertWebError(err, { code: C.CHAIN_CODES.ALL_KEYS_MISSING, attempts: [{ entryId: "e-a", code: C.SKIPPED_NO_KEY }] });
   assert.ok(err.message.includes("OPENAI_API_KEY"), "KEYS_MISSING 须说明缺失项（FB-004）");
 
   // 行增（B）：顺序按已保存列表从上到下（A→B）
@@ -58,9 +58,9 @@ test("FB-001/CFG-004（装配面，生产链）：运行时条目增删（生产
   ];
   await cfgMod.writeConfig(port, { entries: structuredClone(entriesB), useOfficialDeepSeekSearch: true });
   err = await searchErr(provider, "custom-model-route");
-  assert.equal(err.code, C.CHAIN_CODES.KEYS_MISSING);
+  assert.equal(err.code, C.CHAIN_CODES.ALL_KEYS_MISSING);
   C.assertWebError(err, {
-    code: C.CHAIN_CODES.KEYS_MISSING,
+    code: C.CHAIN_CODES.ALL_KEYS_MISSING,
     attempts: [
       { entryId: "e-a", code: C.SKIPPED_NO_KEY },
       { entryId: "e-b", code: C.SKIPPED_NO_KEY },
@@ -71,7 +71,7 @@ test("FB-001/CFG-004（装配面，生产链）：运行时条目增删（生产
   await cfgMod.writeConfig(port, { entries: [structuredClone(entriesB[1])], useOfficialDeepSeekSearch: true });
   err = await searchErr(provider, "custom-model-route");
   C.assertWebError(err, {
-    code: C.CHAIN_CODES.KEYS_MISSING,
+    code: C.CHAIN_CODES.ALL_KEYS_MISSING,
     attempts: [{ entryId: "e-b", code: C.SKIPPED_NO_KEY }],
   });
   assert.ok(!err.message.includes("OPENAI_API_KEY"), "已移除条目 A 不得再出现在缺失项说明中");
