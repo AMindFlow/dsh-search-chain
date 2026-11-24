@@ -7,6 +7,7 @@
 //   DSK-002 只模型回答/结构无效/工具错误 → 通道失败（与正常空结果不同状态，FB-001 降级条件）；
 //   FB-005 分类：401→凭据、402→额度、429+insufficient_quota→额度、其他 429→限流、403→按 FB-005
 //     （DeepSeek 无 Bing 式拦截细分）、200 非 JSON→异常响应、网络失败→直连网络、5xx→可降级非前三类；
+//     insufficient_quota 优先于任何 HTTP 状态码分支（403/400 载体亦归额度），403 无码回归 CREDENTIALS；
 //   FB-005「程序违约向调用方暴露」；DeepSeek 无特殊状态码细分，通用结局在两模式一致。
 // 样本：登记 fixture upstream/http-outcomes.json + helpers/deepseek-oracle.js 内联（S7）。
 // 待办：helpers/deepseek-oracle.js 头注 S1..S7；test/deepseek-pending.test.js P1..P8。
@@ -164,6 +165,60 @@ test("FB-005 额度与限流：402 与 429+insufficient_quota → QUOTA；其他
       const res = await settle(backend.search(ctx));
       assert.equal(res.error?.code, c.want, `${type} HTTP ${c.status} ${JSON.stringify(c.body.error)} → ${c.want}（FB-005 明文）`);
     }
+  }
+});
+
+test("FB-005 额度优先级：403 携带 insufficient_quota → QUOTA（上游码优先于状态码，两模式）", async (t) => {
+  for (const type of [API, AG]) {
+    const backend = await loadDeepseek(t, type, `FB-005 quota 优先 403（${type}）`);
+    const { ctx, fetch } = makeCtx({ type });
+    routeFor(fetch, type, {
+      status: 403,
+      body: { error: { code: "insufficient_quota", message: "合成额度（403 载体）" } },
+    });
+    const res = await settle(backend.search(ctx));
+    assert.equal(res.ok, false, `${type} HTTP 403 必须抛错`);
+    assert.equal(
+      res.error?.code,
+      ENTRY_CODES.QUOTA,
+      `${type} 403+insufficient_quota → QUOTA（FB-005：insufficient_quota 优先于任何 HTTP 状态码分支），实际：${res.error?.code}`,
+    );
+  }
+});
+
+test("FB-005 额度优先级：400 携带 insufficient_quota → QUOTA（上游码优先于状态码，两模式）", async (t) => {
+  for (const type of [API, AG]) {
+    const backend = await loadDeepseek(t, type, `FB-005 quota 优先 400（${type}）`);
+    const { ctx, fetch } = makeCtx({ type });
+    routeFor(fetch, type, {
+      status: 400,
+      body: { error: { code: "insufficient_quota", message: "合成额度（400 载体）" } },
+    });
+    const res = await settle(backend.search(ctx));
+    assert.equal(res.ok, false, `${type} HTTP 400 必须抛错`);
+    assert.equal(
+      res.error?.code,
+      ENTRY_CODES.QUOTA,
+      `${type} 400+insufficient_quota → QUOTA（FB-005：insufficient_quota 优先于任何 HTTP 状态码分支），实际：${res.error?.code}`,
+    );
+  }
+});
+
+test("FB-005 回归：403 不带 insufficient_quota 码 → CREDENTIALS（优先级分支不得吞掉普通 403，两模式）", async (t) => {
+  for (const type of [API, AG]) {
+    const backend = await loadDeepseek(t, type, `FB-005 403 回归（${type}）`);
+    const { ctx, fetch } = makeCtx({ type });
+    routeFor(fetch, type, {
+      status: 403,
+      body: { error: { type: "permission_denied", message: "合成 403 无额度码" } },
+    });
+    const res = await settle(backend.search(ctx));
+    assert.equal(res.ok, false, `${type} HTTP 403 必须抛错`);
+    assert.equal(
+      res.error?.code,
+      ENTRY_CODES.CREDENTIALS,
+      `${type} 403 无 insufficient_quota 码仍按状态码归 CREDENTIALS（回归，FB-005），实际：${res.error?.code}`,
+    );
   }
 });
 
