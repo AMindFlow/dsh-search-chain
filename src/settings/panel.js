@@ -17,6 +17,9 @@
 //
 // 保存语义（SET-004 / CFG-004）：
 //   - 一切编辑都只改草稿；保存前宿主快照不变，editor 恰好调用一次。
+//   - 写入走真宿主签名（实机情报）：editor.edit(entry, change)，change 为变异函数
+//     (raw, inherited) => 新 raw 整体层（落 override 层）；插件只替换自有键 OWN_CONFIG_KEYS，
+//     raw 其余键原样保留。对象形态 change 实机报「change is not a function」。
 //   - 保存前检测版本冲突：current() 与 open() 时基线不同 = 配置已被其他界面改动，
 //     不覆盖外部改动，界面给出 CONFIG_CONFLICT（T-3 假设；冻结测试亦接受 SAVE_FAILED），草稿保留。
 //   - editor 写入失败（宿主拒绝/异常）→ SAVE_FAILED，已生效快照保持不变，草稿保留可重试。
@@ -26,7 +29,6 @@ import {
   CATALOG,
   CONFLICT_CODE,
   CONFIG_CODES,
-  DEFAULT_TIMEOUT_MS,
   EMPTY_TEXT,
   ADD_ACTION_LABEL,
   KEYLESS_TYPES,
@@ -41,6 +43,14 @@ import { validateProxy } from "./proxy.js";
 
 /** 条目凭据引用命名（宿主托管 ref 的真实格式属 H 清单实机项；此处只要求稳定且全局唯一）。 */
 const CREDENTIAL_REF_PREFIX = "search-chain-credential:";
+
+/**
+ * 本插件自有配置键集（CFG-004/A3 配置形状中归本插件拥有的顶层键；以 view/save 实际写的键为准）。
+ * 真宿主签名（实机情报）：ConfigEditor.edit(entry, change) 的 change 是变异函数
+ * (raw, inherited) => newRawLayer——返回新 raw 整体层，落 override 层；对象形态实机报
+ * 「change is not a function」。写入时只替换自有键，raw 中其余键原样保留。
+ */
+const OWN_CONFIG_KEYS = Object.freeze(["entries", "useOfficialDeepSeekSearch", "timeoutMs"]);
 
 let idCounter = 0; // 模块级单调计数：保证同进程内新生成 id 不复用（T-1：格式不钉死）
 
@@ -77,7 +87,9 @@ function redactSecrets(message, secrets) {
 /**
  * 面板状态机（createSettingsPanel 返回的对象）。
  * @param {{
- *   settings: { editor: { edit(target, change): Promise<any> }, entry: object, current(): any },
+ *   settings: { editor: { edit(target, change: (raw, inherited?) => newRawLayer): Promise<any> }, entry: object, current(): any },
+ *     // change 为变异函数（真宿主签名实机实证）：返回新 raw 整体层，落 override 层；
+ *     // 本插件只替换自有键 OWN_CONFIG_KEYS，其余键原样保留（见 save() 第 3 步）。
  *   credentials: { set(ref, value): Promise<any>, resolve?(ref): Promise<string|undefined> },
  *   fetch?: Function,   // SET-004 陷阱：面板不得使用
  *   chain?: object,     // SET-004 陷阱：面板不得使用
@@ -394,14 +406,22 @@ export function createSettingsPanel(deps) {
     }
     state.pendingKeys.clear();
 
-    // 3) 写入宿主：保留基线顶层其余字段（如 timeoutMs），只替换 entries 与官方开关（CFG-004 同一份配置）。
-    const candidate = deepClone(state.base);
-    candidate.entries = deepClone(state.entries);
-    candidate.useOfficialDeepSeekSearch = state.official;
-    if (candidate.timeoutMs === undefined) candidate.timeoutMs = DEFAULT_TIMEOUT_MS;
+    // 3) 写入宿主（CFG-004 同一份配置，唯一写入入口）。
+    //    真宿主签名：change 为变异函数 (raw, inherited) => 新 raw 整体层（落 override 层）；
+    //    插件只拥有 OWN_CONFIG_KEYS，raw 中其余键原样保留。
+    //    timeoutMs 面板不编辑（T-7）：存在则原样带回，缺失不发明默认值（规范化归 WP1 normalizeConfig）。
+    const normalizedNext = {
+      entries: deepClone(state.entries),
+      useOfficialDeepSeekSearch: state.official,
+      ...(state.base.timeoutMs !== undefined ? { timeoutMs: state.base.timeoutMs } : {}),
+    };
 
     try {
-      await settings.editor.edit(settings.entry, async () => candidate);
+      await settings.editor.edit(settings.entry, (raw) => {
+        const merged = { ...(raw ?? {}) };
+        for (const key of OWN_CONFIG_KEYS) delete merged[key];
+        return { ...merged, ...normalizedNext };
+      });
     } catch (error) {
       const message = `保存失败：${error?.message ?? String(error)}。已生效的配置未改动，请检查宿主配置状态后重试。`;
       markSaveError(CONFIG_CODES.SAVE_FAILED, message);
