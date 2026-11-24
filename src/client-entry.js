@@ -12,12 +12,18 @@
 //   - registration 键集恰 {name,id,order,label}；组件经第二参传入（[L1]）；order 30（[L2]）。
 //   - 幂等：同一 ctx.slots 重复 apply 只挂载一次；卸载 cleanup 经 ctx.effect 登记并清空幂等键。
 //   - React 缺失（require 抛出或返回非 React 值）时组件安全降级为 null。
+//   - 经典脚本、零 import、零构建：自包含，仅经 globalThis 探测宿主。下列常量为 src/settings/catalog.js
+//     的本地镜像（PROVIDER_ID / SECTION_SLOT / SECTION_TITLE），变更须同步。
 //
 // 范围裁决（docs/specs/draft/settings-ui.md 设计决定）：
 //   - 自定义区为【只读指示器】：标题 + 指向内置插件页配置区的文案。编辑走
 //     「设置→插件→dsh-search-chain 配置区」（cordis.patch.yml 行 config + Config schema）。
 //   - client 无编辑桥（[L4]），故本入口不引用 configEditor / credentials 等幻影面。
-import { PROVIDER_ID, SECTION_SLOT, SECTION_TITLE } from "./settings/catalog.js";
+//
+// P2 已知：幂等 early-return 场景（同一 slots 上双 ctx、先者卸载）v0.1 接受，随 H-5 实机复核。
+const PROVIDER_ID = "search-chain";
+const SECTION_SLOT = "settings.section";
+const SECTION_TITLE = "网页搜索链";
 
 /** 区域排序：live [L2] 既有 occupants 之后（account -10 / general 0 / models 10 / plugins 15 / agent-presets 20）。 */
 const SECTION_ORDER = 30;
