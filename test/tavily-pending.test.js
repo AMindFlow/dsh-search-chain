@@ -11,7 +11,9 @@
 //   P3 FB-001/FB-003   宿主取消的错误形状未定；推断：不得以可降级 ENTRY_* 码抛出（否则链会误以为可继续）。
 //   P4 TAV-001/FB-001  缺 key 时适配器抛出的码未定（CREDENTIALS 或由链给 SKIPPED_NO_KEY）；本文件选 CREDENTIALS。
 //   P5 FB-005/TAV-002  HTTP 400（参数错误）归类未定；推断为 ENTRY_CHANNEL_LIMIT（「通道参数限制」）。
-//   P6 FB-005/TAV-002  432 归属未定：Tavily 特例在适配器，还是通用 classifyUpstreamFailure；本文件两者都要求为 QUOTA。
+//   P6 FB-005/TAV-002  已裁决（2026-11-24 协调）：432/433 是 Tavily 厂商码，通用分类器不做特例（链层按其他-4xx →
+//      CHANNEL_LIMIT，见 src/search.js classifyUpstreamFailure）；「额度语义必须可达 QUOTA」由 Tavily 适配器本地映射承担
+//      （432/433 → ENTRY_QUOTA）。对应测试已按定案改写：适配器层假 fetch 432/433 → QUOTA + 新增链层用例 432/433 → CHANNEL_LIMIT。
 //   P7 FB-003          budgetMs=0 时失败码未定；推断为 ENTRY_TIMEOUT。
 //
 // 另有两处仅在报告中列出、本文件不断言（规格未给出可观察条款）：
@@ -25,6 +27,7 @@ import {
   WP_SEARCH,
   SAMPLE_RESULTS,
   successBody,
+  SYNTH_QUOTA_BODY,
   tavilyFetch,
   tavilyFetchHangs,
   loadTavilyBackend,
@@ -107,16 +110,50 @@ test("[待办 FB-005/TAV-002] P5 HTTP 400（参数错误）→ ENTRY_CHANNEL_LIM
   );
 });
 
-test("[待办 FB-005/TAV-002] P6 432 归属：通用 classifyUpstreamFailure 也必须判 QUOTA（WP5）", async (t) => {
+test("FB-005/TAV-002 P6 432/433（Tavily 厂商码）→ ENTRY_QUOTA：额度语义在适配器层可达（2026-11-24 裁决）", async (t) => {
+  // 2026-11-24 协调裁决：432/433 是 Tavily 厂商码，通用分类器不做特例；「额度语义必须可达 QUOTA」
+  // 由 Tavily 适配器本地映射承担（432/433 → ENTRY_QUOTA），故本用例在适配器层断言（假 fetch 发 432/433）。
+  const res = await tryImportSrc("backends/tavily.js");
+  if (!res.ok) {
+    t.skip(`src/backends/tavily.js 不可用（reason=${res.reason}）：本用例依赖合并后 main 的 WP3 Tavily 适配器，跳过`);
+    return;
+  }
+  const mod = res.module;
+  const backend =
+    mod.tavilyBackend ??
+    mod.default ??
+    (typeof mod.createTavilyBackend === "function" ? mod.createTavilyBackend() : undefined);
+  assert.ok(
+    backend && typeof backend.search === "function",
+    "src/backends/tavily.js 须导出 Backend（{ type, search(ctx) }，A5）；oracle 接受 tavilyBackend / default / createTavilyBackend() 三种形态之一",
+  );
+  for (const status of [432, 433]) {
+    const fetch = tavilyFetch({ status, body: SYNTH_QUOTA_BODY });
+    const err = await rejectionOf(backend.search(makeCtx({ fetch })));
+    singleCall(fetch, `HTTP ${status}（TAV-002 验收）`);
+    assert.equal(
+      err.code,
+      C.ENTRY_CODES.QUOTA,
+      `裁决（2026-11-24）：${status} 为 Tavily 用量超限码，额度语义必须可达 QUOTA，由 Tavily 适配器本地映射承担；实际：${err.code}`,
+    );
+    assert.equal(err.status, status, `条目级错误须携带上游状态以供核查（FB-005）；实际：${err.status}`);
+  }
+});
+
+test("FB-005/TAV-002 P6 链层：通用分类器对 432/433 无状态特例，按其他-4xx 归 ENTRY_CHANNEL_LIMIT（2026-11-24 裁决）", async (t) => {
+  // 2026-11-24 协调裁决：432/433 是 Tavily 厂商码，链层按其他-4xx → CHANNEL_LIMIT；
+  // 通用 classifyUpstreamFailure 保持厂商中立，不得为 Tavily 码增设特例（A4 归属不变）。
   const res = await tryImportSrc("search.js");
-  if (failIfUnimplemented(t, res, WP_SEARCH, "FB-005/TAV-002 P6")) return;
+  if (failIfUnimplemented(t, res, WP_SEARCH, "FB-005/TAV-002 P6 链层")) return;
   const { classifyUpstreamFailure } = res.module;
   assert.equal(typeof classifyUpstreamFailure, "function");
-  assert.equal(
-    classifyUpstreamFailure({ status: 432 }),
-    C.ENTRY_CODES.QUOTA,
-    "[待办 P6] 432 特例归属未定：若适配器自处理则通用分类器可不认 432；本文件要求通用分类器亦判 QUOTA",
-  );
+  for (const status of [432, 433]) {
+    assert.equal(
+      classifyUpstreamFailure({ status }),
+      C.ENTRY_CODES.CHANNEL_LIMIT,
+      `裁决（2026-11-24）：通用分类器对 ${status}（Tavily 厂商码）无状态特例，链层按其他-4xx 统一归 ENTRY_CHANNEL_LIMIT；实际：${classifyUpstreamFailure({ status })}`,
+    );
+  }
 });
 
 test("[待办 FB-003] P7 budgetMs=0 时的失败码推断为 ENTRY_TIMEOUT（无可用时间）", async (t) => {
