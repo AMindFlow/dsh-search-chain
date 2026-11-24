@@ -148,6 +148,11 @@ test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失�
   host.editor.failNext = new Error("synthetic save failure");
   await assert.rejects(host.editor.edit(host.entry, (cur) => ({ ...cur, timeoutMs: 999 })));
   assert.equal(host.editor.saved().timeoutMs, 5, "保存失败后已生效快照保持一致（CFG-004/SET-004）");
+  await assert.rejects(
+    host.editor.edit(host.entry, { config: { timeoutMs: 1 } }),
+    (e) => e instanceof TypeError && /change is not a function/.test(e.message),
+    "对象式 change 必须被拒（宿主 edit 第二参是变异函数，探针实证原文 change is not a function）",
+  );
 
   // 宿主形态替身（PR#14 复审宿主实证）：Entry/Fiber 形态、configuration() 活行、edit 身份校验、无 saved()。
   const hs = createHostShapeFakeHost({
@@ -171,11 +176,36 @@ test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失�
     /no longer available/,
     "同形外来对象不在 entries() 内，同样必须拒绝",
   );
-  await hs.editor.edit(hs.entry, (cur) => ({ ...cur, timeoutMs: 7 }));
+  let seenArgs = null;
+  await hs.editor.edit(hs.entry, (...args) => {
+    seenArgs = args;
+    return { ...args[0], timeoutMs: 7 };
+  });
+  assert.ok(seenArgs && seenArgs.length >= 2, "change 收到 (raw, inherited) 两参（宿主变异函数语义）");
+  assert.deepEqual(seenArgs[0], {}, "raw 入参=该行自身层（初始 override 为空）");
+  assert.deepEqual(seenArgs[1], { entries: [] }, "inherited 入参=继承层（装载基线）");
   const own = hs.configuration()[0];
-  assert.equal(own.override.timeoutMs, 7, "保存写入 override 层（inherited 基线不动）");
+  assert.equal(own.override.timeoutMs, 7, "返回的新 raw 层落进行自身层 override（inherited 基线不动）");
   assert.deepEqual(own.inherited, { entries: [] }, "保存后 inherited 基线保持装载值");
   assert.equal({ ...own.inherited, ...own.override }.timeoutMs, 7, "有效值=inherited⊕override：保存后下一次读取即新值（CFG-004）");
+  // raw 可见既有键 + 深拷贝传入（原地改动不泄漏回存储）+ 返回层整体替换自身层
+  await hs.editor.edit(hs.entry, (raw, inherited) => {
+    assert.equal(raw.timeoutMs, 7, "raw 入参可见自身层既有键（上一次保存值）");
+    assert.deepEqual(inherited, { entries: [] }, "inherited 入参稳定=继承层，与自身层改动无关");
+    raw.__mut__ = true;
+    delete raw.timeoutMs;
+    return { entries: [], useOfficialDeepSeekSearch: false };
+  });
+  const own2 = hs.configuration()[0];
+  assert.deepEqual(own2.override, { entries: [], useOfficialDeepSeekSearch: false },
+    "新 raw 层整体替换自身层：change 对 raw 入参的原地改动（深拷贝）不泄漏回存储");
+  const eff2 = { ...own2.inherited, ...own2.override };
+  assert.equal(eff2.timeoutMs, undefined, "整体替换语义：未随新层返回的键从有效值消失（override 层非逐键合并）");
+  await assert.rejects(
+    hs.editor.edit(hs.entry, null),
+    (e) => e instanceof TypeError && /change is not a function/.test(e.message),
+    "null change 同样必拒（身份守卫之后即类型闸）",
+  );
 });
 
 test("fake-backend：脚本顺序消费、末步重复、默认挂起、失败带码、late 与 programError（A5/FB 面）", async () => {

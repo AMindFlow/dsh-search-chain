@@ -207,6 +207,11 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
     true,
     "生产端口保存应已生效（台架自检；读走 inherited⊕override 有效值）",
   );
+  // 落层断言（宿主 edit 变异函数语义）：writeConfig 的返回层必须落 override 自身层，
+  // inherited 装载基线不因保存而变——分层错位（写进 inherited / 合并进 effective）都在此红。
+  const benchRow = host.configuration()[0];
+  assert.equal(benchRow.override.useOfficialDeepSeekSearch, true, "保存必须落在该行 override 层（变异函数返回值语义）");
+  assert.equal(benchRow.inherited.useOfficialDeepSeekSearch, false, "inherited 基线层保持装载值（保存不触碰继承层）");
 
   // CFG-004 甄别点：这次 search 必须读【保存后】的快照 → 官方路由 + 开关开 → 官方通道。
   await provider.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });

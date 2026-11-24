@@ -7,9 +7,13 @@
 //   - configEditor + Entry/Fiber（configuration.md + PR#14 复审宿主实证）：
 //       * Entry 对象：entry.options.id 为裸 id；entry.id 是带父路径前缀的 getter（include:<id>）；
 //         Entry 携带 fiber。Fiber 无 id 属性，只有 uid（+entry）。
-//       * editor.edit(target, change) 首行身份校验（复刻宿主）：target 必须是当前 entries() 内的
-//         Entry 对象且 target.fiber !== undefined，否则抛 "Configuration entry is no longer available"。
-//         ——「把 ctx.fiber 当写入目标」的接线（旧 B3）在宿主上必拒，本替身同样必拒。
+//       * editor.edit(target, change) 复刻宿主两重闸（探针实证）：
+//         ① 首行身份校验：target 必须是当前 entries() 内的 Entry 且 target.fiber !== undefined，
+//            否则抛 "Configuration entry is no longer available"（「把 ctx.fiber 当写入目标」的
+//            接线（旧 B3）在宿主上必拒，本替身同样必拒）。
+//         ② change 必须是变异函数 (raw, inherited) => newRawLayer（非对象第二参 →
+//            TypeError("change is not a function")）。raw/inherited 深拷贝传入（改动输入不落存储）；
+//            返回的新 raw 层【整体替换】该行自身层（override），非对象返回抛 TypeError。
 //       * 宿主形态（hostShape，经 createHostShapeFakeHost）：configEditor.configuration() 返回行数组
 //         [{entry, inherited, override}]（asar TS 声明终审：entry 与 fiber.entry 同一对象；
 //         有效配置 = inherited ⊕ override；行集合【不含 saved()】）；编辑器不再暴露 saved()。
@@ -131,23 +135,25 @@ export function createFakeHost(opts = {}) {
   // 宿主形态分层（终审行形状）：inherited=装载基线（不随保存变），override=本次及以后保存值；
   // 有效配置 = {...inherited, ...override}。旧形态仍用单层 saved。
   const inheritedBaseline = structuredClone(opts.config ?? {});
-  let override = {};
+  const overrideByEntry = new Map(); // 宿主形态：每行自身层（override），edit 返回的新 raw 整体替换之
   // 宿主形态的其它挂载行（如官方 web-search-deepseek）：行 entry 也是宿主形态 Entry；
   // opts.extraRows[].config 作为该行的 inherited 层装载。
   const extraRows = (opts.extraRows ?? []).map((r, i) => {
     const row = makeEntryForm(r.entryId, r.entryId, `extra-${i}-${r.entryId}`);
     return { entry: row.entry, inherited: structuredClone(r.config ?? {}), override: {} };
   });
+  overrideByEntry.set(entry, {});
+  for (const r of extraRows) overrideByEntry.set(r.entry, {});
   const configuration = () => [
     {
       entry,
       inherited: structuredClone(inheritedBaseline),
-      override: structuredClone(override), // 活 override：保存后下一次读取即新有效值（CFG-004）
+      override: structuredClone(overrideByEntry.get(entry)), // 活层：保存后下一次读取即新有效值（CFG-004）
     },
     ...extraRows.map((r) => ({
       entry: r.entry,
       inherited: structuredClone(r.inherited),
-      override: structuredClone(r.override),
+      override: structuredClone(overrideByEntry.get(r.entry)),
     })),
   ];
   const entries = () => [entry, ...extraRows.map((r) => r.entry)];
@@ -160,17 +166,28 @@ export function createFakeHost(opts = {}) {
       if (!entries().includes(target) || target.fiber === undefined) {
         throw new Error("Configuration entry is no longer available");
       }
+      // 探针实证原文：edit(entry, {config}) → 「change is not a function」。
+      if (typeof change !== "function") {
+        throw new TypeError("change is not a function");
+      }
+      const rawLayer = hostShape ? overrideByEntry.get(target) : saved;
+      const inheritedLayer = hostShape
+        ? (target === entry ? inheritedBaseline : extraRows.find((r) => r.entry === target).inherited)
+        : {};
       editorCalls.push({ target, at: editorCalls.length });
       if (editor.failNext) {
         const err = editor.failNext;
         editor.failNext = null;
         throw err; // 保存失败：已生效快照保持不变（CFG-004/SET-004）
       }
-      const current = hostShape ? { ...inheritedBaseline, ...override } : structuredClone(saved);
-      const candidate = await change(current);
-      if (opts.validate) opts.validate(candidate); // 抛错 = 宿主拒绝，保存不生效
-      if (hostShape) override = candidate; // 保存写 override 层（inherited 基线不动）
-      else saved = candidate;
+      // 深拷贝传入：change 内对 raw/inherited 的原地改动不得泄漏回存储。
+      const next = await change(structuredClone(rawLayer), structuredClone(inheritedLayer));
+      if (next === null || typeof next !== "object" || Array.isArray(next)) {
+        throw new TypeError("change 必须返回新 raw 层整体对象（宿主变异函数语义）");
+      }
+      if (opts.validate) opts.validate(next); // 抛错 = 宿主拒绝，保存不生效
+      if (hostShape) overrideByEntry.set(target, next); // 整体替换该行自身层；inherited 不动
+      else saved = next;
     },
   };
   if (hostShape) {
