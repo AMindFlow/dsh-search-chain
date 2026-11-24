@@ -12,7 +12,8 @@
 //   P5 FB-005          直连网络失败精确码（ENTRY_NETWORK 或 ENTRY_PROXY）。推断：ENTRY_NETWORK。
 //   P6 FB-003          budgetMs=0 时的失败码未定。推断：ENTRY_TIMEOUT。
 //   P7 FB-001/FB-003   宿主取消的错误形状未定。推断：不得以 ENTRY_* 码抛出。
-//   P8 FB-002          上游超发（maxResults=3，适配器收到 5 条）时截断责任未定。推断：适配器输出 ≤ maxResults。
+//   P8 FB-002          已裁决：截断与 truncated 置位归链层（WP5 buildSuccessResult 统一执行）；适配器返回全部映射来源、
+//      不本地截断，maxResults 仅作上游参数 count 入请求。对应测试已按定案契约改写。
 //   P9 BRV-001         「600 字符 / 75 词」计数口径未定（UTF-16 长度或码点）。
 //                      断言二者择一：原样发出，或 ENTRY_CHANNEL_LIMIT 且零出站（不得出站后截断）。
 //
@@ -139,15 +140,22 @@ test("[待办 FB-001/FB-003] P7 宿主取消的错误不得带可降级 ENTRY_* 
   );
 });
 
-test("[待办 FB-002] P8 上游超发：适配器输出不超过 maxResults（截断责任未定）", async (t) => {
+test("BRV-001/FB-002 上游超发（5 条 > maxResults=3）：适配器返回全量来源不截断（截断与 truncated 归链层）", async (t) => {
   const backend = await loadBraveBackend(t, "FB-002");
   const { ctx, fetch } = makeBraveCtx({ maxResults: 3 });
   routeBrave(fetch, { status: 200, body: braveOk([1, 2, 3, 4, 5].map((i) => braveResult(i))) });
   const result = await guard(backend.search(ctx), "P8");
   onlyCall(fetch, "P8");
-  assert.ok(
-    result.sources.length <= 3,
-    `[待办 P8] 截断责任未定（FB-002 写在结果层）。推断适配器输出 ≤ maxResults=3，实际 ${result.sources.length} 条`,
+  // maxResults 仍作为上游参数发送（BRV-001 要求1：count=min(maxResults,20)）；本用例钉住「发送但不本地裁剪」。
+  assert.equal(
+    new URL(fetch.calls[0].url).searchParams.get("count"),
+    "3",
+    "maxResults=3 仍须入请求 count（BRV-001 上游参数），实际未发送或值不符",
+  );
+  assert.equal(
+    result.sources.length,
+    5,
+    `裁决（FB-002）：插件边界截断与 truncated 置位由链 WP5 buildSuccessResult 统一执行，适配器返回全部 5 条映射来源、不本地截断，实际 ${result.sources.length} 条`,
   );
 });
 
