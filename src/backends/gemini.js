@@ -75,7 +75,7 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CONFIG_CODES, ENTRY_CODES } from "../constants.js";
+import { CONFIG_CODES, ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
 
 /** GMI-001：规定端点，精确匹配（无 query、无路径模型参数，模型置于 body）。 */
 const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
@@ -448,9 +448,11 @@ async function roundTrip(ctx, clock, payload) {
     const text = await Promise.race([res.text(), aborted]);
     if (text === ABORTED) throw new Error("gemini body read aborted"); // 进入 catch，按 cause 分流
     return { status: res.status, ok: res.ok, text };
-  } catch {
+  } catch (err) {
     if (cause === "host" || (cause === null && signal?.aborted)) throw hostCancelled();
     if (cause === "budget") throw entryErrorFor(ENTRY_CODES.TIMEOUT, entryRefOf(ctx));
+    // P1-1：已带码的错误原样上抛（ENTRY_PROXY/CONFIG 码/TRANSPORT_RELEASED），不压成 ENTRY_NETWORK。
+    if (carriesPassthroughCode(err)) throw err;
     // 网络层故障：不保留原始 error（可能含 key 或 cause 链），只输出分类后的脱敏错误（CFG-003）。
     throw await transportFailure(entryRefOf(ctx));
   } finally {

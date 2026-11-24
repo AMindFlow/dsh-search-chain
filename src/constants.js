@@ -85,3 +85,23 @@ export const CONFIG_CODES = Object.freeze({
 
 /** FB-003 默认总预算（毫秒）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
+
+/** 传输层释放语义码（src/transport.js fetch() 的 closed 分支）。 */
+export const TRANSPORT_CODES = Object.freeze({
+  RELEASED: "TRANSPORT_RELEASED",
+});
+
+const PASSTHROUGH_CODE_VALUES = new Set([
+  ...Object.values(ENTRY_CODES),
+  ...Object.values(CONFIG_CODES),
+  TRANSPORT_CODES.RELEASED,
+]);
+
+/**
+ * P1-1 透传判定：err 已带 ENTRY_CODES / CONFIG_CODES / TRANSPORT_RELEASED 之一的 code 时，
+ * 传输层与适配器 fetch-catch 必须原样上抛，不得压成 ENTRY_NETWORK（FB-005 代理/直连归因与程序违约暴露）。
+ * 无码错误（含宿主取消的无码 AbortError）返回 false，仍按既有分类走。
+ */
+export function carriesPassthroughCode(err) {
+  return typeof err?.code === "string" && PASSTHROUGH_CODE_VALUES.has(err.code);
+}

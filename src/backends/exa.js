@@ -51,22 +51,13 @@
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
 
 /** Exa Search API 端点（exa.md:5）。 */
 const EXA_ENDPOINT = "https://api.exa.ai/search";
 
-/** FB-005 条目级失败码（镜像 test/helpers/contract.js#ENTRY_CODES 拼写）。 */
-const ENTRY_CODE = Object.freeze({
-  CREDENTIALS: "ENTRY_CREDENTIALS",
-  QUOTA: "ENTRY_QUOTA",
-  RATE_LIMITED: "ENTRY_RATE_LIMITED",
-  PROXY: "ENTRY_PROXY",
-  NETWORK: "ENTRY_NETWORK",
-  CHANNEL_LIMIT: "ENTRY_CHANNEL_LIMIT",
-  TIMEOUT: "ENTRY_TIMEOUT",
-  BAD_RESPONSE: "ENTRY_BAD_RESPONSE",
-  CONTENT_POLICY: "ENTRY_CONTENT_POLICY",
-});
+/** FB-005 条目级失败码：单一权威为 src/constants.js（P1-3；本地别名仅保留引用名，值零变化）。 */
+const ENTRY_CODE = ENTRY_CODES;
 
 /** FB-005：上游额度 code 字符串（非 402 状态命中该 code 时归类额度）。 */
 const INSUFFICIENT_QUOTA = "insufficient_quota";
@@ -310,6 +301,8 @@ async function search(ctx) {
     } catch (err) {
       // 取消/预算中止：不重试（FB-003）。
       if (isAbortLike(err)) throw abortedError(err);
+      // P1-1：已带码的错误原样上抛（ENTRY_PROXY/CONFIG 码/TRANSPORT_RELEASED），不压成 ENTRY_NETWORK。
+      if (carriesPassthroughCode(err)) throw err;
       const code = await classify({ phase: "transport", error: err });
       log("warn", "exa entry request failed without response", { entryId: entry.id, code });
       // CFG-003：不复述 err.message（上游/网络异常可能携带 key 或请求头）。

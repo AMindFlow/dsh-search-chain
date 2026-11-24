@@ -34,7 +34,7 @@
 //   - CDATA 按文本保留（不做实体解码）；XML 声明 / 注释 / PI 消费跳过。
 //   - 解析错误只携带行号与（受名称字符集限制的）标签名，永不回显响应文本（CFG-003）。
 
-import { ENTRY_CODES } from "../constants.js";
+import { ENTRY_CODES, carriesPassthroughCode } from "../constants.js";
 
 /** BING-001：端点精确为 https://www.bing.com/search。 */
 const BING_ENDPOINT = "https://www.bing.com/search";
@@ -126,9 +126,10 @@ async function search(ctx) {
         "Bing RSS 条目超时：条目预算到期，在途请求已取消（FB-003）",
       );
     }
-    if (hostSignal?.aborted || linked.signal.aborted || isAbortError(err)) {
-      return hostCancelledError();
-    }
+    if (hostSignal?.aborted || linked.signal.aborted) return hostCancelledError();
+    // P1-1：已带码的错误原样上抛（ENTRY_PROXY/CONFIG 码/TRANSPORT_RELEASED），不压成 ENTRY_NETWORK。
+    if (carriesPassthroughCode(err)) return err;
+    if (isAbortError(err)) return hostCancelledError();
     return new BingEntryError(
       ENTRY_CODES.NETWORK,
       "Bing RSS 直连网络失败：未取得上游响应，请检查条目网络与代理配置（FB-005）",

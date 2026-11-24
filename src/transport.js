@@ -14,6 +14,7 @@
 // 修改任一值须同时修改 contract.js 并在同一 PR 说明。
 
 import vm from "node:vm";
+import { carriesPassthroughCode } from "./constants.js";
 
 const PAC_CODES = Object.freeze({
   FETCH_FAILED: "PAC_FETCH_FAILED",
@@ -319,6 +320,8 @@ export function createEntryTransport(entry, deps = {}) {
 
   function mapFetchError(err, route) {
     if (err instanceof TransportError) return err;
+    // P1-1：已带归因/程序码的错误原样上抛，不压成 ENTRY_NETWORK（代理故障须与直连网络区分）。
+    if (carriesPassthroughCode(err)) return err;
     const reason = safeReason(err);
     if (route.kind === "direct") {
       const via = route.viaPac ? "（PAC 直连）" : "";
