@@ -159,9 +159,11 @@ test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失�
   assert.equal(hs.fiber.id, undefined, "Fiber 无 id 属性，只有 uid");
   assert.equal(typeof hs.fiber.uid, "string");
   const rows = hs.configuration();
-  assert.deepEqual(rows.map((r) => r.entry.options.id), ["search-chain", "web-search-deepseek"], "行数组含本行与挂载行（{entry, config} 形态）");
+  assert.deepEqual(rows.map((r) => r.entry.options.id), ["search-chain", "web-search-deepseek"], "行数组含本行与挂载行（asar 终审 {entry, inherited, override} 形态）");
   assert.equal(rows[0].entry, hs.entry, "行 entry 与 ctx.fiber.entry 同一对象（宿主对象同一性）");
-  assert.equal(rows[1].config.baseURL, "https://row.example/v1", "官方行按 options.id 在场，携带自身 config");
+  assert.equal(rows[1].inherited.baseURL, "https://row.example/v1", "官方行按 options.id 在场，装载配置在 inherited 层");
+  assert.deepEqual(rows[0].inherited, { entries: [] }, "本行 inherited=装载基线");
+  assert.deepEqual(rows[0].override, {}, "初始 override=空（尚无保存）");
   assert.equal(hs.editor.saved, undefined, "宿主形态行集合没有 saved() 捷径");
   await assert.rejects(hs.editor.edit(hs.fiber, (c) => c), /no longer available/, "Fiber 不是合法写入目标（旧 B3：宿主必拒）");
   await assert.rejects(
@@ -170,7 +172,10 @@ test("fake-host：注册/重复注册/反注册/effect 清理/configEditor 失�
     "同形外来对象不在 entries() 内，同样必须拒绝",
   );
   await hs.editor.edit(hs.entry, (cur) => ({ ...cur, timeoutMs: 7 }));
-  assert.equal(hs.configuration()[0].config.timeoutMs, 7, "保存后 configuration() 读到活行（CFG-004 下一次读取即新值）");
+  const own = hs.configuration()[0];
+  assert.equal(own.override.timeoutMs, 7, "保存写入 override 层（inherited 基线不动）");
+  assert.deepEqual(own.inherited, { entries: [] }, "保存后 inherited 基线保持装载值");
+  assert.equal({ ...own.inherited, ...own.override }.timeoutMs, 7, "有效值=inherited⊕override：保存后下一次读取即新值（CFG-004）");
 });
 
 test("fake-backend：脚本顺序消费、末步重复、默认挂起、失败带码、late 与 programError（A5/FB 面）", async () => {

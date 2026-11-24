@@ -11,8 +11,10 @@
 //         Entry 对象且 target.fiber !== undefined，否则抛 "Configuration entry is no longer available"。
 //         ——「把 ctx.fiber 当写入目标」的接线（旧 B3）在宿主上必拒，本替身同样必拒。
 //       * 宿主形态（hostShape，经 createHostShapeFakeHost）：configEditor.configuration() 返回行数组
-//         [{entry, config}]（entry 与 fiber.entry 为同一对象；行集合【不含 saved()】）；编辑器不再暴露
-//         saved()。旧默认形态保留（含 editor.saved()），仅供既有纯 config 面测试使用。
+//         [{entry, inherited, override}]（asar TS 声明终审：entry 与 fiber.entry 同一对象；
+//         有效配置 = inherited ⊕ override；行集合【不含 saved()】）；编辑器不再暴露 saved()。
+//         保存写入 override，configuration() 每次现读——下一次读取即新有效值（CFG-004）。
+//         旧默认形态保留（含 editor.saved()），仅供既有纯 config 面测试使用。
 //   - configEditor 支持注入保存失败（SET-004/CFG-004：失败后已生效快照保持一致）。
 //   - ctx.effect/ctx.on/ctx.get + fakeHost.disposeAll()：模拟装载→卸载生命周期（DSH-001 release）。
 import { createFakeCredentials } from "./fake-credentials.js";
@@ -126,14 +128,27 @@ export function createFakeHost(opts = {}) {
   // —— 配置编辑（插件保存自身配置的唯一入口）——
   let saved = structuredClone(opts.config ?? {});
   const editorCalls = [];
-  // 宿主形态的其它挂载行（如官方 web-search-deepseek）：行 entry 也是宿主形态 Entry。
+  // 宿主形态分层（终审行形状）：inherited=装载基线（不随保存变），override=本次及以后保存值；
+  // 有效配置 = {...inherited, ...override}。旧形态仍用单层 saved。
+  const inheritedBaseline = structuredClone(opts.config ?? {});
+  let override = {};
+  // 宿主形态的其它挂载行（如官方 web-search-deepseek）：行 entry 也是宿主形态 Entry；
+  // opts.extraRows[].config 作为该行的 inherited 层装载。
   const extraRows = (opts.extraRows ?? []).map((r, i) => {
     const row = makeEntryForm(r.entryId, r.entryId, `extra-${i}-${r.entryId}`);
-    return { entry: row.entry, config: structuredClone(r.config ?? {}) };
+    return { entry: row.entry, inherited: structuredClone(r.config ?? {}), override: {} };
   });
   const configuration = () => [
-    { entry, config: structuredClone(saved) }, // 活 saved：保存后下一次读取即新配置（CFG-004）
-    ...extraRows.map((r) => ({ entry: r.entry, config: structuredClone(r.config) })),
+    {
+      entry,
+      inherited: structuredClone(inheritedBaseline),
+      override: structuredClone(override), // 活 override：保存后下一次读取即新有效值（CFG-004）
+    },
+    ...extraRows.map((r) => ({
+      entry: r.entry,
+      inherited: structuredClone(r.inherited),
+      override: structuredClone(r.override),
+    })),
   ];
   const entries = () => [entry, ...extraRows.map((r) => r.entry)];
   const editor = {
@@ -151,10 +166,11 @@ export function createFakeHost(opts = {}) {
         editor.failNext = null;
         throw err; // 保存失败：已生效快照保持不变（CFG-004/SET-004）
       }
-      const current = structuredClone(saved);
+      const current = hostShape ? { ...inheritedBaseline, ...override } : structuredClone(saved);
       const candidate = await change(current);
       if (opts.validate) opts.validate(candidate); // 抛错 = 宿主拒绝，保存不生效
-      saved = candidate;
+      if (hostShape) override = candidate; // 保存写 override 层（inherited 基线不动）
+      else saved = candidate;
     },
   };
   if (hostShape) {
@@ -229,7 +245,7 @@ export function createFakeHost(opts = {}) {
           current: () => {
             const row = editor.configuration().find((r) => r.entry === entry);
             if (!row) throw new Error("own configuration row missing");
-            return structuredClone(row.config);
+            return { ...row.inherited, ...row.override }; // 有效值 = 分层合并（终审语义）
           },
         };
       }
@@ -246,8 +262,9 @@ export function createFakeHost(opts = {}) {
 }
 
 /**
- * 宿主形态替身（PR#14 复审实证语义）：configEditor.configuration() 返回 [{entry, config}] 行数组
- * （entry.options.id 裸 id；entry.id 前缀 getter；Fiber 无 id 只有 uid），行集合不含 saved()，
+ * 宿主形态替身（asar TS 声明终审语义）：configEditor.configuration() 返回
+ * [{entry, inherited, override}] 行数组（有效值 = inherited ⊕ override；
+ * entry.options.id 裸 id；entry.id 前缀 getter；Fiber 无 id 只有 uid），行集合不含 saved()，
  * editor.edit 带宿主身份校验。生产接线甄别测试必须用本形态。
  * @param {Parameters<typeof createFakeHost>[0] & { extraRows?: Array<{ entryId: string, config: any }> }} [opts]
  */

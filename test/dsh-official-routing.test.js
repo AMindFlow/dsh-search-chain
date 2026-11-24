@@ -144,9 +144,11 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
 
   const OLD = C.makeSavedConfig(ENTRIES, { useOfficialDeepSeekSearch: false });
   // 真实宿主只把装载时刻快照交给 apply 且不随保存更新；活配置的唯一来源是 configuration() 行
-  // （宿主实证：行 {entry, config}，entry 与 ctx.fiber.entry 同一对象，行集合无 saved() 捷径）。
-  // 台架同时挂一行 web-search-deepseek（B2′ 的「行匹配按 options.id」台架就位；B2 行读取断言
-  // 属 src/official 实机核对面，本测试经 testDeps 注入 official，不在此钉）。
+  // （asar TS 声明终审：Array<{entry, inherited, override}>，有效值 = inherited ⊕ override；
+  // entry 与 ctx.fiber.entry 同一对象；行集合无 saved() 捷径；保存写 override 层）。
+  // 台架同时挂一行 web-search-deepseek（其 config 作为该行 inherited 层装载；B2′ 的
+  // 「行匹配按 options.id」台架就位；B2 行读取断言属 src/official 实机核对面，
+  // 本测试经 testDeps 注入 official，不在此钉）。
   const loadSnapshot = structuredClone(OLD);
   const host = createHostShapeFakeHost({
     config: structuredClone(OLD),
@@ -173,6 +175,18 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
   const provider = host.searchRegistrations()[0];
   assert.ok(provider && provider.id === C.PROVIDER_ID, "provider 必须已经注册（DSH-001）");
 
+  // B-C 写路径真接线：保存必须走 src/index.js 导出的 createSettingsPort(ctx) 端口工厂——
+  // 替身的宿主身份校验会拒绝 Fiber/外来目标（B3 回归钉）。导出未落地时本条为预期红。
+  if (typeof mod.createSettingsPort !== "function") {
+    t.diagnostic(
+      "[WP0 oracle] 等待 src/index.js 导出 createSettingsPort(ctx) 端口工厂（B-C：生产保存路径必须" +
+      "经真实接线，settings.entry=ctx.fiber.entry）。本条为红是测试信号（勿弱化/勿 skip）——" +
+      "dev 导出落地后本用例自动续跑三段语义。",
+    );
+    assert.fail("等待 createSettingsPort：B-C 生产保存路径测试等待 src/index.js 端口工厂导出");
+  }
+  const port = mod.createSettingsPort(host.ctx); // 生产端口（非台架 settingsPort）
+
   // 初始基线：装载态开关为 OFF——官方路由的查询必须走自定义链。此步消除 provider 活读坏成
   // 空配置（行形态错读成 {}）时靠 useOfficial 缺省 true 「空过」甄别点的假绿：活读必须读到
   // 宿主行里的真实值 false，而不是 {}、装载快照缺省或任何缓存。
@@ -185,12 +199,13 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
   );
   assert.equal(chainCalls.length, 1, "初始状态官方路由查询走自定义链（SET-005 尊重已保存的显式 OFF）");
 
-  // 台架自检：保存确实落到宿主侧（若这条红，是台架问题，不是接线问题——排除假红来源）。
-  await cfgMod.writeConfig(host.settingsPort, { ...structuredClone(OLD), useOfficialDeepSeekSearch: true });
+  // 台架自检：经生产端口保存确实落到宿主 override 层（若这条红，是台架/端口问题，不是查询接线
+  // 问题——排除假红来源）。端口来自 createSettingsPort：Fiber 目标会被替身身份校验拒绝（B3 钉）。
+  await cfgMod.writeConfig(port, { ...structuredClone(OLD), useOfficialDeepSeekSearch: true });
   assert.equal(
-    (await cfgMod.readConfig(host.settingsPort)).useOfficialDeepSeekSearch,
+    (await cfgMod.readConfig(port)).useOfficialDeepSeekSearch,
     true,
-    "fake-host 侧保存应已生效（台架自检）",
+    "生产端口保存应已生效（台架自检；读走 inherited⊕override 有效值）",
   );
 
   // CFG-004 甄别点：这次 search 必须读【保存后】的快照 → 官方路由 + 开关开 → 官方通道。
@@ -204,7 +219,7 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
   assert.equal(chainCalls.length, 1, "开关开 + 官方路由生效：本条查询零新增链调用（DSH-005；1 为初始基线那次）");
 
   // 反向翻转 ON→OFF：第三条查询应回到自定义链——证明每次查询都实时读，而非任一方向缓存。
-  await cfgMod.writeConfig(host.settingsPort, { ...structuredClone(OLD), useOfficialDeepSeekSearch: false });
+  await cfgMod.writeConfig(port, { ...structuredClone(OLD), useOfficialDeepSeekSearch: false });
   await provider.search({ query: DEFAULT_QUERY, llmProvider: C.OFFICIAL_ROUTE_ID });
   assert.equal(officialCalls.length, 1, "开关保存为 OFF 后的查询不得再走官方通道（CFG-004/SET-005）");
   assert.equal(chainCalls.length, 2, "第二次保存应作用于下一次查询：回到自定义链（CFG-004）");
