@@ -84,6 +84,8 @@ export function spyFetch(inner) {
   spy.dispatched = dispatched;
   spy.inner = inner;
   spy.when = inner.when;
+  // 透传底层记录的调用列表（如 bodyHangFetch 的 bodyCancelled 标记；fake-fetch 亦有 calls）。
+  spy.calls = inner.calls;
   return spy;
 }
 
@@ -144,6 +146,59 @@ export function hangBing(fetch) {
 /** 为 Bing 端点声明一条网络故障路由。 */
 export function failBing(fetch, error) {
   fetch.when(BING_ENDPOINT).fails({ error });
+}
+
+/**
+ * body 阶段双 fetch（FB-003 覆盖 body 生命周期；审阅缺口 2）：响应头先到——fetch 的 promise
+ * 立即 resolve 一个 Response，body 流永不写入任何块，getReader().read() 永不 resolve
+ * （模拟上游只发出响应头、body 挂起）。适配器 reader.cancel() 兜底生效时记录 bodyCancelled。
+ * 共享 fake-fetch 不承载该形态，故按任务要求写入 Bing 自有 helper。
+ */
+export function bodyHangFetch(opts = {}) {
+  const calls = [];
+  const fetchFn = (url, init = {}) => {
+    const record = { url: String(url), init, bodyCancelled: false };
+    calls.push(record);
+    const signal = init?.signal;
+    if (signal?.aborted) {
+      record.settled = "aborted";
+      const err = new Error(signal.reason?.message ?? "This operation was aborted");
+      err.name = "AbortError";
+      return Promise.reject(err);
+    }
+    const stream = new ReadableStream({
+      start() {
+        // 响应头已到（Response 已 resolve）；body 永不写入任何块：read() 挂起。
+      },
+      cancel() {
+        record.bodyCancelled = true;
+      },
+    });
+    record.settled = "ok";
+    return Promise.resolve(
+      new Response(stream, {
+        status: opts.status ?? 200,
+        headers: {
+          "content-type": opts.contentType ?? "application/rss+xml; charset=utf-8",
+          ...(opts.headers ?? {}),
+        },
+      }),
+    );
+  };
+  fetchFn.calls = calls;
+  fetchFn.count = () => calls.length;
+  return fetchFn;
+}
+
+/**
+ * body 阶段测试上下文：与 makeBingCtx 等价，但出站改走 bodyHangFetch（响应头先到、body 挂起）。
+ * opts 透传给 makeBingCtx；body 形状经 opts.bodyStatus / opts.bodyContentType 调整。
+ */
+export function makeBingBodyHangCtx(opts = {}) {
+  const { ctx, clock, log } = makeBingCtx(opts);
+  const bodyFetch = spyFetch(bodyHangFetch({ status: opts.bodyStatus, contentType: opts.bodyContentType }));
+  ctx.fetch = bodyFetch;
+  return { ctx, clock, fetch: bodyFetch, log };
 }
 
 /** 把 {status, contentType, body} 样本路由到 Bing 端点。 */

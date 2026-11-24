@@ -1,7 +1,9 @@
 // bing.md BING-001「RSS 解析与来源」与 BING-002「空 Feed」验收（docs/specs/draft/bing.md）。全红：src/backends/bing.js 尚未实现，等待 WP4。
 // 覆盖：channel/item 按顺序映射 link→url、title、description→snippet、可解析的 pubDate→publishedAt；
 //       描述作可显示文本；部分无效 item 丢弃保留有效；合法 RSS 零 item 为空数组而非错误；
-//       XML 实体解码；不展开外部实体；纯来源结果不携带 content（FB-002）。
+//       XML 实体解码（含数字字符引用：合法解码、无效引用按字面保留，审阅缺口 1）；
+//       恶意 & 串线性扫描性能（审阅缺口 4）；DOCTYPE 开头的合法 RSS 正样本不再误判拦截页（审阅缺口 5）；
+//       不展开外部实体；纯来源结果不携带 content（FB-002）。
 // 待办与未断言歧义见 helpers/bing-oracle.js 文件头（AMB-3 publishedAt 格式、AMB-4 描述裁剪、AMB-7 截断责任、AMB-8 标记文本）。
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -13,6 +15,8 @@ import {
   makeBingCtx,
   onlyDispatch,
   routeBing,
+  rssDoc,
+  rssItem,
   settle,
 } from "./helpers/bing-oracle.js";
 
@@ -138,4 +142,72 @@ test("BING-001 解析：返回值为上游顺序的前缀（maxResults 截断语
   const urls = res.value.sources.map((s) => s.url);
   assert.ok(urls.length >= 1 && urls.length <= upstreamUrls.length, "返回条数必须在 1 与上游条数之间");
   assert.deepEqual(urls, upstreamUrls.slice(0, urls.length), "返回值必须是上游顺序的前缀（BING-001 顺序；FB-002）");
+});
+
+test("BING-001 解析：数字字符引用合法解码、无效引用按字面保留（&#39;→'、&#x41;→A；&#0;/&#x110000;/&#xD800;/&#abc;/&unknown; 原样，审阅缺口 1）", async (t) => {
+  const bing = await loadBingBackend(t, CLAUSE);
+  const { ctx, fetch } = makeBingCtx();
+  const body = rssDoc(
+    rssItem({
+      title: "标题&#39;单引号&#x41;",
+      link: "https://numeric-ref.host.test/doc",
+      description: "描述&#39;单引号&#39;与&#x41;解码，&#0;、&#x110000;、&#xD800;、&#abc;、&unknown;按字面保留",
+    }),
+  );
+  routeBing(fetch, { status: 200, body, headers: RSS_HEADERS });
+
+  const res = await settle(bing.search(ctx));
+
+  assert.equal(res.ok, true, `前置：数字引用样本须成功解析（BING-001），实际错误：${res.error?.code ?? ""} ${res.error?.message ?? ""}`);
+  const s = res.value.sources[0];
+  assert.equal(s.title, "标题'单引号A", "title 中 &#39;→'、&#x41;→A（十进制/十六进制数字引用解码）");
+  assert.equal(
+    s.snippet,
+    "描述'单引号'与A解码，&#0;、&#x110000;、&#xD800;、&#abc;、&unknown;按字面保留",
+    "无效引用（码位 0 / 超 0x10FFFF / 代理区 / 非数字数字引用 / 未知命名实体）须按字面原样保留（BING-001 解码安全面，不查表不加载 DTD）",
+  );
+});
+
+test("BING-001 解析：DOCTYPE 开头的合法 RSS 正样本解析成功，不再误判为 HTML 拦截页（审阅缺口 5）", async (t) => {
+  const bing = await loadBingBackend(t, CLAUSE);
+  const { ctx, fetch } = makeBingCtx();
+  const body = [
+    '<!DOCTYPE rss>',
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<rss version="2.0"><channel>',
+    "<title>synthetic doctype results</title>",
+    "<link>https://www.bing.synthetic.invalid/search</link>",
+    rssItem({ title: "DOCTYPE 正样本", link: "https://doctype-sample.host.test/doc", description: "DOCTYPE 声明后的合法 RSS 正文" }),
+    "</channel></rss>",
+  ].join("\n");
+  routeBing(fetch, { status: 200, body, headers: RSS_HEADERS });
+
+  const res = await settle(bing.search(ctx));
+
+  assert.equal(res.ok, true, `DOCTYPE 开头的合法 RSS 必须解析成功（不得误判拦截页），实际错误：${res.error?.code ?? ""} ${res.error?.message ?? ""}`);
+  assertSourceShape(res.value.sources);
+  assert.equal(res.value.sources.length, 1, "唯一 item 必须映射（BING-001）");
+  assert.equal(res.value.sources[0].url, "https://doctype-sample.host.test/doc", "link → url（BING-001）");
+  assert.equal(res.value.sources[0].snippet, "DOCTYPE 声明后的合法 RSS 正文", "description → snippet（BING-001）");
+});
+
+test("BING-001 解析：1MB 恶意 & 串线性扫描不超时（<200ms，宽松阈值防 CI 抖动，审阅缺口 4）", async (t) => {
+  const bing = await loadBingBackend(t, CLAUSE);
+  const { ctx, fetch } = makeBingCtx();
+  const hostile = "&".repeat(1_000_000);
+  routeBing(fetch, {
+    status: 200,
+    body: rssDoc(rssItem({ title: "perf sample", link: "https://perf-sample.host.test/doc", description: hostile })),
+    headers: RSS_HEADERS,
+  });
+
+  const startedAt = performance.now();
+  const res = await settle(bing.search(ctx));
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(res.ok, true, `前置：恶意 & 串文档须成功解析（BING-001），实际错误：${res.error?.code ?? ""} ${res.error?.message ?? ""}`);
+  assert.ok(
+    elapsedMs < 200,
+    `1MB 恶意 & 串（无有效引用）解析须 <200ms（宽松阈值防 CI 抖动；实体扫描须为线性 O(n)），实际 ${elapsedMs.toFixed(1)}ms`,
+  );
 });

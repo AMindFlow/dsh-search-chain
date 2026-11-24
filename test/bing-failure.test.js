@@ -2,6 +2,8 @@
 // 全红：适配器测试等待 WP4 src/backends/bing.js；classifyUpstreamFailure 段另等 WP5 src/search.js（分界函数归属 WP5，非 WP4）。
 // 覆盖：403 访问受限、200 拦截页、非 RSS 响应、JSON 应答、畸形 XML、无有效链接、共享 HTTP 结局（401/402/429/坏 JSON/403 HTML）、
 //       直连网络故障；拦截后不得额外出站。
+//       body 阶段读取失败映射（审阅缺口 3）：200 形 text() 原始传输失败 → ENTRY_NETWORK；
+//       429 形 body 体积超限 → 仍按状态归 ENTRY_RATE_LIMITED（429 状态分类不丢失）。
 // 待办：TODO-BING-1（5xx 可降级，见本文件末尾）。歧义：AMB-5（200 拦截页归类与任务简报冲突，已按样本取 ENTRY_CREDENTIALS）。
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -20,6 +22,7 @@ import {
   routeFromResponse,
   settle,
   sharedUpstreamOutcomes,
+  spyFetch,
 } from "./helpers/bing-oracle.js";
 
 const CLAUSE = "BING-002 失败";
@@ -130,6 +133,55 @@ test("FB-005 分界：直连网络故障（fetch 抛错）→ ENTRY_NETWORK", as
 
   assertDegradableFailure(res, "直连网络");
   assert.equal(res.error.code, ENTRY_CODES.NETWORK, "fetch 抛错属于直连网络（FB-005）");
+});
+
+test("BING-002/FB-005 失败：200 形响应体 text() 原始传输失败 → ENTRY_NETWORK（body 读取失败映射，审阅缺口 3）", async (t) => {
+  const bing = await loadBingBackend(t, CLAUSE);
+  const { ctx } = makeBingCtx();
+  // 鸭子形态响应：无 body 流（走 text() 路径），text() 以原始传输层错误拒绝（模拟 terminated / body 不可读）。
+  const rawResponse = {
+    status: 200,
+    headers: { "content-type": "application/rss+xml" },
+    text: () => Promise.reject(new TypeError("synthetic body read failed: terminated")),
+  };
+  const fetch = spyFetch(async () => rawResponse);
+  ctx.fetch = fetch;
+
+  const res = await settle(bing.search(ctx));
+
+  assertDegradableFailure(res, "200 形 text() 失败");
+  assert.equal(
+    res.error.code,
+    ENTRY_CODES.NETWORK,
+    `text() 原始失败（200 形）须映射为 ENTRY_NETWORK（FB-005 传输层），不得裸抛原始错误，实际：${res.error.code}`,
+  );
+  assert.ok(
+    !res.error.message.includes("terminated") && !res.error.message.includes("synthetic"),
+    "CFG-003：错误文本不得包含原始读取错误内容，实际：",
+  );
+  assert.equal(fetch.dispatched.length, 1, "前置：恰好一次出站");
+});
+
+test("BING-002/FB-005 失败：429 形 body 体积超限仍按状态归 ENTRY_RATE_LIMITED（429 状态分类不丢失，审阅缺口 3）", async (t) => {
+  const bing = await loadBingBackend(t, CLAUSE);
+  const { ctx, fetch } = makeBingCtx();
+  // 超限（>2MB）且不含 insufficient_quota 语义的 429 body：额度扫描遇超限视为「无额度标记」，
+  // 最终分类仍由 429 状态给出（不因 body 体积改判为 BAD_RESPONSE/NETWORK）。
+  routeBing(fetch, {
+    status: 429,
+    body: "x".repeat(2 * 1024 * 1024 + 10),
+    headers: { "content-type": "application/json" },
+  });
+
+  const res = await settle(bing.search(ctx));
+
+  assertDegradableFailure(res, "429 形 body 超限");
+  assert.equal(
+    res.error.code,
+    ENTRY_CODES.RATE_LIMITED,
+    `429 形 body 超限时状态分类不得丢失（仍限流），不得改判 BAD_RESPONSE/NETWORK，实际：${res.error.code}`,
+  );
+  onlyDispatch(fetch);
 });
 
 test("TODO-BING-1 5xx：可降级，且不归为 CREDENTIALS / QUOTA / RATE_LIMITED（具体码待规格，见 bing-oracle.js 文件头）", async (t) => {
