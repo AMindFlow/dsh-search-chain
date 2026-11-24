@@ -49,6 +49,9 @@
 // 去留（删除或保留为离线兜底）交协调方统一裁决。
 // ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 /** Exa Search API 端点（exa.md:5）。 */
 const EXA_ENDPOINT = "https://api.exa.ai/search";
 
@@ -112,23 +115,34 @@ function localClassifyUpstreamFailure(info) {
   return ENTRY_CODE.BAD_RESPONSE; // response 阶段其余状态（含 200 坏 JSON/坏结构）→ 异常响应
 }
 
+const SEARCH_MODULE_PATH = fileURLToPath(new URL("../search.js", import.meta.url));
 let classifierPromise;
 
-/** 优先使用 WP5 共享分类器（A4），缺失时回退本地镜像（进程内只探测一次）。 */
+/**
+ * 解析通用分类函数（与 WP2/WP3 做法一致，进程内只探测一次）：
+ * - ../search.js 不存在（本分支 WP5 未合入）→ 本地镜像兜底；
+ * - 文件存在但导入失败或未导出 classifyUpstreamFailure → A4 程序违约，向上抛出（不带 ENTRY 码）。
+ */
 function loadClassifier() {
-  if (!classifierPromise) {
-    classifierPromise = import("../search.js")
-      .then((mod) =>
-        mod && typeof mod.classifyUpstreamFailure === "function" ? mod.classifyUpstreamFailure : localClassifyUpstreamFailure,
-      )
-      .catch(() => localClassifyUpstreamFailure); // 本分支无 src/search.js（WP5）→ 本地镜像兜底
-  }
+  classifierPromise ??= existsSync(SEARCH_MODULE_PATH)
+    ? import("../search.js").then((mod) => {
+        if (typeof mod?.classifyUpstreamFailure !== "function") {
+          throw new Error("search-chain: src/search.js 未导出 classifyUpstreamFailure（A4 违约）");
+        }
+        return mod.classifyUpstreamFailure;
+      })
+    : Promise.resolve(localClassifyUpstreamFailure);
   return classifierPromise;
 }
 
 async function classify(info) {
   const classifyUpstreamFailure = await loadClassifier();
-  return classifyUpstreamFailure(info);
+  const code = classifyUpstreamFailure(info);
+  if (!Object.values(ENTRY_CODE).includes(code)) {
+    // FB-005：分类器只产出条目码；未知码属内部程序违约，向调用方暴露。
+    throw new Error(`search-chain: classifyUpstreamFailure 返回了未知分类码（A4 违约）：${String(code)}`);
+  }
+  return code;
 }
 
 // ─── 错误构造（CFG-003 脱敏：不附 cause/headers/init/原始响应体）──────────────────────────────────────
