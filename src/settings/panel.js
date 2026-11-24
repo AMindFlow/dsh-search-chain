@@ -291,7 +291,7 @@ export function createSettingsPanel(deps) {
       else entry.proxy = deepClone(nextProxy.value);
     }
     if (nextApiKey !== undefined) {
-      // 已有引用则沿用（更新值），否则保存时按条目生成新引用。
+      // 既有 ref 仅记入脱敏名单；保存时每次带 key 都生成新 ref（见 save()），不覆写既有 ref。
       const ref =
         typeof entry.credentialRef === "string" && entry.credentialRef.length > 0
           ? entry.credentialRef
@@ -369,71 +369,124 @@ export function createSettingsPanel(deps) {
 
   // ─── 保存（SET-004 / CFG-004）────────────────────────────────────────────
 
-  function markSaveError(code, message) {
-    const secrets = [...state.pendingKeys.values()].map((p) => p.value);
-    state.saveError = { code, message: redactSecrets(message, secrets) };
+  const CONFLICT_MESSAGE = "配置已被其他界面修改；未保存的编辑已保留，请重新打开面板核对差异后再保存。";
+
+  function errorText(error) {
+    return typeof error?.message === "string" ? error.message : String(error);
+  }
+
+  /** 受控保存错误（safe=true：message 已是固定文案 + 脱敏 detail，catch 原样采用）。 */
+  function saveFault(code, message) {
+    const err = configError(code, message);
+    err.safe = true;
+    return err;
+  }
+
+  /** 凭据新引用：每次带 key 保存都生成新 ref（唯一、不复用），绝不覆写既有 ref（审阅 P2-6）。 */
+  function newCredentialRef(id) {
+    idCounter += 1;
+    return `${CREDENTIAL_REF_PREFIX}${id}:${nowFn().toString(36)}-${idCounter.toString(36)}`;
+  }
+
+  /** 保存前拍下的脱敏名单：待写入的新 key 与 pending 既有 ref（catch 后 pending 清空也不失效）。 */
+  function snapshotSecrets() {
+    const out = [];
+    for (const pending of state.pendingKeys.values()) {
+      if (typeof pending.value === "string") out.push(pending.value);
+      if (typeof pending.ref === "string") out.push(pending.ref);
+    }
+    return out;
   }
 
   /**
    * 保存草稿到宿主（唯一写入入口 settings.editor，目标 settings.entry）。
-   * 成功：恰好一次 editor 写入，基线刷新，dirty/saveError 清零。
-   * 失败（冲突或写入异常）：已生效快照不变，草稿保留，view().saveError 为界面真值，
-   * 同时 reject（oracle：save() 可 reject 或 resolve，调用方以 view().saveError 为准）。
+   * 落盘时序（凭据先于配置，P1-1）：
+   *   1) 版本冲突检测：基线 ≠ 当前快照 → CONFIG_CONFLICT，草稿保留；
+   *   2) 每个带 key 条目以【新 ref】写入凭据服务（不覆写既有 ref）；此时尚未改动生效配置；
+   *   3) editor.edit 成功 → 条目落新 ref、基线刷新、清脏；
+   *      editor.edit 失败 → 生效快照不变；本次新 ref 的凭据成孤儿（无害）；旧 ref 不删不踩。
+   *      v0.1 容忍孤儿 ref（不做凭据回收）；草稿与 pending key 保留以便重试。
+   * 任何失败（冲突 / 凭据写入 / 宿主写入 / 未知异常）都经 catch 落 view().saveError：
+   * 文案固定 + 脱敏 detail，绝不含 key 原值；同时 reject（调用方以 view().saveError 为准）。
    */
   async function save() {
     requireOpened();
-
-    // 1) 版本冲突：面板打开后配置已被其他界面改动 → 不覆盖外部改动（SET-004）。
-    const current = settings.current();
-    if (!deepEqual(current, state.base)) {
-      const message = "配置已被其他界面修改；未保存的编辑已保留，请重新打开面板核对差异后再保存。";
-      markSaveError(CONFLICT_CODE, message);
-      throw configError(CONFLICT_CODE, message);
-    }
-
-    // 2) 凭据落引用（CFG-002/CFG-003：明文 key 经宿主凭据服务保存为引用；key 只写不读）。
-    for (const [id, pending] of state.pendingKeys) {
-      const entry = findEntry(id);
-      if (!entry) continue;
-      if (!credentials || typeof credentials.set !== "function") {
-        const message = "保存失败：当前宿主未提供凭据服务，无法保存凭据输入。";
-        markSaveError(CONFIG_CODES.SAVE_FAILED, message);
-        throw configError(CONFIG_CODES.SAVE_FAILED, message);
-      }
-      const ref = pending.ref ?? `${CREDENTIAL_REF_PREFIX}${id}`;
-      await credentials.set(ref, pending.value);
-      entry.credentialRef = ref;
-    }
-    state.pendingKeys.clear();
-
-    // 3) 写入宿主（CFG-004 同一份配置，唯一写入入口）。
-    //    真宿主签名：change 为变异函数 (raw, inherited) => 新 raw 整体层（落 override 层）；
-    //    插件只拥有 OWN_CONFIG_KEYS，raw 中其余键原样保留。
-    //    timeoutMs 面板不编辑（T-7）：存在则原样带回，缺失不发明默认值（规范化归 WP1 normalizeConfig）。
-    const normalizedNext = {
-      entries: deepClone(state.entries),
-      useOfficialDeepSeekSearch: state.official,
-      ...(state.base.timeoutMs !== undefined ? { timeoutMs: state.base.timeoutMs } : {}),
-    };
+    const secrets = snapshotSecrets(); // 保存前拍快照；catch 脱敏只依赖它
 
     try {
-      await settings.editor.edit(settings.entry, (raw) => {
-        const merged = { ...(raw ?? {}) };
-        for (const key of OWN_CONFIG_KEYS) delete merged[key];
-        return { ...merged, ...normalizedNext };
-      });
-    } catch (error) {
-      const message = `保存失败：${error?.message ?? String(error)}。已生效的配置未改动，请检查宿主配置状态后重试。`;
-      markSaveError(CONFIG_CODES.SAVE_FAILED, message);
-      const wrapped = configError(CONFIG_CODES.SAVE_FAILED, message);
-      wrapped.cause = error;
-      throw wrapped;
-    }
+      // 1) 版本冲突（SET-004）。
+      if (!deepEqual(settings.current(), state.base)) {
+        throw saveFault(CONFLICT_CODE, CONFLICT_MESSAGE);
+      }
 
-    // 4) 成功：基线刷新为最新宿主快照（含宿主可能的规范化），清脏与错误。
-    state.base = deepClone(settings.current());
-    state.dirty = false;
-    state.saveError = null;
+      // 2) 凭据：每次带 key 保存生成新 ref 写入（CFG-002/CFG-003；key 只写不读）。
+      const pendingSnapshot = [...state.pendingKeys].filter(([id]) => findEntry(id));
+      if (pendingSnapshot.length > 0 && (!credentials || typeof credentials.set !== "function")) {
+        throw saveFault(CONFIG_CODES.SAVE_FAILED, "保存失败：当前宿主未提供凭据服务，无法保存凭据输入。");
+      }
+      const newRefs = new Map(); // id → 新 ref（editor.edit 成功后才落条目）
+      for (const [id, pending] of pendingSnapshot) {
+        const ref = newCredentialRef(id);
+        secrets.push(ref);
+        try {
+          await credentials.set(ref, pending.value);
+        } catch (error) {
+          throw saveFault(
+            CONFIG_CODES.SAVE_FAILED,
+            `保存失败：凭据服务写入失败（${redactSecrets(errorText(error), secrets)}）。已生效的配置未改动，请检查凭据服务状态后重试。`,
+          );
+        }
+        newRefs.set(id, ref);
+      }
+
+      // 3) 写入宿主前复核基线（凭据写入为异步，期间外部可能改动配置）。
+      if (!deepEqual(settings.current(), state.base)) {
+        throw saveFault(CONFLICT_CODE, CONFLICT_MESSAGE);
+      }
+      const nextEntries = deepClone(state.entries).map((e) =>
+        newRefs.has(e.id) ? { ...e, credentialRef: newRefs.get(e.id) } : e,
+      );
+      const ownNext = { entries: nextEntries, useOfficialDeepSeekSearch: state.official };
+
+      // 真宿主签名：change 为变异函数 (raw, inherited) => 新 raw 整体层（落 override 层）；
+      // 插件只拥有 OWN_CONFIG_KEYS，raw 中其余键原样保留。
+      // timeoutMs 面板不编辑（T-7）：仅当 override 层（raw）已存在才回写；inherited 值不复制进 override（P2-4）。
+      try {
+        await settings.editor.edit(settings.entry, (raw) => {
+          const layer = { ...(raw ?? {}) };
+          for (const key of OWN_CONFIG_KEYS) delete layer[key];
+          const keepTimeout = raw?.timeoutMs !== undefined;
+          return { ...layer, ...ownNext, ...(keepTimeout ? { timeoutMs: raw.timeoutMs } : {}) };
+        });
+      } catch (error) {
+        throw saveFault(
+          CONFIG_CODES.SAVE_FAILED,
+          `保存失败：宿主拒绝写入（${redactSecrets(errorText(error), secrets)}）。已生效的配置未改动，请检查宿主配置状态后重试。`,
+        );
+      }
+
+      // 4) 成功：条目落新 ref（旧 ref 不删不踩）；pending 仅清除快照内未被再次编辑的项；基线刷新。
+      for (const [id, ref] of newRefs) {
+        const entry = findEntry(id);
+        if (entry) entry.credentialRef = ref;
+      }
+      for (const [id, pending] of pendingSnapshot) {
+        if (state.pendingKeys.get(id)?.value === pending.value) state.pendingKeys.delete(id);
+      }
+      state.base = deepClone(settings.current());
+      state.dirty = false;
+      state.saveError = null;
+    } catch (error) {
+      const failure =
+        error?.safe === true
+          ? error
+          : saveFault(
+              CONFIG_CODES.SAVE_FAILED,
+              `保存失败：${redactSecrets(errorText(error), secrets)}。已生效的配置未改动，请检查宿主配置与凭据状态后重试。`,
+            );
+      state.saveError = { code: failure.code, message: failure.message };
+      throw failure;
+    }
   }
 
   return {
