@@ -41,8 +41,13 @@ import { ENTRY_CODES } from "../constants.js";
 const BING_ENDPOINT = "https://www.bing.com/search";
 /** AMB-2：只提交 q 与 format=rss。 */
 const RSS_FORMAT_PARAM = "rss";
-/** 2xx 响应体解析上限（真实 Bing RSS 样本为数十 KB；超限按异常响应，防止异常体耗尽内存）。 */
-const MAX_PARSE_CHARS = 1024 * 1024;
+/**
+ * 响应体字节上限（流式累计；真实 Bing RSS 样本为数十 KB）。超限即 cancel 并按异常响应处理，
+ * 防止异常体耗尽内存。429 额度扫描遇超限视为「无额度标记」，不因体积改判。
+ */
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/** 数字字符引用体（# 之后）的最大长度，防止畸形长引用拖慢扫描；超出按字面保留。 */
+const NUMERIC_REF_MAX = 12;
 /** 429 额度判定标记（FB-005：429 + insufficient_quota 属额度）。只扫描，不保留响应体。 */
 const QUOTA_MARKER = "insufficient_quota";
 
@@ -107,32 +112,40 @@ async function search(ctx) {
     if (hostSignal) hostSignal.removeEventListener("abort", onHostAbort);
   };
 
-  // BING-001：一次 GET；q 为原查询（URL 编码往返），format=rss；免 key——ctx.key 全路径不使用，
-  // 注入也不出现在 URL 或任何头部；无请求体；出站经 ctx.fetch（A6，网络走条目自己的配置）。
-  const url = buildSearchUrl(query);
-  let response;
-  try {
-    response = await ctx.fetch(url, { method: "GET", signal: linked.signal });
-  } catch (err) {
-    cleanup();
+  // 失败归类（FB-003/FB-005）：先保留已分类的条目错误；其余按「预算到期 → TIMEOUT，宿主取消 → 无码
+  // AbortError，否则 → NETWORK」映射。text()/流读取的原始异常（如 terminated）只走这里，绝不裸出栈。
+  const classify = (err) => {
+    if (err instanceof BingEntryError) return err;
     if (budgetExpired) {
-      throw new BingEntryError(
+      return new BingEntryError(
         ENTRY_CODES.TIMEOUT,
         "Bing RSS 条目超时：条目预算到期，在途请求已取消（FB-003）",
       );
     }
     if (hostSignal?.aborted || linked.signal.aborted || isAbortError(err)) {
-      throw hostCancelledError();
+      return hostCancelledError();
     }
-    throw new BingEntryError(
+    return new BingEntryError(
       ENTRY_CODES.NETWORK,
       "Bing RSS 直连网络失败：未取得上游响应，请检查条目网络与代理配置（FB-005）",
     );
+  };
+
+  // BING-001：一次 GET；q 为原查询（URL 编码往返），format=rss；免 key——ctx.key 全路径不使用，
+  // 注入也不出现在 URL 或任何头部；无请求体；出站经 ctx.fetch（A6，网络走条目自己的配置）。
+  // cleanup 放在 body 读取完成/失败之后（FB-003：预算与宿主取消覆盖整个 fetch + body 生命周期）。
+  const url = buildSearchUrl(query);
+  let sources;
+  try {
+    const response = await ctx.fetch(url, { method: "GET", signal: linked.signal });
+    sources = await toSources(response, linked.signal);
+  } catch (err) {
+    throw classify(err);
+  } finally {
+    cleanup();
   }
-  cleanup();
 
   // AMB-7：按 maxResults 截断为上游顺序的前缀；truncated 由链级设置（FB-002）。
-  let sources = await toSources(response);
   const maxResults = ctx?.maxResults;
   if (typeof maxResults === "number" && Number.isFinite(maxResults) && maxResults >= 0) {
     sources = sources.slice(0, Math.floor(maxResults));
@@ -162,7 +175,7 @@ function isAbortError(err) {
  * 状态与内容分类（BING-002/FB-005）。除 429 扫描与 2xx 解析外不读响应体；
  * 所有错误消息为静态文本（或仅含状态码），不含响应体原文、查询与 key（CFG-003）。
  */
-async function toSources(response) {
+async function toSources(response, signal) {
   const status = Number(response?.status);
 
   if (status === 401 || status === 403) {
@@ -175,7 +188,7 @@ async function toSources(response) {
     throw new BingEntryError(ENTRY_CODES.QUOTA, "Bing RSS 返回 HTTP 402：额度或计费受限（FB-005）");
   }
   if (status === 429) {
-    const quotaExceeded = await bodyHasQuotaMarker(response);
+    const quotaExceeded = await bodyHasQuotaMarker(response, signal);
     throw new BingEntryError(
       quotaExceeded ? ENTRY_CODES.QUOTA : ENTRY_CODES.RATE_LIMITED,
       quotaExceeded
@@ -204,13 +217,7 @@ async function toSources(response) {
     );
   }
 
-  const text = await response.text();
-  if (text.length > MAX_PARSE_CHARS) {
-    throw new BingEntryError(
-      ENTRY_CODES.BAD_RESPONSE,
-      "Bing RSS 响应体超出可解析大小上限，按异常响应处理（BING-002）",
-    );
-  }
+  const text = await readBodyText(response, signal);
 
   // AMB-5：200 + HTML 拦截页（含验证码/区域受限页）= 访问受限，按 blocked-200-html 样本归类。
   if (isHtmlPage(text, response)) {
@@ -250,22 +257,101 @@ async function toSources(response) {
   return sources;
 }
 
-/** 429 额度语义扫描：只判定是否存在 insufficient_quota，响应体不保留、不进错误（CFG-003）。 */
-async function bodyHasQuotaMarker(response) {
+/**
+ * 429 额度语义扫描：只判定是否存在 insufficient_quota，响应体不保留、不进错误（CFG-003）。
+ * 读取失败（传输/取消）照常上抛由 classify 映射；仅体积超限（BAD_RESPONSE）视为「无额度标记」。
+ */
+async function bodyHasQuotaMarker(response, signal) {
   try {
-    const text = await response.text();
+    const text = await readBodyText(response, signal);
     return text.includes(QUOTA_MARKER);
-  } catch {
-    return false;
+  } catch (err) {
+    if (err instanceof BingEntryError && err.code === ENTRY_CODES.BAD_RESPONSE) return false;
+    throw err;
   }
 }
 
-/** AMB-5 拦截页判定：content-type 为 HTML，或体首为 HTML 文档特征（<!DOCTYPE / <html）。 */
+/**
+ * 响应体读取（FB-003 取消 + BING-002 体积上限），2xx 与 429 共用。
+ *   流式（response.body 为 ReadableStream）：逐块累计字节，超 MAX_BODY_BYTES 即 cancel + BAD_RESPONSE；
+ *     每次 read 与 signal abort 竞速，abort 时 reader.cancel() 终止流。
+ *   无流（仅 text()）：同样与 abort 竞速；text 完成后判长（先看 UTF-16 长度的快速上界，再算 UTF-8 字节数）。
+ * 注意：fetch 实现若不随 signal 中止 body，竞速 + cancel 是兜底；原始读取异常不在此映射，统一交 classify。
+ */
+async function readBodyText(response, signal) {
+  let onAbort = null;
+  const aborted = new Promise((_, reject) => {
+    onAbort = () => reject(abortedBodyError());
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  aborted.catch(() => {}); // 竞速已订阅；此句仅防止无人订阅时的未处理拒绝
+
+  try {
+    const stream = response?.body;
+    if (stream && typeof stream.getReader === "function") {
+      return await readStreamText(stream, aborted);
+    }
+    const text = await Promise.race([response.text(), aborted]);
+    if (text.length > MAX_BODY_BYTES || utf8ByteLength(text) > MAX_BODY_BYTES) {
+      throw bodyTooLargeError();
+    }
+    return text;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function readStreamText(stream, aborted) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let total = 0;
+  let out = "";
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), aborted]);
+      if (done) break;
+      const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+      total += bytes.byteLength;
+      if (total > MAX_BODY_BYTES) throw bodyTooLargeError();
+      out += decoder.decode(bytes, { stream: true });
+    }
+    out += decoder.decode();
+    return out;
+  } catch (err) {
+    // 超限或中止：终止底层流（兜底：fetch 实现可能不随 signal 中止 body）；cancel 失败不覆盖原因。
+    try {
+      reader.cancel().catch(() => {});
+    } catch {
+      // 忽略同步抛出：原因已在 err 中
+    }
+    throw err;
+  }
+}
+
+function utf8ByteLength(text) {
+  return new TextEncoder().encode(text).byteLength;
+}
+
+function bodyTooLargeError() {
+  return new BingEntryError(
+    ENTRY_CODES.BAD_RESPONSE,
+    "Bing RSS 响应体超出大小上限，按异常响应处理（BING-002）",
+  );
+}
+
+function abortedBodyError() {
+  const err = new Error("响应体读取被中止（FB-003）");
+  err.name = "AbortError";
+  return err;
+}
+
+/** AMB-5 拦截页判定：content-type 为 HTML，或体首为 <html 起始（DOCTYPE 不单独判定，由解析器跳过）。 */
 function isHtmlPage(text, response) {
   const contentType = contentTypeOf(response);
   if (contentType.includes("html")) return true;
-  const head = text.replace(/^\uFEFF/, "").replace(/^\s+/, "").toLowerCase();
-  return head.startsWith("<!doctype") || head.startsWith("<html");
+  const head = text.replace(/^\uFEFF/, "").replace(/^\s+/, "").slice(0, 8).toLowerCase();
+  return head.startsWith("<html");
 }
 
 function contentTypeOf(response) {
@@ -470,46 +556,57 @@ function parseXmlDocument(text) {
   };
 
   const NAMED_ENTITIES = Object.freeze({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" });
-  // 内置实体 + 数字引用（&#dd; / &#xhh;）。未知 &name; 按字面保留（不查 DTD、不展开）。
+  // 内置实体 + 数字引用（&#dd; / &#xhh;）。未知 &name; 与无效引用按字面保留（不查 DTD、不展开）。
+  // 线性扫描（AMB/审阅 P1-5）：每个 & 只向前扫到下一个 ; 或 &（数字引用另有长度上限），
+  // 段与段不重叠，整体 O(n)；恶意长 & 串不会退化为二次扫描。
   const decodeEntities = (s) => {
     if (!s.includes("&")) return s;
     let out = "";
     let k = 0;
     while (k < s.length) {
-      const c = s[k];
-      if (c !== "&") {
-        out += c;
-        k += 1;
-        continue;
+      const amp = s.indexOf("&", k);
+      if (amp === -1) {
+        out += s.slice(k);
+        break;
       }
-      let end = -1;
-      if (s[k + 1] === "#") {
-        let j = k + 2;
-        while (j < s.length && s[j] !== "&" && s[j] !== ";" && j - (k + 2) < 12) j += 1;
-        if (s[j] === ";") end = j;
-      } else {
-        const semi = s.indexOf(";", k + 1);
-        const amp = s.indexOf("&", k + 1);
-        if (semi !== -1 && (amp === -1 || semi < amp)) end = semi;
-      }
+      out += s.slice(k, amp);
+      const end = findReferenceEnd(s, amp);
       if (end === -1) {
-        out += c;
-        k += 1;
+        out += "&";
+        k = amp + 1;
         continue;
       }
-      const ref = s.slice(k + 1, end);
-      let ch = null;
-      if (s[k + 1] === "#") {
-        const isHex = ref[0] === "x" || ref[0] === "X";
-        const cp = isHex ? Number.parseInt(ref.slice(1), 16) : Number.parseInt(ref, 10);
-        if (Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff) ch = String.fromCodePoint(cp);
-      } else if (Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, ref)) {
-        ch = NAMED_ENTITIES[ref];
-      }
-      out += ch === null ? s.slice(k, end + 1) : ch;
+      const decoded = decodeReference(s.slice(amp + 1, end));
+      out += decoded === null ? s.slice(amp, end + 1) : decoded;
       k = end + 1;
     }
     return out;
+  };
+
+  // 返回 ; 的下标；遇到 & 或超长数字引用或串尾仍未见 ; → -1（该 & 按字面）。
+  const findReferenceEnd = (s, amp) => {
+    const numeric = s[amp + 1] === "#";
+    const limit = numeric ? Math.min(s.length, amp + 2 + NUMERIC_REF_MAX + 1) : s.length;
+    for (let p = amp + 1; p < limit; p += 1) {
+      const c = s[p];
+      if (c === ";") return p;
+      if (c === "&") return -1;
+    }
+    return -1;
+  };
+
+  // ref 为 & 与 ; 之间的文本。数字引用：先剥 #，#x/#X 为 16 进制，其余为 10 进制，整串必须是数字；
+  // 码位须在 1..0x10FFFF 且非代理区（0/超范围/代理 → null，调用方原样保留引用文本）。
+  const decodeReference = (ref) => {
+    if (ref[0] === "#") {
+      const hex = ref[1] === "x" || ref[1] === "X";
+      const digits = ref.slice(hex ? 2 : 1);
+      if (!(hex ? /^[0-9a-fA-F]+$/ : /^[0-9]+$/).test(digits)) return null;
+      const cp = Number.parseInt(digits, hex ? 16 : 10);
+      if (cp < 1 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+      return String.fromCodePoint(cp);
+    }
+    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, ref) ? NAMED_ENTITIES[ref] : null;
   };
 
   // 递归下降：src[i] === "<" 起解析一个元素；返回 { name, attrs, children }。
