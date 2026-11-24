@@ -11,8 +11,8 @@
 
 ## OAI-002 引用提取与顺序
 
-- **要求** OpenAI 返回完成的响应时，插件必须按 `output`、消息的 `content` 和注释在各数组中的顺序，从 `output_text` 的 `url_citation` 提取来源。每条来源采用注释的 `url` 和可用的 `title`。同一文本块的首个非空段落用作 `snippet`，若无该文本则省略 `snippet`。
-- **要求** 来源须满足 [FB-002](fallback.md#fb-002-成功结果与提示)的有效性、上限和 `content` 约束。同一 URL 字符串只保留第一次出现的来源。缺少引用的模型正文不得构造为来源。
+- **要求** OpenAI 返回完成的响应时，插件必须按 `output`、消息的 `content` 和 `output_text` 部件的 `annotations` 在各数组中的顺序提取来源。官方 Responses 形状中，`url_citation` 注释是扁平对象：`type: "url_citation"`、`start_index`、`end_index`、`url` 和 `title` 均为该注释对象自身的字段，插件必须从注释本身读取 `url` 与可用的 `title`；嵌套的 `annotation.url_citation` 形状属于 Chat Completions，不得作为官方 Responses 的解析依据。每条来源采用注释的 `url` 和可用的 `title`。同一文本块的首个非空段落用作 `snippet`，若无该文本则省略 `snippet`。
+- **要求** 来源须满足 [FB-002](fallback.md#fb-002-成功结果与提示)的有效性、去重和 `content` 约束；`maxResults` 上限与 `truncated` 由链统一执行，适配器返回全量映射来源，不本地切片。同一 URL 字符串只保留第一次出现的来源。缺少引用的模型正文不得构造为来源。
 - **来源** [原始需求 R2](../../project/requirements.md)。 [OpenAI 引用响应](https://developers.openai.com/api/docs/guides/tools-web-search#output-and-citations)
 - **验收** 提供混有工具项、多个消息、重复 URL、非 HTTP(S) URL 和正文裸链接的响应。核对只保留有效引用且首次出现的标题和首段随对应来源返回，设置较小的 `maxResults` 后结果仍保序，模型整段回答没有出现在 `content` 中。
 
