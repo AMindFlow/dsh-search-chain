@@ -70,7 +70,7 @@
 
 **WEB_PROVIDER_UNAVAILABLE**：DeepSeek 官方分支不可用，原因是宿主 `web-search-deepseek` 配置行未挂载，或宿主组件无法加载。这种情况不会回退到条目链。可操作：在宿主插件设置中启用 `web-search-deepseek` 行。如果暂时不需要官方分支，把 `useOfficialDeepSeekSearch` 设为 `false`，改用条目链。
 
-**TRANSPORT_RELEASED**：该条目的传输句柄已释放，又有一次请求从该句柄迟到发出（`src/transport.js` 对已 `close` 句柄的 fetch 显式拒绝）。该码**原样上抛、不降级、不进 attempts**。注意 v0.1 实态：搜索链没有 release 接口、插件卸载不会中止在途搜索（`createSearchChain` 只导出 `search`；`src/index.js` 的 `release()` 转发因链无该方法而空转），所以它通常出现在"条目结束后（成功/失败/超时均已 `close` 句柄）适配器的迟到补发请求"，**不是**「停用或卸载把在途搜索中止」的意思。可操作：一般无需处理；若正常搜索中持续出现该码，请重试并记录时间与条目名反馈。
+**TRANSPORT_RELEASED**：该条目的传输句柄已释放，又有一次请求从该句柄迟到发出（`src/transport.js` 对已 `close` 句柄的 fetch 显式拒绝）。该码**原样上抛、不降级、不进 attempts**。注意 v0.1 实态：搜索链没有 release 接口、插件卸载不会中止在途搜索（`createSearchChain` 只导出 `search`；`src/index.js` 的 `release()` 转发因链无该方法而空转），所以它只可能出现在"条目结束后（成功/失败/超时均已 `close` 句柄）适配器的迟到补发请求"，**不是**「停用或卸载把在途搜索中止」的意思。且该码**仅在内部被丢弃**：条目已结束，链会把它当作无关异常吞掉（审阅实测：迟到超时的场景用户可见的是 `ENTRY_TIMEOUT`/`CHAIN_BUDGET_EXHAUSTED`），你不会在搜索结果或报错里看到它；若日志里持续出现，请记录时间与条目名反馈。
 
 ## 链级终态（`CHAIN_*`）
 
