@@ -32,7 +32,11 @@ export function liveOwnConfig(ctx) {
   if (!row) {
     throw new ConfigError(CONFIG_CODES.ROW_UNAVAILABLE, "本插件配置行不在宿主活行中（未挂载或已卸载）");
   }
-  return { ...row.config };
+  // 行形状实证（inspect Service 契约 configEditor 原文，0.2.2-rc.5）：
+  //   configuration(): Array<{ entry: Entry; inherited: Record<string, unknown>; override: Record<string, unknown> }>
+  //   ——"Read inherited and explicit profile values for the active entries"；消费端解构同形。
+  //   有效配置 = inherited ⊕ override（override 覆盖同名键）。
+  return { ...row.inherited, ...row.override };
 }
 
 /** 行配置声明（JSON Schema 形态；宿主 Config 投影校验的实机形态见 PR「未验证项」）。 */
@@ -110,16 +114,23 @@ export function createSearchProvider(deps) {
  * bundle 入口。在 ctx.effect 内注册 provider；cleanup 反注册并释放链（DSH-001）。
  * testDeps 仅供测试注入：{ chain, official, officialRouteId }。生产调用只有两参。
  */
-export function apply(ctx, _loadSnapshot, testDeps = {}) {
-  const chain = testDeps.chain ?? unwiredChain();
-  const official = "official" in testDeps ? testDeps.official : createLazyHostOfficial(ctx);
-  // B1′：每次查询实时读取活配置（CFG-004：保存成功后下一次查询生效）；装载入参不参与读取。
-  // B3：写入目标必须是宿主 Entry（ctx.fiber.entry），传 Fiber 会被宿主 edit() 拒绝。
-  const settings = {
+/**
+ * 配置端口（readConfig / writeConfig 的 settings 参数），纯接线、可单独测试。
+ * - current()：每次查询实时读取活配置（B1′，CFG-004：保存成功后下一次查询生效）。
+ * - entry：写入目标必须是宿主 Entry（ctx.fiber.entry）；传 Fiber 会被宿主 edit() 拒绝（B3）。
+ */
+export function createSettingsPort(ctx) {
+  return {
     editor: ctx.configEditor,
     entry: ctx.fiber?.entry,
     current: () => liveOwnConfig(ctx),
   };
+}
+
+export function apply(ctx, _loadSnapshot, testDeps = {}) {
+  const chain = testDeps.chain ?? unwiredChain();
+  const official = "official" in testDeps ? testDeps.official : createLazyHostOfficial(ctx);
+  const settings = createSettingsPort(ctx);
   const provider = createSearchProvider({
     getConfig: () => readConfig(settings),
     chain,

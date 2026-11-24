@@ -63,7 +63,9 @@ export function requireHostSearchRow(ctx) {
       "宿主 web-search-deepseek 配置行未挂载，官方 DeepSeek 搜索不可用（请在插件设置中启用该行）",
     );
   }
-  return { ...row.config };
+  // 行形状实证同 src/index.js liveOwnConfig：configuration(): Array<{ entry; inherited; override }>，
+  // 有效配置 = inherited ⊕ override。
+  return { ...row.inherited, ...row.override };
 }
 
 /**
