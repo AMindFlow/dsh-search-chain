@@ -137,14 +137,22 @@ export function readConfig(settings) {
   return deepFreeze(normalizeConfig(structuredClone(current ?? {})));
 }
 
+/** 本插件在 override 层自有的顶层配置键（normalizeConfig 输出键集）；写入时整体替换，其余键（未知/他插件）保留。 */
+const OWN_CONFIG_KEYS = ["entries", "useOfficialDeepSeekSearch", "timeoutMs"];
+
 /**
  * 校验后经 configEditor 写入（CFG-004）。非法输入在写入前即抛错；
  * 宿主保存失败抛 ConfigError(CONFIG_SAVE_FAILED)，已生效快照不变。
+ * editor.edit 第二参为变异函数 (raw, inherited) => newRawLayer，返回新 raw 整体对象落该行 override 层。
  */
 export async function writeConfig(settings, next) {
   const normalized = normalizeConfig(structuredClone(next ?? {}));
   try {
-    await settings.editor.edit(settings.entry, () => structuredClone(normalized));
+    await settings.editor.edit(settings.entry, (raw) => {
+      const merged = { ...(raw ?? {}) };
+      for (const k of OWN_CONFIG_KEYS) delete merged[k];
+      return { ...merged, ...structuredClone(normalized) };
+    });
   } catch (cause) {
     throw new ConfigError(CONFIG_CODES.SAVE_FAILED, "保存搜索配置失败，已生效配置保持不变", { cause });
   }
