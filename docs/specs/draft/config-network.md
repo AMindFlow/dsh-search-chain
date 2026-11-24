@@ -32,7 +32,7 @@
 ## CFG-005 PAC 代理路由
 
 - **要求** 显式配置 `proxy.pac` 后，插件须直连获取该 HTTP(S) 地址并保留查询参数。只为实际启动的条目获取或求值。成功加载的脚本可随当前配置缓存，重载时失效。对该条目的目标 URL 与主机调用 `FindProxyForURL`。脚本须在隔离环境运行，可访问的数据限于参数和标准 PAC 助手。加载、求值和建连受该次尝试的预算与取消约束。
-- **要求** PAC 支持 `PROXY host:port`、`HTTPS host:port`、`DIRECT`。按脚本顺序尝试。只有确认未向供应商提交查询且主机解析或 TCP 建连失败时，才换下一条路由。直连须由脚本明确给出 `DIRECT`。PAC 下载、求值或路由失败须报告具体阶段。
+- **要求** PAC 支持 `PROXY host:port`、`HTTPS host:port`、`DIRECT`。按脚本顺序尝试。只有确认未向供应商提交查询且主机解析或 TCP 建连失败时，才换下一条路由。直连须由脚本明确给出 `DIRECT`。PAC 下载、求值或路由失败须报告具体阶段；本条只管报阶段，条目执行期该阶段码的降级与裸上抛去向见 [FB-006](fallback.md#fb-006-条目执行期带码错误的降级与裸上抛)，报码本身不因该条改变。
 - **来源** [原始需求 R3、§2、§5、§6及 PAC 补充要求](../../project/requirements.md)。 [PAC 路由顺序](https://github.com/chromium/chromium/blob/main/net/docs/proxy.md#evaluating-proxy-lists-proxy-fallback)
 - **验收** 用本地 PAC 服务覆盖三种指令和多候选路由，核对实际目标、路径顺序、请求前建连失败后重选，以及上游已收到查询时无重发。覆盖 PAC 下载失败、脚本无效、取消和配置重载。禁用条目时 PAC 服务的访问次数为零。
 
