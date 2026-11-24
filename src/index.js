@@ -1,9 +1,19 @@
 // dsh-search-chain bundle 入口（DSH-001..003、DSH-005）。
 // 只注册一个 WebSearchProvider（id=search-chain）；卸载时反注册并释放链资源。
-// 搜索链编排（WP5）与设置面板（WP12）不在本文件内实现。
-import { CHAIN_CODES, CONFIG_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID } from "./constants.js";
+// 生产装配（WP6）：搜索链由 search.js 的 createSearchChain 接线（适配器见 src/backends/*，传输见 transport.js）；
+// 设置面板（WP12）不在本文件内实现。
+import { CONFIG_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID } from "./constants.js";
 import { ConfigError, readConfig } from "./config.js";
 import { createLazyHostOfficial } from "./official.js";
+import { createSearchChain } from "./search.js";
+import { createEntryTransport } from "./transport.js";
+import { bingBackend } from "./backends/bing.js";
+import { braveBackend } from "./backends/brave.js";
+import { deepseekBackends } from "./backends/deepseek.js";
+import { exaBackend } from "./backends/exa.js";
+import { createGeminiBackend } from "./backends/gemini.js";
+import { openaiBackend } from "./backends/openai.js";
+import { tavilyBackend } from "./backends/tavily.js";
 
 export { PROVIDER_ID };
 
@@ -128,17 +138,73 @@ function webError(code, message) {
   return err;
 }
 
+/** 生产时钟（A8）：链与适配器只用 now/setTimeout/clearTimeout；测试经 testDeps.clock 注入受控时钟。 */
+const SYSTEM_CLOCK = Object.freeze({
+  now: () => Date.now(),
+  setTimeout: (cb, ms) => setTimeout(cb, ms),
+  clearTimeout: (id) => clearTimeout(id),
+});
+
+const NOOP_LOG = () => {};
+
 /**
- * 占位链：WP5 装配前的诚实默认值。它不产出任何结果，直接以终态错误报告。
- * 测试与 WP5 集成时由 testDeps.chain 或真实 createSearchChain 替换。
+ * 生产出站 fetch（零依赖，全局 fetch）。直连路由照常出站；需要代理/PAC 命中代理的路由需要 undici 分发器，
+ * 本插件零依赖不引入它，故此类路由显式失败（原因 PROXY_UNSUPPORTED，由 transport 归为条目代理失败），
+ * 绝不静默改走直连（CFG-001）。
  */
-function unwiredChain() {
-  return {
-    async search() {
-      throw webError(CHAIN_CODES.NOT_CONFIGURED, "搜索链编排尚未装配（WP5），本版本不产出搜索结果");
-    },
-    release() {},
+function productionFetch(url, init = {}) {
+  const { route, ...rest } = init ?? {};
+  if (route && route.kind !== "direct") {
+    return Promise.reject(Object.assign(new Error("代理路由暂不可用"), { code: "PROXY_UNSUPPORTED" }));
+  }
+  return globalThis.fetch(url, rest);
+}
+
+/** 宿主凭据服务（ctx.get("credentials")）：服务缺失时解析即失败（条目级 CREDENTIALS），不静默视作无 key。 */
+function hostCredentials(ctx) {
+  const svc = typeof ctx.get === "function" ? ctx.get("credentials") : undefined;
+  const unavailable = () => {
+    throw new Error("宿主凭据服务不可用");
   };
+  return {
+    resolve: (ref) => (typeof svc?.resolve === "function" ? svc.resolve(ref) : unavailable()),
+    readRecord: (name) => (typeof svc?.readRecord === "function" ? svc.readRecord(name) : unavailable()),
+  };
+}
+
+/** CAT-001 八个类型的后端适配器（按 entry.type 索引）。 */
+function productionBackends() {
+  const list = [
+    bingBackend,
+    braveBackend,
+    exaBackend,
+    openaiBackend,
+    tavilyBackend,
+    createGeminiBackend(),
+    ...Object.values(deepseekBackends),
+  ];
+  return new Map(list.map((b) => [b.type, b]));
+}
+
+/** 生产搜索链（search.js createSearchChain）：每条目经 transport 路由、凭据经宿主服务解析。 */
+function createProductionChain(ctx, { getConfig, fetchFn, clock, log }) {
+  return createSearchChain({
+    getConfig,
+    backends: productionBackends(),
+    transport: { open: (entry) => createEntryTransport(entry, { fetch: fetchFn, clock, log }) },
+    credentials: hostCredentials(ctx),
+    env: globalThis.process?.env ?? {},
+    clock,
+    log,
+  });
+}
+
+/** B1′ 装配映射：配置端口的行不可用（ConfigError ROW_UNAVAILABLE）上抛为 WebError 终态，code 保留。 */
+function mapRowUnavailable(err) {
+  if (err instanceof ConfigError && err.code === CONFIG_CODES.ROW_UNAVAILABLE) {
+    return webError(CONFIG_CODES.ROW_UNAVAILABLE, err.message);
+  }
+  return err;
 }
 
 /**
@@ -160,6 +226,20 @@ export function createSearchProvider(deps) {
     officialRouteId = OFFICIAL_ROUTE_ID,
   } = deps;
 
+  // 每次查询的路由与链路径选择（CFG-004：路由浅读活配置，链快照于链内一次性读取）。
+  async function dispatchSearch(request, signal) {
+    const routeCfg = getRouteConfig();
+    const useOfficial = routeCfg?.useOfficialDeepSeekSearch !== false;
+    if (official && useOfficial && routeOf(request) === officialRouteId) {
+      // 官方分支不经 ctx.web.search（会因配置 id=search-chain 选回本插件）。
+      const target = typeof official === "function" ? await official() : official;
+      if (target) return target.search(request, signal);
+    }
+    // 链路径：规范化快照（非法条目在此以 CONFIG_INVALID 终态止步，零条目执行）。
+    getConfig();
+    return chain.search(request, signal);
+  }
+
   return {
     id: PROVIDER_ID,
     // DSH-002：同步布尔，无网络。初始化完成即接受搜索；空配置由链以 FB-004 终态报告。
@@ -169,16 +249,12 @@ export function createSearchProvider(deps) {
     // DSH-002/DSH-005：每次调用一个查询；官方分支仅在「开关开 + 官方路由 + 官方可用」时选择。
     // 每次查询重读活配置（CFG-004）；路由判定先于规范化，链路径才进 readConfig/normalizeConfig。
     async search(request, signal) {
-      const routeCfg = getRouteConfig();
-      const useOfficial = routeCfg?.useOfficialDeepSeekSearch !== false;
-      if (official && useOfficial && routeOf(request) === officialRouteId) {
-        // 官方分支不经 ctx.web.search（会因配置 id=search-chain 选回本插件）。
-        const target = typeof official === "function" ? await official() : official;
-        if (target) return target.search(request, signal);
+      try {
+        return await dispatchSearch(request, signal);
+      } catch (err) {
+        // B1′/#12-3：行不可用 → WebError 终态（code 保留 CONFIG_ROW_UNAVAILABLE），不静默回落快照。
+        throw mapRowUnavailable(err);
       }
-      // 链路径：规范化快照（非法条目在此以 CONFIG_INVALID 终态止步，零条目执行）。
-      getConfig();
-      return chain.search(request, signal);
     },
     release() {
       if (typeof chain?.release === "function") chain.release();
@@ -188,7 +264,8 @@ export function createSearchProvider(deps) {
 
 /**
  * bundle 入口。在 ctx.effect 内注册 provider；cleanup 反注册并释放链（DSH-001）。
- * testDeps 仅供测试注入：{ chain, official, officialRouteId }。生产调用只有两参。
+ * testDeps 仅供测试注入（A4/A8）：{ chain, official, officialRouteId, routeOf, clock, fetch, log }。
+ * 生产调用只有两参：链为 createSearchChain 生产接线，clock 为系统时钟，fetch 为全局 fetch（直连）。
  */
 /**
  * 配置端口（readConfig / writeConfig 的 settings 参数），纯接线、可单独测试。
@@ -204,11 +281,16 @@ export function createSettingsPort(ctx) {
 }
 
 export function apply(ctx, _loadSnapshot, testDeps = {}) {
-  const chain = testDeps.chain ?? unwiredChain();
-  const official = "official" in testDeps ? testDeps.official : createLazyHostOfficial(ctx);
+  // 测试注入面（A4/A8）：clock / fetch / log 缺省即生产实现；生产调用只有两参。
+  const clock = testDeps.clock ?? SYSTEM_CLOCK;
+  const fetchFn = testDeps.fetch ?? productionFetch;
+  const log = testDeps.log ?? NOOP_LOG;
   const settings = createSettingsPort(ctx);
+  const getConfig = () => readConfig(settings);
+  const chain = testDeps.chain ?? createProductionChain(ctx, { getConfig, fetchFn, clock, log });
+  const official = "official" in testDeps ? testDeps.official : createLazyHostOfficial(ctx);
   const provider = createSearchProvider({
-    getConfig: () => readConfig(settings),
+    getConfig,
     getRouteConfig: () => settings.current(),
     chain,
     official,
