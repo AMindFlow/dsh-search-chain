@@ -48,7 +48,7 @@ flowchart LR
 | WP3 Tavily | WP0 | `src/backends/tavily.js` 及对应测试。见 [Tavily 规格](../specs/draft/tavily.md) |
 | WP4 Bing RSS | WP0 | `src/backends/bing.js`，验证 RSS 解析、明确空结果与访问失败。见 [Bing RSS 规格](../specs/draft/bing.md) |
 | WP5 搜索链编排 | WP0 | `src/search.js`，验证已保存的顺序、停用、无 key、时间预算及错误。见[降级规格](../specs/draft/fallback.md) |
-| WP8 DeepSeek | WP0 | `src/backends/deepseek-search.js`、`src/backends/deepseek-agentic-search.js`，验证两种自定义模式和官方委派契约。见 [DeepSeek 规格](../specs/draft/deepseek.md) |
+| WP8 DeepSeek | WP0 | `src/backends/deepseek.js`（单文件服务 `deepseek-search` 与 `deepseek-agentic-search` 两种模式），验证两种自定义模式和官方委派契约。见 [DeepSeek 规格](../specs/draft/deepseek.md) |
 | WP9 Exa | WP0 | `src/backends/exa.js` 及对应测试。见 [Exa 规格](../specs/draft/exa.md) |
 | WP10 Brave | WP0 | `src/backends/brave.js` 及对应测试。见 [Brave 规格](../specs/draft/brave.md) |
 | WP11 Gemini | WP0 | 先验证 DSH 支持同时呈现 Grounded Result 与 Search Suggestions，再接入 `src/backends/gemini.js`。见 [Gemini 规格](../specs/draft/gemini.md) |
