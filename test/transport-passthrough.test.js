@@ -17,7 +17,7 @@
 // 每例三种带码错误（ENTRY_PROXY、CONFIG_CODES 码、TRANSPORT_RELEASED）逐一注入，断链终态保留原码。
 // 既有面不动：无码错误仍归 ENTRY_NETWORK（FB-005 直连网络兜底）——该行为本轮预期为绿。
 //
-// 预期红（dev 面，B 包实现修复后转绿）：P1-1 各例在 main 上把带码错误压成 ENTRY_NETWORK。
+// 缺陷钉（dev 面，B 包实现修复后转绿）：P1-1 各例在 main 上把带码错误压成 ENTRY_NETWORK。
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as C from "./helpers/contract.js";

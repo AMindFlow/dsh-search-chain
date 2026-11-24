@@ -1,8 +1,8 @@
 // WP4 对齐包（oracle 轮）— 差距审计 P0-1 / P1-2 / P2-2-bing 的转正断言。
 //
-// 三条均为「规格已定、现实现违背」的期望转正，main 上预期红；dev 只能改 src/backends/bing.js
+// 三条均为「规格已定、现实现违背」的期望转正，main 上缺陷钉；dev 只能改 src/backends/bing.js
 // 转绿，不得弱化或 skip 本文件（helpers/impl.js 红绿策略同约）。
-// 审阅轮补口的两例额度优先级（本文件末尾）同为「规格已定、现实现违背」，修复前预期红。
+// 审阅轮补口的两例额度优先级（本文件末尾）同为「规格已定、现实现违背」，修复前缺陷钉。
 //
 //   P0-1 截断归链     FB-002（docs/specs/draft/fallback.md:14）与结果契约（fallback.md:43）：
 //                     「适配器返回全量映射来源，不得按 maxResults 本地切片；截断与 truncated
@@ -135,7 +135,7 @@ test("FB-003 预算（缺省 clock，brave P1-1 原则）：ctx.clock 未提供 
 // FB-005（fallback.md:34）：「额度问题为 HTTP 402，或上游码 insufficient_quota、QUOTA_LIMITED…
 // 无论有无状态码均按额度优先判定」。429 之外携带 insufficient_quota 的 4xx（400/403）仍须归
 // ENTRY_QUOTA。现实现 bing.js 仅在 429 分支扫额度标记，401/403 与其他 4xx 分支不读体码 →
-// 两例预期红；dev 改 src/backends/bing.js 转绿。同族先例：deepseek-failure.test.js:171-202。
+// 两例缺陷钉；dev 改 src/backends/bing.js 转绿。同族先例：deepseek-failure.test.js:171-202。
 // 回归保护在 bing-failure.test.js（403 不带额度码 → CREDENTIALS）与本文件 P1-2（400 无证据 →
 // CHANNEL_LIMIT）；429+insufficient_quota 授权特例仍在其既有位置，本节不动。
 

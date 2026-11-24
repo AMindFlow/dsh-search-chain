@@ -54,7 +54,7 @@
 //   原样保留（本文件第 6、7、8 组）。旧 T1 的「entry 裸 ESM 导出 inject/apply」与
 //   「React 经 loader.require 懒取」面全部删除（[M1][M2]），由第 1–3 组自注册/factory 面替代。
 //
-// ─── 预期红（对现实现 f0e0713，三面对）───────────────────────────────────────────────────
+// ─── 缺陷钉（历史：对裸 ESM 实现 f0e0713 三面红；当前绿=已修复，回退即红）─────────────────
 //   ① 自注册缺位：现实现为裸 ESM export（export const inject / export function apply），
 //      load 捕获 0 次 → 第 1 组红，第 2（factory）3（挂载）4（幂等）组连带红；
 //   ② React 通道错：现实现组件经 window.__ModuleLoader__.require('react') 取 React（[M2]

@@ -268,7 +268,7 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
   assert.ok(provider && provider.id === C.PROVIDER_ID, "provider 必须已经注册（DSH-001）");
 
   // B-C 写路径真接线：保存必须走 src/index.js 导出的 createSettingsPort(ctx) 端口工厂——
-  // 替身的宿主身份校验会拒绝 Fiber/外来目标（B3 回归钉）。导出未落地时本条为预期红。
+  // 替身的宿主身份校验会拒绝 Fiber/外来目标（B3 回归钉）。导出未落地时本条为缺陷钉。
   if (typeof mod.createSettingsPort !== "function") {
     t.diagnostic(
       "[WP0 oracle] 等待 src/index.js 导出 createSettingsPort(ctx) 端口工厂（B-C：生产保存路径必须" +

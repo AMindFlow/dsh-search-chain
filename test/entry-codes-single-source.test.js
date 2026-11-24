@@ -7,7 +7,7 @@
 // 删除后改从 ../constants.js 引用）。
 //
 // 断言（均用动态 import，命名空间面）：
-//   1) tavily 命名空间无 ENTRY_CODES 导出（预期红：main 仍导出；B 包删除后转绿）。
+//   1) tavily 命名空间无 ENTRY_CODES 导出（缺陷钉：main 仍导出；B 包删除后转绿）。
 //   2) 任何后端命名空间若仍暴露 ENTRY_CODES，必须与 src/constants.js 深比对全等（同步义务守卫，
 //      当前绿：tavily 镜像值同 constants；其余六家本就不导出）。
 //   3) src/constants.js 与 test/helpers/contract.js 的 ENTRY_CODES 深比对全等（运行侧↔oracle 侧

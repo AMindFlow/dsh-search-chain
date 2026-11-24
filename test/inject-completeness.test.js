@@ -1,8 +1,8 @@
 // inject 完备性 oracle（PR#34 审阅缺口轮）：src 里每一次 ctx.get("NAME") / context.get("NAME")
 // 都必须有 src/index.js `export const inject` 的对应声明——真宿主只注入 inject 声明过的服务
 // （P1-5 / WP13 实机 P0 同律），漏声明的名字在真宿主上恒 undefined，可选链只是把它静默吞掉。
-// 本用例是【预期红】的缺口哨兵：现红于 "agents"（src/official.js:99 读 ctx.get("agents")，
-// 而 index.js 的 inject 未声明）。修复方向属 dev 面：把 agents 补进 src/index.js 的 inject；
+// 本用例是【缺陷钉】的缺口哨兵（当前绿=行为已修复，红=回退）：历史缺口为 "agents"（src/official.js:99
+// 读 ctx.get("agents")，而 index.js 的 inject 未声明），现已补入 src/index.js 的 inject；回退即红。
 // 测试侧不改期望、不豁免——名字 ⊆ inject 才是宿主上真实可得的语义。
 //
 // 防漂移写法（为何不用裸 grep）：

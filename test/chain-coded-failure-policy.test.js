@@ -15,18 +15,18 @@
 //   ② CONFIG_INVALID（条目执行期抛码）：裁决改判后按条目级失败降级——降到下一条目成功；
 //      attempts 记录保留 CONFIG_INVALID 原码（成功路径可观察面 = warn 日志，与①同面）；
 //      FB-002 接管提示须让首条失败原因可诊断。（旧版曾钉「CONFIG_* 不降级、原码 Loud」，
-//      经 lead 裁决翻转为条目级降级；现实现不降级 → 本用例预期红。）
+//      经 lead 裁决翻转为条目级降级；现实现不降级 → 本用例缺陷钉。）
 //   ③ PAC_ROUTE_FAILED（条目执行期抛码，CFG-005 路由/建连阶段）：与②同款降级；
-//      CFG-005 只管报阶段，链弹性归 FB 家族。（新增；现实现不降级 → 预期红。）
+//      CFG-005 只管报阶段，链弹性归 FB 家族。（新增；现实现不降级 → 缺陷钉。）
 //   ④ 全败面：条目执行期 CONFIG_* 与条目执行期网络失败逐条发生 → 全部启用条目皆败 →
 //      终态 WebError（FB-004 出口 v0.2：CHAIN_UPSTREAM_FAILURES）details.attempts
-//      按尝试顺序携各条原码。（新增；现实现于首个 CONFIG_* 即原样上抛 → 预期红。）
+//      按尝试顺序携各条原码。（新增；现实现于首个 CONFIG_* 即原样上抛 → 缺陷钉。）
 //   ⑤ 全局 CONFIG_*：链级配置读取自身失败（deps.getConfig 抛码，无条目上下文）→
 //      硬失败：原错误对象原样上抛、零条目执行、零出站。（现实现已如此 → 记绿防回归。）
 //   ⑥ transport.open 相位带码错误（裁决27补充面）：open 在 try 外（审阅探针实证 search.js:360，
 //      classifyProxy 对无效 proxy 同步抛 TransportError(CONFIG_INVALID)）→ 现在整链裸拒、
 //      后续条目零尝试。裁决27：open 与执行期同为条目上下文，「该条目 broken」不变 →
-//      条目级降级、attempts 保留原码。（新增；现实现 open 仍在 try 外 → 本用例预期红。）
+//      条目级降级、attempts 保留原码。（新增；现实现 open 仍在 try 外 → 本用例缺陷钉。）
 //
 // 语义边界（PR#35 裁决补充，lead 同判——张力已清，本轮落地）：
 //   - transport-passthrough.test.js 链级 CONFIG 行与④（全败终态 WebError 携原码）在单条目全败
@@ -290,7 +290,7 @@ test("P2-b⑤：全局 CONFIG_*（deps.getConfig 读取自身失败，无条目�
   assert.equal(h.fetchFn.count(), 0, "全局配置失败：零出站");
 });
 
-// ─── ⑥ 裁决27补充面：transport.open 相位同步抛带码错误 → 条目级降级（现实现预期红） ─────
+// ─── ⑥ 裁决27补充面：transport.open 相位同步抛带码错误 → 条目级降级（现实现缺陷钉） ─────
 
 test("P2-b⑥（裁决27补充）：e1 transport.open 同步抛 CONFIG_INVALID（真 classifyProxy 无效 proxy 面，search.js:360 try 外）→ 条目级降级；e2 成功 → 成功结果 + attempts[0].code=CONFIG_INVALID + 接管提示可诊断；后续条目不得零尝试", async (t) => {
   // 可钉面选择（lead 二选一）：经真 transport 无效 proxy 构造——e1 携带连 URL 都解析不了的
