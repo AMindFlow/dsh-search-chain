@@ -94,5 +94,13 @@ test("WP7 oracle：resolve 返回 undefined 时条目按 SKIPPED_NO_KEY 跳过�
     attempts: [{ entryId: "e-a", code: SKIPPED_NO_KEY }],
   });
   assert.equal(h.executionCount("e-a"), 0, "undefined 凭据必须零出站，不发无鉴权请求");
-  assert.equal(h.credentials.resolveCalls.length, 1, "跳过前对条目引用恰 resolve 一次（undefined = 该层缺失）");
+  // 第三层裁决（WP7 凭据轮）：CFG-002「DSH 托管记录」＝托管 ref——第三层走 resolve(裸 env 名)，readRecord 移出解析链
+  // （README「a reference doubles as the environment name it resolves through」；记录 key 语法 <owner>/<id> 无法承载裸 env 名）。
+  // 裁决的正确后果：一条目逐层缺失时每层各 resolve 一次，共两次——
+  // ① ref 层 resolve(refOf("e-a"))；③ 托管 ref 层 resolve(OPENAI_API_KEY)（KEY_ENV_BY_TYPE[openai]，env 层不经 resolve）。
+  assert.equal(
+    h.credentials.resolveCalls.length,
+    2,
+    "跳过前恰 resolve 两次：ref 层 + 第三层裸 env 名 resolve(envName)（undefined = 该层缺失）",
+  );
 });
