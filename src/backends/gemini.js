@@ -186,14 +186,21 @@ let classifierPromise = null;
  * - 文件存在但导入失败或未导出 classifyUpstreamFailure → A4 程序违约，向上抛出（不带 ENTRY 码）。
  */
 function upstreamClassifier() {
-  classifierPromise ??= existsSync(SEARCH_MODULE_PATH)
-    ? import("../search.js").then((mod) => {
-        if (typeof mod?.classifyUpstreamFailure !== "function") {
-          throw programError("src/search.js 未导出 classifyUpstreamFailure（A4 违约）");
-        }
-        return mod.classifyUpstreamFailure;
-      })
-    : Promise.resolve(localClassifyUpstreamFailure);
+  if (!classifierPromise) {
+    const pending = existsSync(SEARCH_MODULE_PATH)
+      ? import("../search.js").then((mod) => {
+          if (typeof mod?.classifyUpstreamFailure !== "function") {
+            throw programError("src/search.js 未导出 classifyUpstreamFailure（A4 违约）");
+          }
+          return mod.classifyUpstreamFailure;
+        })
+      : Promise.resolve(localClassifyUpstreamFailure);
+    classifierPromise = pending;
+    // #12-25：加载失败（rejected）不得永久缓存；失败即重置，下一次调用重新探测。
+    pending.catch(() => {
+      if (classifierPromise === pending) classifierPromise = null;
+    });
+  }
   return classifierPromise;
 }
 

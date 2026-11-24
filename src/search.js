@@ -77,13 +77,21 @@ class WebError extends Error {
   }
 }
 
+/** #12-5 额度证据码（upstreamCode）：出现即归 QUOTA，与状态码无关。 */
+const QUOTA_EVIDENCE_CODES = new Set([
+  "insufficient_quota",
+  "resource_exhausted",
+  "RESOURCE_EXHAUSTED",
+  "QUOTA_LIMITED",
+]);
+
 /**
  * FB-005 上游结局 → 条目级分类码。
  * 判定顺序（优先级自上而下）：
  *   - phase "timeout" → TIMEOUT；
  *   - 响应解析失败（A4 解析失败信号 = phase "response" + error 为 SyntaxError）→ BAD_RESPONSE；
  *   - phase "transport"（无 HTTP 状态的网络层失败）→ NETWORK；
- *   - 上游 code = insufficient_quota / QUOTA_LIMITED → QUOTA（无论有无状态码，额度优先）；
+ *   - 上游 code ∈ QUOTA_EVIDENCE_CODES（insufficient_quota / resource_exhausted / QUOTA_LIMITED）→ QUOTA（#12-5，无论有无状态码，额度优先）；
  *   - HTTP 402 → QUOTA；
  *   - HTTP 429 → RATE_LIMITED；
  *   - HTTP 401/403 → CREDENTIALS；
@@ -99,7 +107,8 @@ export function classifyUpstreamFailure(info = {}) {
   if (phase === "timeout") return ENTRY_CODES.TIMEOUT;
   if (error instanceof SyntaxError) return ENTRY_CODES.BAD_RESPONSE;
   if (phase === "transport") return ENTRY_CODES.NETWORK;
-  if (upstreamCode === "insufficient_quota" || upstreamCode === "QUOTA_LIMITED") return ENTRY_CODES.QUOTA;
+  // #12-5 额度统一规则：任意状态码 + 额度证据 → QUOTA（证据优先于状态码，429 亦然）。
+  if (QUOTA_EVIDENCE_CODES.has(upstreamCode)) return ENTRY_CODES.QUOTA;
   if (typeof status === "number") {
     if (status === 402) return ENTRY_CODES.QUOTA;
     if (status === 429) return ENTRY_CODES.RATE_LIMITED;
@@ -123,11 +132,13 @@ export function createSearchChain(deps) {
    * 执行一次搜索（一次搜索 = 一条查询，FB-003/DSH-002）。
    * @param {{ query: string, maxResults?: number }} request
    * @param {AbortSignal} [externalSignal] 宿主取消信号（FB-003）
+   * @param {object} [configSnapshot] 装配层快照注入（#12 每操作契约）：由 provider 入口一次读取的规范化快照；
+   *   缺省时链自读 getConfig()（独立使用的兼容默认）。
    */
-  function search(request, externalSignal) {
+  function search(request, externalSignal, configSnapshot) {
     // CFG-004/FB-001：搜索开始取一次快照（深拷贝——中途保存是同一对象的就地改写，
     // 快照必须独立），执行中不重读。
-    const rawConfig = getConfig() ?? {};
+    const rawConfig = (configSnapshot !== undefined ? configSnapshot : getConfig()) ?? {};
     const snapshotEntries = deepClone(Array.isArray(rawConfig.entries) ? rawConfig.entries : []);
     const totalBudget = normalizeBudget(rawConfig.timeoutMs);
     const startAt = clock.now();
@@ -143,8 +154,10 @@ export function createSearchChain(deps) {
     if (externalSignal?.aborted) return rejectAborted(externalSignal);
 
     const state = { cancelled: false };
+    // FB-003：宿主取消登记在本次搜索上；结算（成功/失败/取消）后摘除，不在宿主信号上留下悬挂监听（P2-3）。
+    const onExternalAbort = () => { state.cancelled = true; };
     if (externalSignal) {
-      externalSignal.addEventListener("abort", () => { state.cancelled = true; }, { once: true });
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
     }
 
     const attempts = []; // A7/FB-004：跳过与失败条目，按尝试顺序
@@ -394,7 +407,10 @@ export function createSearchChain(deps) {
       });
     }
 
-    return run();
+    // 结算即摘除外部信号监听（成功、终态拒绝、取消均经此路径）。
+    return run().finally(() => {
+      if (externalSignal) externalSignal.removeEventListener("abort", onExternalAbort);
+    });
   }
 
   /** CFG-002 优先级：条目引用 → 进程环境变量 → DSH 托管记录 → 旧版 YAML 顶层（最后兼容）。纯空白等同未提供。 */
