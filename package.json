@@ -9,11 +9,17 @@
     "node": ">=24"
   },
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./client": "./src/client-entry.js"
   },
   "dsh": {
     "bundle": {
       "patch": "./src/cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
     }
   },
   "dependencies": {
