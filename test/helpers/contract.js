@@ -164,6 +164,7 @@ export const CONFIG_CODES = Object.freeze({
   PAC_FETCH_FAILED: "PAC_FETCH_FAILED", // CFG-005：下载阶段
   PAC_EVAL_FAILED: "PAC_EVAL_FAILED", // CFG-005：求值阶段
   PAC_ROUTE_FAILED: "PAC_ROUTE_FAILED", // CFG-005：路由/建连阶段
+  ROW_UNAVAILABLE: "CONFIG_ROW_UNAVAILABLE", // 宿主行不可得（configuration() 无我行）——CFG-004 生产接线面
 });
 
 /** FB-003 默认总预算（毫秒）。 */
