@@ -102,13 +102,19 @@ function localClassify({ status, upstreamCode, phase }) {
   return ENTRY_CODES.BAD_RESPONSE;
 }
 
+/**
+ * 共享分类器输出校验（A4，与 openai/exa/brave/gemini 四先例同构）：
+ * 返回值不在 ENTRY_CODES 内（含 undefined/非字符串）→ 无码程序违约上抛，消息嵌入 String(code)；
+ * 分类器自身抛异常 → 原样传播（不吞、不兜底）。仅共享分类器文件缺失时才用本地镜像。
+ */
 async function classifyFailure(info) {
   const shared = await loadSharedClassifier();
-  if (shared) {
-    const code = shared({ ...info });
-    if (typeof code === "string") return code;
+  if (!shared) return localClassify(info);
+  const code = shared({ ...info });
+  if (!Object.values(ENTRY_CODES).includes(code)) {
+    throw programError(`classifyUpstreamFailure 返回了未知分类码（A4 违约）：${String(code)}`);
   }
-  return localClassify(info);
+  return code;
 }
 
 /** 从错误体取上游码（只用于分类，不进入任何文本）。 */

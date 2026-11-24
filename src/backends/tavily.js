@@ -102,8 +102,8 @@ function localGeneralCode({ status, upstreamCode, phase }) {
  *  1) Tavily/通道特例面（测试钉死、规格未交给通用分类器）本地裁决：
  *     432/433→额度（TAV-002 验收）、403→凭据或权限（FB-005「凭据或权限」）、
  *     400→通道参数限制（待办 P5 推断）；
- *  2) 通用部分委托 WP5 classifyUpstreamFailure（A4）；
- *  3) WP5 不可用时用本地兜底（localGeneralCode）。
+ *  2) 通用部分委托 WP5 classifyUpstreamFailure（A4）；分类器异常或返回非 ENTRY 码 → 程序违约上抛；
+ *  3) 仅 WP5 文件缺失时用本地兜底（localGeneralCode）。
  */
 async function classifyFailure(info) {
   const { status } = info;
@@ -111,15 +111,14 @@ async function classifyFailure(info) {
   if (status === 403) return ENTRY_CODES.CREDENTIALS;
   if (status === 400) return ENTRY_CODES.CHANNEL_LIMIT;
   const general = await generalClassifier();
-  if (general) {
-    try {
-      const code = general(info);
-      if (typeof code === "string" && ENTRY_CODE_VALUES.includes(code)) return code;
-    } catch {
-      // 通用分类器异常时退回本地兜底（防御；不吞错不重试，FB-001 每条目最多一次）
-    }
+  if (!general) return localGeneralCode(info);
+  // A4 输出校验（与 openai/exa/brave/gemini 四先例同构）：分类器自身异常原样传播（不 try/catch 吞掉）；
+  // 返回非 ENTRY 码（含 undefined）→ 无码程序违约上抛，不回退 localGeneralCode。
+  const code = general(info);
+  if (!ENTRY_CODE_VALUES.includes(code)) {
+    throw new Error(`程序违约：src/search.js 的 classifyUpstreamFailure 返回了未知分类码（A4 违约）：${String(code)}`);
   }
-  return localGeneralCode(info);
+  return code;
 }
 
 // ─── 错误构造（CFG-003 脱敏）──────────────────────────────────────────────
