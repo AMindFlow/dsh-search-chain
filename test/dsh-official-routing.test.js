@@ -66,7 +66,7 @@ test("DSH-005：官方分支零自定义资源——空链不影响，配置条�
     ],
     { useOfficialDeepSeekSearch: true },
   );
-  const host = createHostShapeFakeHost({ config: structuredClone(BAD) });
+  const host = createHostShapeFakeHost({ inject: mod.inject, config: structuredClone(BAD) });
   const officialCalls = [];
   const chainCalls = [];
   await Promise.resolve(
@@ -115,7 +115,7 @@ test("P1-1 链侧：非法条目在链路由下止步 CONFIG_INVALID 且零条�
     ],
     { useOfficialDeepSeekSearch: true },
   );
-  const host = createHostShapeFakeHost({ config: structuredClone(BAD) });
+  const host = createHostShapeFakeHost({ inject: mod.inject, config: structuredClone(BAD) });
   const officialCalls = [];
   const chainCalls = [];
   await Promise.resolve(
@@ -242,6 +242,7 @@ test("CFG-004/DSH-005 生产接线：保存成功后下一次查询读到新快�
   // 本测试经 testDeps 注入 official，不在此钉）。
   const loadSnapshot = structuredClone(OLD);
   const host = createHostShapeFakeHost({
+    inject: mod.inject,
     config: structuredClone(OLD),
     extraRows: [{ entryId: "web-search-deepseek", config: { baseURL: "https://row.example/v1" } }],
   });

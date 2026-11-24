@@ -13,6 +13,11 @@ import { createHostShapeFakeHost } from "./helpers/fake-host.js";
 
 const WP = "WP6 src/official.js";
 
+// official.js 的消费面（P1-5 inject 收敛：替身只挂声明服务）：configEditor 读宿主行；
+// credentials 经宿主包 resolveDeepSeekApiKey(ctx) 内部 ctx.get("credentials")；agents 经
+// ctx.get("agents") 可选链触碰（未播种即 undefined，与真宿主缺省一致）。
+const OFFICIAL_INJECT = ["configEditor", "credentials", "agents"];
+
 async function load(t) {
   const res = await tryImportSrc("official.js");
   if (failIfUnimplemented(t, res, WP, "DSH-005/B2′")) return null;
@@ -21,6 +26,7 @@ async function load(t) {
 
 function hostWithRow(rowConfig) {
   return createHostShapeFakeHost({
+    inject: OFFICIAL_INJECT,
     config: C.makeSavedConfig([]),
     extraRows: [{ entryId: "web-search-deepseek", config: rowConfig }],
   });
@@ -41,7 +47,7 @@ test("B2′ M13：官方行匹配必须走 entry.options.id——前缀 entry.id
 test("B2′ M14：官方行缺席 → WEB_PROVIDER_UNAVAILABLE 显式失败，无回退链", async (t) => {
   const mod = await load(t);
   if (!mod) return;
-  const host = createHostShapeFakeHost({ config: C.makeSavedConfig([]) });
+  const host = createHostShapeFakeHost({ inject: OFFICIAL_INJECT, config: C.makeSavedConfig([]) });
   let err;
   try {
     mod.requireHostSearchRow(host.ctx);
@@ -50,7 +56,7 @@ test("B2′ M14：官方行缺席 → WEB_PROVIDER_UNAVAILABLE 显式失败，�
   }
   assert.ok(err && err.code === "WEB_PROVIDER_UNAVAILABLE", "行缺席必须显式抛 WEB_PROVIDER_UNAVAILABLE");
   // 全路径同形：lazy official provider 首查询 thunk 读行失败必须同码终止，不得静默回退自定义链（D-B2）。
-  const host2 = createHostShapeFakeHost({ config: C.makeSavedConfig([]) });
+  const host2 = createHostShapeFakeHost({ inject: OFFICIAL_INJECT, config: C.makeSavedConfig([]) });
   const official = await mod.createLazyHostOfficial(host2.ctx)();
   let err2;
   try {

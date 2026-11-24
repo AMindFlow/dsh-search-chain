@@ -21,6 +21,13 @@
 //         旧默认形态保留（含 editor.saved()），仅供既有纯 config 面测试使用。
 //   - configEditor 支持注入保存失败（SET-004/CFG-004：失败后已生效快照保持一致）。
 //   - ctx.effect/ctx.on/ctx.get + fakeHost.disposeAll()：模拟装载→卸载生命周期（DSH-001 release）。
+//   - inject 收敛（P1-5，实机 P0 根因）：宿主只注入被测模块 inject 列表声明过的服务。
+//     createFakeHost 按 opts.inject（调用方传入被测模块的 inject，或由 hostApply 读 mod.inject）挂载：
+//     未声明的服务不挂载——ctx.get(name)、ctx.web/ctx.tools/ctx.configEditor 访问器、返回值
+//     credentials 句柄一律 undefined。此前替身无条件全量挂载，掩盖「inject 漏声明 → 真宿主上
+//     ctx.get("credentials") 恒 undefined」一类缺陷（WP13 实机 P0）。默认（不传 inject）= 零挂载，
+//     强制调用方显式声明被测面；ctx.effect/ctx.on/ctx.fiber 与返回对象上的测试观测面
+//     （editor/entry/configuration/settingsPort/traps/…）是宿主结构/替身自身面，不经 inject。
 import { createFakeCredentials } from "./fake-credentials.js";
 
 function webError(code, message) {
@@ -49,9 +56,11 @@ function makeEntryForm(id, name, fiberUid) {
 
 /**
  * @param {{
+ *   inject?: string[],                                  // 被测模块声明的宿主服务面（如 src/index.js 的 export const inject）；
+ *                                                       //   只挂载列表内的服务，越界 ctx.get → undefined（P1-5）；缺省 = 零挂载
  *   entry?: { id?: string, name?: string },            // 插件配置行（cordis.patch.yml 装载产物）
  *   config?: Record<string, any>,                       // 行初始 config
- *   credentials?: any,                                  // 默认 createFakeCredentials()
+ *   credentials?: any,                                  // inject 含 credentials 时的服务体，默认 createFakeCredentials()
  *   validate?: (candidate: any) => void,                // 模拟宿主 Config 校验（抛错=保存拒绝）
  *   configSchema?: any,                                 // 运行时 Config（Standard Schema）：change 返回后、落盘前
  *                                                       //   过 ["~standard"].validate（宿主 resolveConfig 时序）
@@ -60,15 +69,23 @@ function makeEntryForm(id, name, fiberUid) {
  * }} [opts]
  */
 export function createFakeHost(opts = {}) {
+  if (opts.inject !== undefined && !Array.isArray(opts.inject)) {
+    throw new TypeError("createFakeHost：opts.inject 必须是字符串数组（被测模块的宿主服务声明）");
+  }
+  // P1-5 inject 收敛：真宿主只注入模块 inject 声明的服务（WP13 实机 P0 根因）。
+  // 缺省零挂载——用哪个声明哪个，忘记声明的调用方立刻红，而不是被全量挂载掩盖。
+  const declared = new Set(opts.inject ?? []);
   const hostShape = opts.hostShape === true;
   const { entry, fiber } = makeEntryForm(
     opts.entry?.id ?? "search-chain",
     opts.entry?.name ?? "dsh-search-chain",
     "search-chain",
   );
-  const services = {
-    credentials: opts.credentials ?? createFakeCredentials(),
-  };
+  const services = {};
+  // 服务体照常构建（观测面/注册表恒可用），但只把 inject 声明过的挂进 services——
+  // ctx 访问器与 ctx.get 统一查 services，未声明即 undefined（越界）。
+  const credentialsImpl = opts.credentials ?? createFakeCredentials();
+  if (declared.has("credentials")) services.credentials = credentialsImpl;
 
   // —— web 服务 ——
   const searchProviders = new Map(); // id → { provider, disposedCount }
@@ -80,7 +97,8 @@ export function createFakeHost(opts = {}) {
     webFetch: 0,
     toolRegistrations: 0,
   };
-  services.web = {
+  // web 服务体恒构建（注册表/traps 是测试观测面的载体）；是否挂到 ctx 由 inject 决定。
+  const webImpl = {
     registerSearchProvider(provider) {
       if (typeof provider?.id !== "string" || provider.id.length === 0) {
         throw webError("WEB_INVALID_PROVIDER", "provider.id 必须是非空字符串");
@@ -122,14 +140,16 @@ export function createFakeHost(opts = {}) {
       };
     },
   };
+  if (declared.has("web")) services.web = webImpl;
 
-  services.tools = {
+  const toolsImpl = {
     register(definition) {
       traps.toolRegistrations += 1;
       traps.lastTool = definition?.name ?? "(anonymous)";
       return () => {};
     },
   };
+  if (declared.has("tools")) services.tools = toolsImpl;
 
   // —— 配置编辑（插件保存自身配置的唯一入口）——
   let saved = structuredClone(opts.config ?? {});
@@ -209,8 +229,10 @@ export function createFakeHost(opts = {}) {
     // 旧默认形态保留：仅供既有纯 config 面测试与断言 saved() 的自测使用。
     editor.saved = () => saved;
   }
-  services.configEditor = editor;
-  services.fiber = fiber;
+  if (declared.has("configEditor")) services.configEditor = editor;
+  // fiber 是宿主注入的装载结构（ctx.fiber 恒可得）；仅当被测模块显式把 fiber 列入 inject 时
+  // 才同时经 ctx.get("fiber") 可达——真宿主没有这个服务名，声明它没有意义，收敛后默认拿不到。
+  if (declared.has("fiber")) services.fiber = fiber;
 
   // —— 生命周期 ——
   const effects = [];
@@ -223,9 +245,11 @@ export function createFakeHost(opts = {}) {
       return services.tools;
     },
     get configEditor() {
-      return editor;
+      // 经 inject 挂载面取用（未声明 = undefined）；editor 测试观测面恒在返回对象上，不在此旁路。
+      return services.configEditor;
     },
     get fiber() {
+      // 装载结构非注入服务：ctx.fiber 恒可得（index.js 的 inject 不含 fiber 也依赖它）。
       return fiber;
     },
     get(name) {

@@ -43,7 +43,7 @@ test("DSH-001/DSH-003：apply 注册唯一 search-chain provider，且不越界�
   assert.equal(mod.PROVIDER_ID, C.PROVIDER_ID, "index.js 必须导出 PROVIDER_ID=search-chain（A4）");
   assert.ok(mod.Config, "index.js 必须导出 Config 行 schema（A4）");
 
-  const host = createFakeHost({ config: C.makeSavedConfig([]) });
+  const host = createFakeHost({ inject: mod.inject, config: C.makeSavedConfig([]) });
   const chain = stubChain();
   await Promise.resolve(mod.apply(host.ctx, host.editor.saved(), { chain }));
 
@@ -67,7 +67,7 @@ test("DSH-001：卸载 = 反注册 + release；重新装载只保留单一注册
   if (!mod) return;
 
   // 第一个装载周期
-  const hostA = createFakeHost({ config: C.makeSavedConfig([]) });
+  const hostA = createFakeHost({ inject: mod.inject, config: C.makeSavedConfig([]) });
   const chainA = stubChain();
   await Promise.resolve(mod.apply(hostA.ctx, hostA.editor.saved(), { chain: chainA }));
   await hostA.disposeAll();
@@ -76,7 +76,7 @@ test("DSH-001：卸载 = 反注册 + release；重新装载只保留单一注册
   assert.ok(chainA.released >= 1, "卸载必须释放链资源 release()（DSH-001/FB-003 连接释放）");
 
   // 重新装载（reload 路径）：新宿主实例 = 反注册后再注册
-  const hostB = createFakeHost({ config: C.makeSavedConfig([]) });
+  const hostB = createFakeHost({ inject: mod.inject, config: C.makeSavedConfig([]) });
   const chainB = stubChain();
   await Promise.resolve(mod.apply(hostB.ctx, hostB.editor.saved(), { chain: chainB }));
   assert.equal(hostB.searchRegistrationCount(), 1, "重载后仍是单一注册，无残留（DSH-001）");
@@ -88,7 +88,7 @@ test("DSH-001：未反注册就二次注册不得造成双注册（宿主 WEB_DU
   const mod = await load(t);
   if (!mod) return;
 
-  const host = createFakeHost({ config: C.makeSavedConfig([]) });
+  const host = createFakeHost({ inject: mod.inject, config: C.makeSavedConfig([]) });
   const chain1 = stubChain();
   const chain2 = stubChain();
   await Promise.resolve(mod.apply(host.ctx, host.editor.saved(), { chain: chain1 }));
@@ -128,7 +128,7 @@ test("DSH-001/P3：我行按对象身份匹配——克隆行（同形状不同�
   const mod = await load(t);
   if (!mod) return;
   // M1c 绿漏消除：若实现从 r.entry === ctx.fiber.entry 漂移到按 id/形状匹配，本用例当场红。
-  const host = createHostShapeFakeHost({ config: C.makeSavedConfig([]) });
+  const host = createHostShapeFakeHost({ inject: mod.inject, config: C.makeSavedConfig([]) });
   const chain = {
     async search() {
       return { sources: C.makeSources(1), truncated: false };

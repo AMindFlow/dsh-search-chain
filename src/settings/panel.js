@@ -90,7 +90,9 @@ function redactSecrets(message, secrets) {
  *   settings: { editor: { edit(target, change: (raw, inherited?) => newRawLayer): Promise<any> }, entry: object, current(): any },
  *     // change 为变异函数（真宿主签名实机实证）：返回新 raw 整体层，落 override 层；
  *     // 本插件只替换自有键 OWN_CONFIG_KEYS，其余键原样保留（见 save() 第 3 步）。
- *   credentials: { set(ref, value): Promise<any>, resolve?(ref): Promise<string|undefined> },
+ *   credentials: { set(ref, value): Promise<any>,
+ *     resolve?(ref): Promise<{ value: string, source: string } | undefined> },
+ *     // resolve 真形（dsh-credentials README，WP7 实机实证）：命中 {value, source}，absent undefined——不是裸字符串。
  *   fetch?: Function,   // SET-004 陷阱：面板不得使用
  *   chain?: object,     // SET-004 陷阱：面板不得使用
  *   now?: () => number, // 可选时钟（id 生成用；缺省 Date.now）

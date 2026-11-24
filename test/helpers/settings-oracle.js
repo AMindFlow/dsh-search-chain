@@ -153,7 +153,9 @@ export function createSlotRegistry() {
 
 /** 组合 host 替身与两类陷阱。 */
 export function makeHarness({ config = {}, credentials, validate } = {}) {
-  const host = createFakeHost({ config, credentials, validate });
+  // P1-5 inject 收敛：面板消费的宿主服务面只有 credentials（settings 走 settingsPort 结构面），
+  // 显式声明后替身才挂载它——host.credentials 句柄（openPanel 的 deps.credentials）即挂载体。
+  const host = createFakeHost({ inject: ["credentials"], config, credentials, validate });
   return { host, fetchTrap: createTrapFetch(), chainTrap: createTrapChain() };
 }
 

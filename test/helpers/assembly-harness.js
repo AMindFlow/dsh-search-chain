@@ -18,10 +18,12 @@ import { createHostShapeFakeHost } from "./fake-host.js";
  * @param {object} mod src/index.js 模块
  * @param {object} cfg 行初始 config（装载基线，inherited 层）
  * @param {object} [testDeps] 第三参注入面（A4：{ chain, official, officialRouteId, routeOf, ... }）
- * @param {Parameters<typeof createHostShapeFakeHost>[0]} [hostOpts] 宿主替身其余参数（extraRows 等）
+ * @param {Parameters<typeof createHostShapeFakeHost>[0]} [hostOpts] 宿主替身其余参数（extraRows 等；
+ *   inject 缺省读被测模块的 mod.inject——P1-5 收敛：宿主只注入声明过的服务，hostOpts.inject 可显式覆盖）
  */
 export function hostApply(mod, cfg, testDeps, hostOpts = {}) {
-  const host = createHostShapeFakeHost({ ...hostOpts, config: structuredClone(cfg ?? {}) });
+  const { inject = mod.inject, ...restOpts } = hostOpts;
+  const host = createHostShapeFakeHost({ ...restOpts, inject, config: structuredClone(cfg ?? {}) });
   const cleanup = mod.apply(host.ctx, structuredClone(cfg ?? {}), testDeps ?? {});
   return { host, cleanup, provider: host.searchRegistrations()[0] };
 }
