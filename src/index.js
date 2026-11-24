@@ -18,7 +18,7 @@ import { tavilyBackend } from "./backends/tavily.js";
 export { PROVIDER_ID };
 
 /** Host 依赖声明：web 用于注册，configEditor 用于读取本行与 web-search-deepseek 行的活配置。 */
-export const inject = ["web", "configEditor", "credentials"];
+export const inject = ["web", "configEditor", "credentials", "agents"];
 
 /**
  * 读取本插件行的活配置（B1′）。匹配依据为 Entry 对象同一性：ctx.fiber.entry 与
