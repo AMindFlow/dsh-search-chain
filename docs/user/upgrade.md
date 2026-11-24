@@ -17,8 +17,8 @@
 | 旧版 YAML 凭据层 | 生产入口在仓库历史中从未传入旧版 YAML | **v0.1 不自动导入旧版 YAML**：链侧代码层保留，但生产装配不传数据源，永不生效 | 依赖 `openai`、`tavily`、`deepseek` 顶层 YAML 项的，需在配置区、环境变量或托管引用中手动重建。TODO（发布验收）：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)。 |
 | 注入声明 `inject` | 早期版本为 `["web", "configEditor"]`；之后为 `["web", "configEditor", "credentials"]` | `["web", "configEditor", "credentials", "agents"]` | 新增 `agents`，用于 DeepSeek 官方分支读取当前会话的路由。宿主必须提供这些服务，缺失时的宿主行为未在本仓库实机验证。升级后请重新启用插件，并在新会话中验证。 |
 | PAC 与配置错误 | 条目执行期的 `PAC_*` 和 `CONFIG_*` 错误会中断整次搜索 | 作为条目级失败记录到 attempts（原码保留），然后继续下一个条目；条目 open 期的带码错误（如代理形状问题）同样降级（`6963535`，FB-006 裁决 27）。全局配置错误和 `TRANSPORT_RELEASED` 仍直接抛出 | **v0.1 变化提示**：一个条目的 PAC 失败不再让整次搜索失败。如果你之前靠这种失败来阻止搜索，需要改为关闭该条目。排查时查看 attempts。 |
-| 响应体上限 | 供应商正文与 PAC 全量读取，无字节上限 | PAC 与六家供应商正文统一 2 MiB 上限（`584fc66`，`MAX_RESPONSE_BYTES`）：超限早停，PAC 记 `PAC_FETCH_FAILED`、2xx 正文超限记 `ENTRY_BAD_RESPONSE` | 正常大小的响应不受影响；持续返回超大正文的条目会以异常响应失败。 |
-| 设置页区域 | 「网页搜索链」区域未挂载，是否出现需要实机确认 | `05c97ac` 起由 client 产物自注册为**只读指示器**（标题+指引文案）；编辑一律走「设置 → 插件 → dsh-search-chain」配置区 | 设置页会出现该区域但不可编辑；带列表与 key 输入框的面板编辑 UI 是 v0.2。 |
+| 响应体上限 | 供应商正文与 PAC 全量读取，无字节上限 | PAC 与七家供应商正文统一 2 MiB 上限（`584fc66`，`MAX_RESPONSE_BYTES`；bing 的 `MAX_BODY_BYTES` 为同源常量别名）：超限早停，PAC 记 `PAC_FETCH_FAILED`、2xx 正文超限记 `ENTRY_BAD_RESPONSE` | 正常大小的响应不受影响；持续返回超大正文的条目会以异常响应失败。 |
+| 设置页区域 | 「网页搜索链」区域未挂载，是否出现需要实机确认 | `05c97ac` 起由 client 产物自注册为**只读指示器**（标题+指引文案）；编辑一律走「设置 → 插件 → dsh-search-chain」配置区 | 设置页预期出现该区域（v0.1 待实机确认）但不可编辑；带列表与 key 输入框的面板编辑 UI 是 v0.2。 |
 | 代理错误归因 | 适配器抛出的已带码代理或配置错误可能被压成 `ENTRY_NETWORK` | 原码保留（例如 `ENTRY_PROXY`） | 代理问题不再被误报为直连网络问题。 |
 | 配置校验 | 早期开发版在宿主 `0.2.2-rc.5` 上激活失败（`validate is not a function`） | 以 Standard Schema 形式提供 `Config`，可以正常激活 | 如果旧版本无法启用，升级后需要重新安装并启用。 |
 | 未知配置键 | 未对旧版单独核对 | 写入时保留配置行中的未知键（其他插件的键）；`entries` 的每一项在读取时只保留标量参数 | 其他插件或旧版残留的顶层键不会导致保存失败。 |

@@ -27,7 +27,7 @@
 
 **ENTRY_CREDENTIALS**：上游返回 401 或 403，或者该条目的凭据引用读取失败（reason 为"凭据引用读取失败"）。现象是该条目被跳过或失败，搜索可能转到下一个条目。可操作：确认 key 有效、未过期，并且与该供应商匹配（例如 Tavily 的 key 不能用于 Exa）。按 [快速开始](getting-started.md#42-四种来源与优先级) 更换或修正 key 来源：v0.1 在配置区改 `credentialRef` 指向新引用，或修正环境变量（v0.2 面板则直接重新保存该条目的 key 生成新引用）。
 
-**ENTRY_QUOTA**：上游返回 402，或返回额度证据码。链侧证据码是**精确匹配**（`src/search.js` 的 `QUOTA_EVIDENCE_CODES`：`insufficient_quota`、`resource_exhausted`、`RESOURCE_EXHAUSTED`、`QUOTA_LIMITED`；`resource_exhausted` 的两种拼写是逐条枚举的，不是大小写不敏感匹配），命中即按额度判定、优先于状态码。现象是该条目因额度不足被跳过。可操作：到供应商后台核对余额和计费设置。在额度恢复前，这个条目会持续失败，建议把它移到后面或暂时停用。`QUOTA_LIMITED` 也在证据码中，但这一判定**待证认**：它来自第三方文档，尚未取得实机样本。个别适配器有本地额度口径：Gemini 在 429 下先把 `code`/`status` 转小写再比对，并有消息含 `quota` 的消息启发式——同样是待复核的临时口径；Tavily 的 432/433 是已按供应商文档落地的本地额度特例。如果你遇到的额度判定与实际不符，请记录脱敏后的错误码和 reason。
+**ENTRY_QUOTA**：上游返回 402，或返回额度证据码。链侧证据码是**精确匹配**（`src/search.js` 的 `QUOTA_EVIDENCE_CODES`：`insufficient_quota`、`resource_exhausted`、`RESOURCE_EXHAUSTED`、`QUOTA_LIMITED`；`resource_exhausted` 的两种拼写是逐条枚举的，不是大小写不敏感匹配），命中即按额度判定、优先于状态码。现象是该条目因额度不足被跳过。可操作：到供应商后台核对余额和计费设置。在额度恢复前，这个条目会持续失败，建议把它移到后面或暂时停用。`QUOTA_LIMITED` 也在证据码中，但这一判定**待证认**：它来自第三方文档，尚未取得实机样本。个别适配器有本地额度口径：Gemini 在 429 下先把 `code`/`status` 转小写再比对，并有消息含 `quota` 的消息启发式——同样是待复核的临时口径；Tavily 的 432/433 归额度是适配器本地特例，待供应商文档证认。如果你遇到的额度判定与实际不符，请记录脱敏后的错误码和 reason。
 
 **ENTRY_RATE_LIMITED**：上游返回 429，且没有额度证据。现象是该条目被限流。可操作：稍后再试，或降低搜索频率。链会继续尝试后面的条目。
 
@@ -62,7 +62,7 @@
 
 **PAC_FETCH_FAILED**：PAC 文件下载失败。PAC 由条目首次出站前以**直连** GET 获取（不经代理），响应上限 2 MiB，超限会中止下载、原因文本带字节上限（本地复测见 [复测输出](evidence/proxy-retest-v0.1.log)）。该失败记为该条目的 attempts 记录（原码保留），链继续下一个条目。可操作：用浏览器或 `curl` 直接访问该 PAC 地址，确认返回 200、脚本文本且小于 2 MiB。
 
-**PAC_EVAL_FAILED**：PAC 脚本无法解析、运行出错、缺少 `FindProxyForURL`，或求值超过 500 毫秒的 CPU 护栏（脚本顶层执行与每次 `FindProxyForURL` 调用各限 500 毫秒）。可操作：检查 PAC 文件是否包含 `FindProxyForURL` 函数，并确认它不依赖被禁用的代码生成（`eval` 和 `Function`）。
+**PAC_EVAL_FAILED**：PAC 脚本无法解析、运行出错、缺少 `FindProxyForURL`，或求值超过 500 毫秒的 CPU 护栏（脚本顶层执行与每次 `FindProxyForURL` 调用各限 500 毫秒）。排查项：脚本是否使用了**未提供的助手**——沙箱只注入 `isPlainHostName`、`dnsDomainIs`、`shExpMatch` 三个助手（`src/transport.js` 的 `evaluatePac`），`isInNet`、`dnsResolve` 等其他常见助手是未定义的，用到即求值失败；再检查 `FindProxyForURL` 是否存在、是否依赖被禁用的代码生成（`eval` 和 `Function`）。
 
 **PAC_ROUTE_FAILED**：PAC 的返回值不是字符串，或者其中没有受支持的指令（按顺序取第一个可用指令；当前支持 `DIRECT`、`PROXY host:port`、`HTTPS host:port`，`SOCKS` 等被跳过）。可操作：确保 PAC 对目标地址返回 `DIRECT`，或者受支持的代理指令。注意命中代理的结果在 v0.1 仍会以 `ENTRY_PROXY` 失败（见上文）。
 
@@ -70,7 +70,7 @@
 
 **WEB_PROVIDER_UNAVAILABLE**：DeepSeek 官方分支不可用，原因是宿主 `web-search-deepseek` 配置行未挂载，或宿主组件无法加载。这种情况不会回退到条目链。可操作：在宿主插件设置中启用 `web-search-deepseek` 行。如果暂时不需要官方分支，把 `useOfficialDeepSeekSearch` 设为 `false`，改用条目链。
 
-**TRANSPORT_RELEASED**：插件或传输句柄已释放，搜索被中止。这通常发生在插件停用或卸载期间，不是用户配置问题。可操作：重新启用插件后再试。
+**TRANSPORT_RELEASED**：该条目的传输句柄已释放，又有一次请求从该句柄迟到发出（`src/transport.js` 对已 `close` 句柄的 fetch 显式拒绝）。该码**原样上抛、不降级、不进 attempts**。注意 v0.1 实态：搜索链没有 release 接口、插件卸载不会中止在途搜索（`createSearchChain` 只导出 `search`；`src/index.js` 的 `release()` 转发因链无该方法而空转），所以它通常出现在"条目结束后（成功/失败/超时均已 `close` 句柄）适配器的迟到补发请求"，**不是**「停用或卸载把在途搜索中止」的意思。可操作：一般无需处理；若正常搜索中持续出现该码，请重试并记录时间与条目名反馈。
 
 ## 链级终态（`CHAIN_*`）
 
@@ -90,6 +90,7 @@
 
 - `QUOTA_LIMITED` 作为额度证据码（链级与 Brave 等适配器中使用）。
 - Gemini 在 429 下，消息含 `quota` 即判为额度的做法（消息启发式，弱于码判据）。
+- Gemini 本地把 `code`/`status` 转小写后再比对的口径（链级为精确匹配；小写归一与厂商实际载荷是否一致，待实机样本证认）。
 
 代理与代理命中 PAC 的行为已用本地回环 fixture 复测并写入本页（见上文 ENTRY_PROXY 与 [复测输出](evidence/proxy-retest-v0.1.log)）；仍待实机的是：接入代理分发器的版本表现、真实供应商响应形态，以及宿主设置页对「网页搜索链」只读区域的实际呈现。
 
