@@ -45,18 +45,19 @@ export function mountSettingsSection(slots, panel) {
     throw new Error("mountSettingsSection：panel 必须是 createSettingsPanel 的返回值");
   }
   const handle = panel._state;
-  if (handle && handle.unregister) return handle.unregister; // 已挂载：不双注册
-
+  if (handle && handle.unregister) return handle.unregister; // 已挂载：返回同一幂等 cleanup
   const unregister = slots.register(SECTION_SLOT, {
     id: PROVIDER_ID,
     title: SECTION_TITLE,
     panel,
   });
+  let done = false;
   const cleanup = () => {
-    if (!handle || handle.unregister !== unregister) return; // 只注销本句柄，重复 cleanup 无副作用
-    handle.unregister = null;
+    if (done) return; // 幂等：重复 cleanup 无副作用
+    done = true;
+    if (handle && handle.unregister === cleanup) handle.unregister = null;
     unregister();
   };
-  if (handle) handle.unregister = unregister;
+  if (handle) handle.unregister = cleanup;
   return cleanup;
 }
