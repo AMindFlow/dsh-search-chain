@@ -1,6 +1,8 @@
 // 宿主凭据服务（ctx.get("credentials")，dsh-credentials @0.2.2-rc.5）的内存替身。
-// CFG-002 两层：①条目凭据引用（resolve(ref)）③该名称的 DSH 托管记录（readRecord(name)）。
-// 记录全部读取，供「停用条目不得导致读 key」（CFG-002 验收）与「只为实际尝试的条目解析 key」一类断言。
+// CFG-002 两层（WP7 凭据轮裁决）：①条目凭据引用 resolve(ref)；③同名 DSH 托管 ref resolve(envName)——
+// README「a reference doubles as the environment name it resolves through」；真宿主记录 key 语法 <owner>/<id>
+// 无法承载裸 env 名，readRecord 已移出解析链，但记录面作为宿主能力保留（SET-002 等非解析面仍用，读取全部留痕，
+// 供「解析不得经记录空间」「停用条目不得导致读 key」一类断言）。
 //
 // 真宿主形状（dsh-credentials README/types.ts @0.2.2-rc.5，WP7 实机发现）——服务边界处的返回值必须与之逐字段一致：
 //   resolve(ref) → { value, source } | undefined（不是裸字符串；空 stored 值 = absent，resolve 跳过）。

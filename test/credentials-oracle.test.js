@@ -3,6 +3,8 @@
 //   resolve(ref) → { value, source } | undefined（空 stored 值 = absent）；
 //   readRecord(name) → CredentialRecord = { kind: "api-key", key?, env? } | { kind: "grant", payload }。
 // 本文件只断言「真宿主形状下必须取到键；undefined 必须按 SKIPPED_NO_KEY 零出站」。
+// 第三层裁决（WP7 凭据轮）：CFG-002「DSH 托管记录」＝托管 ref——第三层走 resolve(裸 env 名)，readRecord 移出解析链
+// （README「a reference doubles as the environment name it resolves through」；记录 key 语法 <owner>/<id> 无法承载裸 env 名）。
 // src/search.js 与 src/config.js 按字符串消费 resolve、按 record.value 消费记录——真宿主形状下
 // 本文件命中类断言必红（WP7 P0 dev 面），修正 src 前应保持红，不得弱化或改 skip。
 import test from "node:test";
@@ -47,22 +49,23 @@ test("WP7 oracle：resolve 返回 {value, source} 真形时解析器取到键（
   );
 });
 
-// 真宿主形状（dsh-credentials README/types.ts @0.2.2-rc.5，WP7 实机发现）：
-// api-key 记录是 { kind: "api-key", key }——值只在记录顶层 key；不存在 record.value，api-key 也无 payload。
-test("WP7 oracle：api-key 记录值只在 record.key 时解析器取到键（CFG-002 第三层）", async (t) => {
+// 第三层裁决（WP7 凭据轮）：resolve(envName) 引用托管 ref；真宿主记录 key 语法 <owner>/<id> 无法承载裸 env 名，
+// readRecord 不在解析链——原「值只在 record.key 经 readRecord 取键」直测按裁决改写为本条。
+test("WP7 oracle：第三层以裸 env 名 resolve 命中取键，readRecord 不经（CFG-002 裁决）", async (t) => {
   const mod = await loadConfig(t);
   if (!mod) return;
-  const K_REC = SYNTHETIC_KEY("real-record");
-  // seed 直供 CredentialRecord 真形：除 kind/key 外不携带 value/payload 任何别名字段。
-  const creds = createFakeCredentials({ records: { TAVILY_API_KEY: { kind: "api-key", key: K_REC } } });
+  const K_HOSTED = SYNTHETIC_KEY("hosted-ref");
+  // seed 直供真形 hit：键只能来自 hit.value。
+  const creds = createFakeCredentials({ refs: { TAVILY_API_KEY: { value: K_HOSTED, source: "user-env" } } });
   assert.deepEqual(
     await mod.resolveEntryApiKey(
       makeEntry({ id: "e2", type: "tavily", name: "条目乙" }),
       { env: {}, credentials: creds, legacyYaml: undefined },
     ),
-    { key: K_REC },
-    "真宿主形状（dsh-credentials README，WP7 实机发现）：键取 readRecord 记录的 record.key",
+    { key: K_HOSTED },
+    "第三层裁决：键取 resolve(裸 env 名).hit.value（无旧版层为 undefined 也不得抛错，legacyYaml 层次序不变）",
   );
+  assert.equal(creds.recordCalls.length, 0, "裁决：readRecord 已移出解析链，解析不得经记录空间");
 });
 
 // 链级正向：search.js resolveKey 必须从 hit.value 取键并下发给适配器 ctx.key。
