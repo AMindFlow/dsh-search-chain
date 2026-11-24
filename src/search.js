@@ -132,11 +132,13 @@ export function createSearchChain(deps) {
    * 执行一次搜索（一次搜索 = 一条查询，FB-003/DSH-002）。
    * @param {{ query: string, maxResults?: number }} request
    * @param {AbortSignal} [externalSignal] 宿主取消信号（FB-003）
+   * @param {object} [configSnapshot] 装配层快照注入（#12 每操作契约）：由 provider 入口一次读取的规范化快照；
+   *   缺省时链自读 getConfig()（独立使用的兼容默认）。
    */
-  function search(request, externalSignal) {
+  function search(request, externalSignal, configSnapshot) {
     // CFG-004/FB-001：搜索开始取一次快照（深拷贝——中途保存是同一对象的就地改写，
     // 快照必须独立），执行中不重读。
-    const rawConfig = getConfig() ?? {};
+    const rawConfig = (configSnapshot !== undefined ? configSnapshot : getConfig()) ?? {};
     const snapshotEntries = deepClone(Array.isArray(rawConfig.entries) ? rawConfig.entries : []);
     const totalBudget = normalizeBudget(rawConfig.timeoutMs);
     const startAt = clock.now();
@@ -152,8 +154,10 @@ export function createSearchChain(deps) {
     if (externalSignal?.aborted) return rejectAborted(externalSignal);
 
     const state = { cancelled: false };
+    // FB-003：宿主取消登记在本次搜索上；结算（成功/失败/取消）后摘除，不在宿主信号上留下悬挂监听（P2-3）。
+    const onExternalAbort = () => { state.cancelled = true; };
     if (externalSignal) {
-      externalSignal.addEventListener("abort", () => { state.cancelled = true; }, { once: true });
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
     }
 
     const attempts = []; // A7/FB-004：跳过与失败条目，按尝试顺序
@@ -403,7 +407,10 @@ export function createSearchChain(deps) {
       });
     }
 
-    return run();
+    // 结算即摘除外部信号监听（成功、终态拒绝、取消均经此路径）。
+    return run().finally(() => {
+      if (externalSignal) externalSignal.removeEventListener("abort", onExternalAbort);
+    });
   }
 
   /** CFG-002 优先级：条目引用 → 进程环境变量 → DSH 托管记录 → 旧版 YAML 顶层（最后兼容）。纯空白等同未提供。 */

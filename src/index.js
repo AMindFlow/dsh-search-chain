@@ -226,18 +226,20 @@ export function createSearchProvider(deps) {
     officialRouteId = OFFICIAL_ROUTE_ID,
   } = deps;
 
-  // 每次查询的路由与链路径选择（CFG-004：路由浅读活配置，链快照于链内一次性读取）。
+  // 每次查询的路由与链路径选择（CFG-004 / #12 每操作契约）：活配置在入口只读一次（raw），
+  // 路由判定与链快照由同一份 raw 派生，一次查询 configuration() 行读恰为 1，路由与链不跨保存撕裂。
   async function dispatchSearch(request, signal) {
-    const routeCfg = getRouteConfig();
-    const useOfficial = routeCfg?.useOfficialDeepSeekSearch !== false;
+    const raw = getRouteConfig(); // 装配层快照：本操作唯一一次活配置读取
+    const useOfficial = raw?.useOfficialDeepSeekSearch !== false;
     if (official && useOfficial && routeOf(request) === officialRouteId) {
       // 官方分支不经 ctx.web.search（会因配置 id=search-chain 选回本插件）。
       const target = typeof official === "function" ? await official() : official;
       if (target) return target.search(request, signal);
     }
-    // 链路径：规范化快照（非法条目在此以 CONFIG_INVALID 终态止步，零条目执行）。
-    getConfig();
-    return chain.search(request, signal);
+    // 链路径：由同一份 raw 派生规范化快照（非法条目在此以 CONFIG_INVALID 终态止步，零条目执行）。
+    // 装配层快照注入（#12 每操作契约）：快照经链入口参数传入，链不再自读。
+    const snapshot = getConfig(raw);
+    return chain.search(request, signal, snapshot);
   }
 
   return {
@@ -286,12 +288,13 @@ export function apply(ctx, _loadSnapshot, testDeps = {}) {
   const fetchFn = testDeps.fetch ?? productionFetch;
   const log = testDeps.log ?? NOOP_LOG;
   const settings = createSettingsPort(ctx);
-  const getConfig = () => readConfig(settings);
+  // getConfig(raw)：raw 缺省时自读（链独立使用的默认行为）；传入 raw 时只从该份活配置规范化，不再读宿主。
+  const getConfig = (raw) => readConfig(raw === undefined ? settings : { current: () => raw });
   const chain = testDeps.chain ?? createProductionChain(ctx, { getConfig, fetchFn, clock, log });
   const official = "official" in testDeps ? testDeps.official : createLazyHostOfficial(ctx);
   const provider = createSearchProvider({
     getConfig,
-    getRouteConfig: () => settings.current(),
+    getRouteConfig: () => settings.current(), // 每操作唯一一次 configuration() 读（见 dispatchSearch）
     chain,
     official,
     routeOf: testDeps.routeOf,
