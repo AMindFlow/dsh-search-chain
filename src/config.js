@@ -208,11 +208,15 @@ export async function resolveEntryApiKey(entry, { env, credentials, legacyYaml }
     try {
       hit = await credentials.resolve(entry.credentialRef);
     } catch (cause) {
-      throw new ConfigError(
-        CONFIG_CODES.CREDENTIALS_UNREADABLE,
-        `条目「${entry.name}」的凭据引用无法读取，请在设置中重新保存该条目的 API key`,
-        { cause },
-      );
+      // dsh-credentials REF_PATTERN 是 POSIX identifier；R-1 将超语法值视为该层未命中。
+      // 合法引用的其他读取故障仍是配置错误，不会静默降级。
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(entry.credentialRef) || !(cause instanceof TypeError)) {
+        throw new ConfigError(
+          CONFIG_CODES.CREDENTIALS_UNREADABLE,
+          `条目「${entry.name}」的凭据引用无法读取，请在设置中重新保存该条目的 API key`,
+          { cause },
+        );
+      }
     }
     const key = nonblank(hit?.value);
     if (key) return { key };

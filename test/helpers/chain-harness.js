@@ -37,7 +37,11 @@ export function createChainHarness(createSearchChain, spec = {}) {
   const clock = createControlledClock({ now: spec.clockNow });
   const fetchFn = createFakeFetch({ default: spec.defaultFetch ?? "never", clock });
   const transport = createFakeTransportFactory({ fetchImpl: fetchFn });
-  const credentials = createFakeCredentials({ refs: spec.credentialRefs, records: spec.credentialRecords });
+  const credentials = createFakeCredentials({
+    refs: spec.credentialRefs,
+    records: spec.credentialRecords,
+    strictRefGrammar: spec.strictRefGrammar === true, // R-1：opt-in，默认关闭
+  });
   const logCapture = createLogCapture();
 
   const seqRef = { n: 0 };

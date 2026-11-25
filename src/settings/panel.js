@@ -41,8 +41,8 @@ import {
 } from "./catalog.js";
 import { validateProxy } from "./proxy.js";
 
-/** 条目凭据引用命名（宿主托管 ref 的真实格式属 H 清单实机项；此处只要求稳定且全局唯一）。 */
-const CREDENTIAL_REF_PREFIX = "search-chain-credential:";
+/** R-1：凭据引用须匹配宿主 POSIX 标识符语法；新增值不得使用旧冒号格式。 */
+const CREDENTIAL_REF_PREFIX = "SEARCH_CHAIN_CREDENTIAL_";
 
 /**
  * 本插件自有配置键集（CFG-004/A3 配置形状中归本插件拥有的顶层键；以 view/save 实际写的键为准）。
@@ -384,10 +384,11 @@ export function createSettingsPanel(deps) {
     return err;
   }
 
-  /** 凭据新引用：每次带 key 保存都生成新 ref（唯一、不复用），绝不覆写既有 ref（审阅 P2-6）。 */
+  /** 凭据新引用：每次带 key 保存都生成 POSIX 标识符（R-1），唯一、不复用，绝不覆写既有 ref。 */
   function newCredentialRef(id) {
     idCounter += 1;
-    return `${CREDENTIAL_REF_PREFIX}${id}:${nowFn().toString(36)}-${idCounter.toString(36)}`;
+    const safeId = String(id).replace(/[^A-Za-z0-9_]/g, "_") || "entry";
+    return `${CREDENTIAL_REF_PREFIX}${safeId}_${nowFn().toString(36)}_${idCounter.toString(36)}`;
   }
 
   /** 保存前拍下的脱敏名单：待写入的新 key 与 pending 既有 ref（catch 后 pending 清空也不失效）。 */
