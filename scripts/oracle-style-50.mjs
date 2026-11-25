@@ -2318,15 +2318,21 @@ try {
   const storageLeak = await evaluate(`(() => { const s = (sessionStorage.getItem('__oracle50Calls') || '') + (sessionStorage.getItem('__oracle50Audit') || ''); return window.__oracle50Keys.filter((k) => s.includes(k)).length; })()`, 30000);
   await exec("B-003", "light", async () => {
     const setRecs = all.filter((x) => x.url === "/api/credentials/set");
-    // run-acc2 实证：key 记录=非空值写入；空值写=清除凭据写入（如无 key 观察卡创建），非 key 记录、单列自证面不静默吞（目录判据「两枚 key」等价语义）。
-    const keyRecs = setRecs.filter((r) => !(r.cred && r.cred.empty === true));
-    if (!keyRecs.length) throw new Error(`脱敏自证依据缺失：credentials/set key 记录 0 条 ≠ 2（空真值不得判 PASS；明细=${JSON.stringify(setRecs.map((r) => r.cred || "未digest"))}）`);
-    if (keyRecs.length !== 2) throw new Error(`脱敏自证依据缺失：credentials/set key 记录 ${keyRecs.length} 条 ≠ 2（明细=${JSON.stringify(setRecs.map((r) => r.cred || "未digest"))}）`)
+    // run-acc3 实证 scope 收敛（SET-004 原文语义=声明的两枚 exa key 仅合成值+零明文，目录无「全局计数」条款）：
+    // 按 ref↔条目 id 身份配对判「B-003 声明的两条目（exa-1/exa-2）」——各恰一次非空 key 命中；命中 0=空真值不得判 PASS；>1=重复写键违规。
+    // 生命周期窗 key 写（B-019 临时卡、B-022 key-buffer 直提延伸面等合法流程）单列取证不静默吞、不计数硬钉；仍受 onlySynthetic+零明文同约束。
+    const setDetail = JSON.stringify(setRecs.map((r) => r.cred || "未digest"));
+    const declared22 = cardIds.slice(0, 2).map((id) => String(id).replace(/^search_chain_/, ""));
+    const nonEmptyK = setRecs.filter((r) => r.cred && r.cred.empty === false);
+    const tallyById = declared22.map((suf) => nonEmptyK.filter((r) => String(r.cred.ref).includes(suf)).length);
+    const lifecycleK = nonEmptyK.filter((r) => !declared22.some((suf) => String(r.cred.ref).includes(suf)));
+    if (tallyById.some((t) => t === 0)) throw new Error(`脱敏自证依据缺失：声明条目 exa-1/exa-2 存在 key 记录 ${JSON.stringify(tallyById)} 含 0（空真值不得判 PASS；明细=${setDetail}）`);
+    if (tallyById.some((t) => t > 1)) throw new Error(`SET-004 违规：声明条目 key 记录重复 ${JSON.stringify(tallyById)}＞1（重复写键；明细=${setDetail}）`);
     if (!flags.onlySynthetic) throw new Error("检测到非合成值写入 credentials/set（全 run 聚合面）");
     if ((flags.responseEchos || 0) > 0 || (flags.envEchoes || 0) > 0 || storageLeak > 0) throw new Error(`回显自证失败（全 run 聚合） responseEchos=${flags.responseEchos || 0} envEchoes=${flags.envEchoes || 0} storage=${storageLeak}`);
     const rawTable = results.map((r) => `${r.id}|${r.measured}|${r.expected}`).join("\n");
     if (rawTable.includes(KEY_A) || rawTable.includes(KEY_B)) throw new Error("断言表/rpc 报告出现合成 key 明文");
-    return { measured: `两枚 exa key 恒为合成 sk-TEST-oracle-*；宿主回包/插桩存储/断言表/raw 证据零明文（打印面全脱敏）；credentials/set 写入自证=${JSON.stringify(setRecs.map((r) => r.cred || '未digest'))}。codex-P2 修复后为跨 reload 聚合判据：全 run 窗口数×${flags.windows || 1}（sessionStorage 审计通道仅存计数/布尔，脱敏扫描覆盖聚合通道）` };
+    return { measured: `两枚 exa key 恒为合成 sk-TEST-oracle-*；宿主回包/插桩存储/断言表/raw 证据零明文（打印面全脱敏）；key 写身份配对 exa-1/exa-2=${JSON.stringify(tallyById)}×各1、生命周期 key 写 ${lifecycleK.length} 条=${JSON.stringify(lifecycleK.map((r) => r.cred))}（同受 onlySynthetic 约束，run-acc3 scope 收敛）。codex-P2 修复后为跨 reload 聚合判据：全 run 窗口数×${flags.windows || 1}（sessionStorage 审计通道仅存计数/布尔，脱敏扫描覆盖聚合通道）` };
   });
   await exec("B-005", "light", async () => {
     const rpc = all.filter((x) => /^\/api\/(settings|credentials)\//.test(x.url));
