@@ -487,35 +487,14 @@ globalThis.window?.__ModuleLoader__?.load({
       @media (hover: hover) {
         .sc-delete-confirm:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger); }
       }
-      .sc-button-primary-small,
-      .sc-save-button {
-        box-sizing: border-box;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        align-self: flex-end;
-        height: 36px;
-        padding: 0 14px;
-        border: none;
-        border-radius: var(--dsw-radius-md);
-        background: var(--dsw-alias-button-primary-fill);
-        color: var(--dsw-alias-label-primary-foreground);
-        font: inherit;
-        font-size: 14px;
-        line-height: 22px;
-        cursor: pointer;
-      }
-      @media (hover: hover) {
-        .sc-button-primary-small:hover:not(:disabled),
-        .sc-save-button:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
-      }
-      .sc-button:disabled, .sc-button-primary:disabled, .sc-button-primary-small:disabled, .sc-button-secondary:disabled,
-      .sc-button-danger:disabled, .sc-save-button:disabled, .sc-add-button:disabled, .sc-drag-handle:disabled,
+      /* SET-006/R1-3：全局保存钮（.sc-save-button）与 compact 修饰（.sc-button-primary-small）整体废止；
+         编辑器动作行两钮为 SPC-014 standard 档，主按钮视觉由 .sc-button-primary 承接。 */
+      .sc-button:disabled, .sc-button-primary:disabled, .sc-button-secondary:disabled,
+      .sc-button-danger:disabled, .sc-add-button:disabled, .sc-drag-handle:disabled,
       .sc-picker-item:disabled { opacity: 0.4; cursor: default; }
       .sc-input:disabled { opacity: 0.6; cursor: default; }
       .sc-button:focus-visible, .sc-button-primary:focus-visible, .sc-button-secondary:focus-visible, .sc-button-danger:focus-visible,
-      .sc-button-primary-small:focus-visible, .sc-save-button:focus-visible, .sc-drag-handle:focus-visible,
+      .sc-drag-handle:focus-visible,
       .sc-add-button:focus-visible, .sc-picker-item:focus-visible {
         outline: none;
         box-shadow: 0 0 0 var(--dsw-focus-ring-width, 2px) var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
@@ -677,6 +656,12 @@ globalThis.window?.__ModuleLoader__?.load({
       .sc-status-node { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
       .sc-status-node[data-state="saved"] { color: var(--dsw-alias-state-success-primary); }
       .sc-status-node[data-state="error"] { color: var(--dsw-alias-state-error-primary); }
+      /* SET-007：节级顶部成功提示启用 SPC-004 预留位（12/18 + state token，不发明新数值）。 */
+      .sc-saved-notice { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-success-primary); }
+      /* SET-006 超时输入行：版式沿用官方开关行（列布局 gap 8），标签 14/22 label-primary、提示 12/18（复用既有档）。 */
+      .sc-timeout-row { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+      .sc-timeout-label { font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); }
+      .sc-timeout-row .sc-input { width: 240px; max-width: 100%; }
       @media (max-width: 720px) {
         .sc-card { padding: 18px 16px; }
         .sc-card-row { align-items: flex-start; flex-direction: column; }
@@ -718,6 +703,9 @@ globalThis.window?.__ModuleLoader__?.load({
           React.createElement("button", { type: "button", "data-role": "add-tool" }, "添加搜索工具"),
         );
       }
+      // SET-006 状态面：busy=任一提交在途（面板全局锁）；editorBusy=编辑器提交在途（编辑器输入/提交/取消禁用）；
+      // savedNotice=节级顶部成功槽（SET-007 role=status）；sectionError=节级顶部错误槽（role=alert，与成功互斥）；
+      // editorError=编辑器动作行上方错误（role=alert）。面板底部零状态节点（SET-007）。
       const [model, setModel] = React.useState({
         phase: "loading",
         base: {},
@@ -728,11 +716,30 @@ globalThis.window?.__ModuleLoader__?.load({
         editingId: null,
         addOpen: false,
         confirmId: null,
-        status: IDLE,
+        busy: false,
+        editorBusy: false,
+        savedNotice: null,
+        sectionError: null,
+        editorError: null,
       });
       const alive = React.useRef(true);
       const restoreFocus = React.useRef(null);
-      const locked = model.status.kind === "pending";
+      // 事件处理器经本 ref 读最新在途标志（避免 async 提交间的陈旧闭包）；渲染期镜像。
+      const lockRef = React.useRef(false);
+      lockRef.current = model.busy || model.editorBusy;
+      const locked = model.busy || model.editorBusy;
+
+      // 刷新不得静默覆盖在编字段（SET-008 语义；② 起由模块级缓存在此回填）：
+      // keepStatus=提交成功后的后台刷新时，正在编辑的条目字段与明文 key 缓冲保留现值。
+      const overlayEditingDraft = (m, draft) => {
+        if (!m.editingId) return draft;
+        const prev = m.draft.entries.find((e) => e.id === m.editingId);
+        if (!prev) return draft;
+        return {
+          ...draft,
+          entries: draft.entries.map((e) => (e.id === m.editingId ? { ...e, name: prev.name, credentialRef: prev.credentialRef, enabled: prev.enabled } : e)),
+        };
+      };
 
       const load = (keepStatus = false) => {
         setModel((m) => ({ ...m, phase: "loading" }));
@@ -744,27 +751,33 @@ globalThis.window?.__ModuleLoader__?.load({
           const proj = got.ok ? projectionOf(got.value) : null;
           if (!proj) {
             const text = got.ok ? "宿主投影中缺少 search-chain 命名空间" : `读取配置失败：${got.message}`;
-            setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, status: { kind: "error", text, issues: [] } }));
+            setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, savedNotice: null, sectionError: { text, issues: [] }, editorError: null }));
             return;
           }
           const effective = { ...proj.base, ...proj.user };
           const check = validate(effective);
           const normalized = check.ok ? check.config : effective;
-          const draft = draftFrom(normalized);
-          setModel((m) => ({
-            ...m,
-            phase: typeof proj.revision === "number" ? "ready" : "unavailable",
-            base: proj.base,
-            user: proj.user,
-            revision: proj.revision,
-            draft,
-            status: keepStatus ? m.status : typeof proj.revision !== "number"
-              ? { kind: "error", text: "宿主投影缺少 revision，禁止保存（请重新打开设置）", issues: [] }
-              : check.ok ? IDLE : { kind: "error", text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) },
-          }));
+          setModel((m) => {
+            let draft = draftFrom(normalized);
+            if (keepStatus) draft = overlayEditingDraft(m, draft);
+            return {
+              ...m,
+              phase: typeof proj.revision === "number" ? "ready" : "unavailable",
+              base: proj.base,
+              user: proj.user,
+              revision: proj.revision,
+              draft,
+              savedNotice: keepStatus ? m.savedNotice : null,
+              sectionError: keepStatus
+                ? m.sectionError
+                : typeof proj.revision !== "number"
+                  ? { text: "宿主投影缺少 revision，禁止保存（请重新打开设置）", issues: [] }
+                  : check.ok ? null : { text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) },
+            };
+          });
         }, (err) => {
           if (!alive.current) return;
-          setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, status: { kind: "error", text: `读取配置失败：${String((err && err.message) || err)}`, issues: [] } }));
+          setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, savedNotice: null, sectionError: { text: `读取配置失败：${String((err && err.message) || err)}`, issues: [] }, editorError: null }));
         });
       };
 
@@ -774,101 +787,254 @@ globalThis.window?.__ModuleLoader__?.load({
         return () => { alive.current = false; };
       }, []);
 
-      const updateEntry = (id, patch) => {
-        if (locked) return;
-        setModel((m) => ({
-          ...m,
-          draft: { ...m.draft, entries: m.draft.entries.map((e) => e.id === id ? { ...e, ...patch } : e) },
-          status: m.status.kind === "error" ? IDLE : m.status,
-        }));
-      };
-      const moveEntry = (id, delta) => setModel((m) => {
-        if (locked || m.status.kind === "pending") return m;
-        const from = m.draft.entries.findIndex((e) => e.id === id);
-        const to = from + delta;
-        if (from < 0 || to < 0 || to >= m.draft.entries.length) return m;
-        const entries = [...m.draft.entries];
-        [entries[from], entries[to]] = [entries[to], entries[from]];
-        return { ...m, draft: { ...m.draft, entries } };
-      });
-      const addEntry = (type) => {
-        if (locked) return;
-        const label = CATALOG_UI.find((x) => x[0] === type)?.[1] ?? type;
-        const id = `search_chain_${Date.now().toString(36)}_${++entryIdSeq}`;
-        setModel((m) => ({ ...m, addOpen: false, draft: { ...m.draft, entries: [...m.draft.entries, { id, type, name: label, enabled: true, credentialRef: "" }] } }));
-      };
-      const save = async () => {
-        if (locked || model.status.kind === "pending" || model.phase !== "ready" || typeof model.revision !== "number") return;
-        // 先把本次非空 key 将生成的新引用投影到临时 entries，再校验剩余引用；
-        // 这样迁移旧冒号 ref 时，旧值既不会阻断，也不会进入任何请求体。
-        let entries = model.draft.entries.map((e) => ({ ...e }));
-        const credentialWrites = [];
-        for (let i = 0; i < entries.length; i++) {
-          const value = typeof model.keys[entries[i].id] === "string" ? model.keys[entries[i].id].trim() : "";
-          if (!KEYED_TYPES.includes(entries[i].type) || !value) continue;
-          const ref = credentialRefFor(entries[i].id);
-          entries[i] = { ...entries[i], credentialRef: ref };
-          credentialWrites.push({ ref, value });
+      // ─────────────────────── SET-006：条目级提交与离散落盘 ───────────────────────
+      // 所有落盘以“最新持久化快照（user 层）”为基线构造，载荷只含该处变更；
+      // 其他条目或全局字段的未提交草稿一律不得混入（O-4：expectedRevision 互斥提交）。
+      const userEntriesOf = (m) => (Array.isArray(m.user.entries) ? m.user.entries : []);
+      const baseEntriesOf = (m) => (Array.isArray(m.base.entries) ? m.base.entries : []);
+      const persistedTimeoutOf = (m) => (typeof m.user.timeoutMs === "number" ? m.user.timeoutMs : DEFAULT_TIMEOUT_MS);
+      const persistedOfficialOf = (m) => (m.user.useOfficialDeepSeekSearch !== false);
+
+      // 离散动作立即落盘：成功=生效确认（重新读取投影）；失败=保留意图（草稿保留目标值）+ 节级顶部可操作错误。
+      const commitDiscrete = async (buildOps, successText) => {
+        const m0 = model;
+        if (lockRef.current || m0.phase !== "ready" || typeof m0.revision !== "number") return false;
+        let ops = null;
+        try { ops = buildOps(m0); } catch { ops = null; }
+        if (!ops || ops.length === 0) return true; // 意图未变化：无需写
+        setModel((m) => ({ ...m, busy: true, savedNotice: null, sectionError: null }));
+        let response;
+        try {
+          response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: m0.revision });
+        } catch (err) {
+          if (!alive.current) return false;
+          setModel((m) => ({ ...m, busy: false, sectionError: { text: `保存失败：${String((err && err.message) || err)}`, issues: [] } }));
+          return false;
         }
-        const bad = entries.find((e) => e.credentialRef && !POSIX_REF.test(e.credentialRef.trim()));
-        if (bad) {
-          setModel((m) => ({ ...m, status: { kind: "error", text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] } }));
+        if (!alive.current) return false;
+        const result = unwrap(response);
+        if (!result.ok) {
+          setModel((m) => ({ ...m, busy: false, sectionError: { text: `保存失败：${String(result.message || "宿主拒绝该请求")}`, issues: [] } }));
+          return false;
+        }
+        setModel((m) => ({ ...m, busy: false, savedNotice: { text: successText } }));
+        load(true);
+        return true;
+      };
+
+      // 编辑器字段变更：写入草稿并清除该编辑器错误态（SET-008 起同步模块级缓存）。
+      const updateEditorField = (id, field, value) => {
+        if (lockRef.current) return;
+        setModel((m) => ({ ...m, editorError: null, draft: { ...m.draft, entries: m.draft.entries.map((e) => (e.id === id ? { ...e, [field]: value } : e)) } }));
+      };
+      const updateKey = (id, value) => {
+        if (lockRef.current) return;
+        setModel((m) => ({ ...m, editorError: null, keys: { ...m.keys, [id]: value } }));
+      };
+
+      // 顶部官方开关：onChange 即离散提交（仅自身键）。
+      const officialToggleChange = (ev) => {
+        const target = Boolean(ev.target && ev.target.checked);
+        if (lockRef.current) return;
+        setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, useOfficial: target } }));
+        commitDiscrete((m) => (persistedOfficialOf(m) === target ? [] : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }]), "已保存设置。");
+      };
+
+      // 超时输入：失焦/回车 且 值有变化且合法 才提交（仅 timeoutMs 键）。
+      const timeoutCommit = () => {
+        if (lockRef.current) return;
+        const text = String(model.draft.timeoutText ?? "").trim();
+        const parsed = Number(text);
+        if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+          setModel((m) => ({ ...m, sectionError: { text: "超时须为正整数（毫秒）", issues: [] }, savedNotice: null }));
           return;
         }
-        setModel((m) => ({ ...m, status: { kind: "pending", text: "保存中…", issues: [] } }));
+        setModel((m) => ({ ...m, sectionError: null, draft: { ...m.draft, timeoutText: String(parsed) } }));
+        if (parsed === persistedTimeoutOf(model)) return; // 值未变化：不写
+        setModel((m) => ({ ...m, savedNotice: null }));
+        commitDiscrete(() => [{ op: "set", path: ["timeoutMs"], value: parsed }], "已保存设置。");
+      };
+
+      // 卡片启用开关：onChange 即离散提交（仅自身 enabled 键；未提交的新条目无持久化变更）。
+      const enabledToggleChange = (entryId, ev) => {
+        const target = Boolean(ev.target && ev.target.checked);
+        if (lockRef.current) return;
+        setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, entries: m.draft.entries.map((e) => (e.id === entryId ? { ...e, enabled: target } : e)) } }));
+        commitDiscrete((m) => {
+          const list = userEntriesOf(m);
+          const idx = list.findIndex((e) => e.id === entryId);
+          if (idx < 0) return [];
+          return (list[idx].enabled !== false) === target ? [] : [{ op: "set", path: ["entries", String(idx), "enabled"], value: target }];
+        }, "已保存设置。");
+      };
+
+      // 移除确认：清草稿 + 落盘 unset（仅该条目键）。
+      const confirmRemoveClick = (entryId) => {
+        if (lockRef.current) return;
+        setModel((m) => ({
+          ...m,
+          confirmId: null,
+          editingId: m.editingId === entryId ? null : m.editingId,
+          savedNotice: null,
+          sectionError: null,
+          draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== entryId) },
+        }));
+        commitDiscrete((m) => {
+          const idx = userEntriesOf(m).findIndex((e) => e.id === entryId);
+          return idx < 0 ? [] : [{ op: "unset", path: ["entries", String(idx)] }];
+        }, "已保存设置。");
+      };
+
+      // 拖拽/键盘重排：草稿先行（视觉即时），随后以持久化快照的相对顺序落盘（D-1 整条编码，仅 entries 键）。
+      const commitReorder = (orderIds) => {
+        const ids = orderIds || model.draft.entries.map((e) => e.id);
+        commitDiscrete((m) => {
+          const list = userEntriesOf(m);
+          const present = new Set(list.map((e) => e.id));
+          const targetIds = ids.filter((id) => present.has(id));
+          if (targetIds.length !== list.length) return []; // 草稿含未提交新条目：持久化顺序不受影响
+          if (targetIds.every((id, i) => id === list[i].id)) return [];
+          const byId = new Map(list.map((e) => [e.id, e]));
+          return toOps({ entries: targetIds.map((id) => byId.get(id)) }, { entries: list });
+        }, "已保存设置。");
+      };
+      const moveEntry = (id, delta) => {
+        if (lockRef.current) return;
+        const list = [...model.draft.entries];
+        const from = list.findIndex((e) => e.id === id);
+        const to = from + delta;
+        if (from < 0 || to < 0 || to >= list.length) return;
+        [list[from], list[to]] = [list[to], list[from]];
+        setModel((m) => ({ ...m, draft: { ...m.draft, entries: list } }));
+        commitReorder(list.map((e) => e.id));
+      };
+      const addEntry = (type, trigger) => {
+        if (lockRef.current) return;
+        const label = CATALOG_UI.find((x) => x[0] === type)?.[1] ?? type;
+        const id = `search_chain_${Date.now().toString(36)}_${++entryIdSeq}`;
+        // SET-006：选类型即进入该新条目的编辑器（草稿立即出现在列表末尾，提交成功才持久化）。
+        restoreFocus.current = trigger ?? null;
+        setModel((m) => ({
+          ...m,
+          addOpen: false,
+          editingId: id,
+          editorError: null,
+          draft: { ...m.draft, entries: [...m.draft.entries, { id, type, name: label, enabled: true, credentialRef: "" }] },
+        }));
+      };
+
+      const entryIsPersisted = (m, entry) => userEntriesOf(m).some((e) => e.id === entry.id);
+
+      // 编辑器提交的候选条目列表：按稳定条目 id 合并该条目全部托管字段，
+      // 其余条目取持久化快照值；载荷不含其他条目/全局字段草稿（SET-006）。
+      const candidateEntriesFor = (m, entry, credRef) => {
+        const list = userEntriesOf(m);
+        const patch = { id: entry.id, type: entry.type, name: entry.name, enabled: entry.enabled };
+        if (credRef) patch.credentialRef = credRef;
+        if (list.some((e) => e.id === entry.id)) {
+          return list.map((e) => {
+            if (e.id !== entry.id) return e;
+            const out = { ...e, ...patch };
+            if (!credRef) delete out.credentialRef;
+            return out;
+          });
+        }
+        const baseEntry = baseEntriesOf(m).find((e) => e.id === entry.id);
+        const added = baseEntry ? { ...baseEntry, ...patch } : { ...patch };
+        if (baseEntry && !credRef) delete added.credentialRef;
+        return [...list, added];
+      };
+
+      // 条目级提交（新建=创建 / 编辑=更新）：先凭据后配置；成功=该条目整体生效并关闭编辑器；
+      // 失败=编辑器原地保留（字段与 key 缓冲不丢）+ 动作行上方 role=alert 错误。
+      const submitEditor = async () => {
+        const entry = model.draft.entries.find((e) => e.id === model.editingId);
+        if (!entry || lockRef.current) return;
+        if (model.phase !== "ready" || typeof model.revision !== "number") return;
+        const keyVal = (typeof model.keys[entry.id] === "string" ? model.keys[entry.id] : "").trim();
+        let credRef = (entry.credentialRef ?? "").trim();
+        const writesKey = keyVal !== "" && KEYED_TYPES.includes(entry.type);
+        // 代码级阻断（与实时 editorBlock 同判据；真实 DOM 中禁用钮不可点，此守卫兜底测试侧直接触发）：
+        // 超语法 ref 且本次不带新 key → 零出站（R-1 / P2-3 留空变体）。
+        if (!writesKey && credRef && !POSIX_REF.test(credRef)) {
+          setModel((m) => ({ ...m, editorError: { text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] } }));
+          return;
+        }
+        setModel((m) => ({ ...m, editorBusy: true, editorError: null, savedNotice: null, sectionError: null }));
         try {
-          for (const { ref, value } of credentialWrites) {
-            const response = await credentialRpc("set", { ref, value });
+          if (writesKey) {
+            // 新引用总是 POSIX 合法（受控生成）；先写凭据，成功后才允许携带新 ref 落盘。
+            const newRef = credentialRefFor(entry.id);
+            credRef = newRef;
+            const credResponse = await credentialRpc("set", { ref: newRef, value: keyVal });
+            const credResult = unwrap(credResponse);
+            if (!credResult.ok) throw new Error(credResult.message || "凭据服务拒绝写入");
+          }
+          const candidate = candidateEntriesFor(model, entry, credRef);
+          const check = validate({ ...model.base, ...{ ...model.user, entries: candidate } });
+          if (!check.ok) throw new Error(`校验未通过：${check.issues.map((i) => i.message).join("；")}`);
+          const ops = toOps({ entries: candidate }, { entries: userEntriesOf(model) });
+          if (ops.length > 0) {
+            const response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: model.revision });
             const result = unwrap(response);
-            if (!result.ok) throw new Error(result.message || "凭据服务拒绝写入");
+            if (!result.ok) throw new Error(result.message || "宿主拒绝该请求");
           }
-          const form = {
-            entries,
-            useOfficialDeepSeekSearch: model.draft.useOfficial,
-            timeoutMs: Number(model.draft.timeoutText),
-          };
-          const merged = merge(form, model.user);
-          const check = validate(Object.assign({}, model.base, merged));
-          if (!check.ok) {
-            setModel((m) => ({ ...m, status: { kind: "error", text: "配置未保存：校验未通过", issues: check.issues.map((i) => i.message) } }));
-            return;
-          }
-          const ops = toOps(merged, model.user);
-          const response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: model.revision });
-          const result = unwrap(response);
-          if (!result.ok) {
-            let message = String(result.message || "宿主拒绝该请求");
-            for (const secret of Object.values(model.keys)) {
-              if (typeof secret === "string" && secret.trim()) message = message.replaceAll(secret.trim(), "[redacted]");
-            }
-            setModel((m) => ({ ...m, status: { kind: "error", text: `保存失败：${message}`, issues: [] } }));
-            return;
-          }
-          setModel((m) => ({
-            ...m,
-            user: merged,
-            draft: { ...m.draft, entries: entries.map((e) => ({ ...e })), timeoutText: String(form.timeoutMs) },
-            keys: {},
-            status: { kind: "saved", text: "已保存", issues: [] },
-          }));
+          const name = (entry.name || "").trim() || entry.type;
+          setModel((m) => {
+            const keys = { ...m.keys };
+            delete keys[entry.id];
+            return { ...m, editorBusy: false, editingId: null, addOpen: false, keys, editorError: null, savedNotice: { text: `已保存 ${name}。` } };
+          });
           load(true);
         } catch (err) {
           let message = String((err && err.message) || err || "保存失败");
           for (const secret of Object.values(model.keys)) {
             if (typeof secret === "string" && secret.trim()) message = message.replaceAll(secret.trim(), "[redacted]");
           }
-          setModel((m) => ({ ...m, status: { kind: "error", text: `保存失败：${message}`, issues: [] } }));
+          setModel((m) => ({ ...m, editorBusy: false, editorError: { text: `保存失败：${message}`, issues: [] } }));
         }
       };
-      const closeEditor = () => {
-        if (locked) return;
-        setModel((m) => ({ ...m, editingId: null }));
-        const node = restoreFocus.current;
-        if (node && typeof node.focus === "function") Promise.resolve().then(() => node.focus());
+
+      // SET-006/O-5：取消 ≡ 放弃——不写配置；清除该条目字段草稿与明文 key 缓冲；关闭编辑器；焦点回触发控件。
+      // 取消仅在提交在途时禁用；只读/缺 revision/校验未过/前次报错均须可点。
+      const cancelEditor = () => {
+        if (model.editorBusy) return;
+        const entry = model.draft.entries.find((e) => e.id === model.editingId);
+        const trigger = restoreFocus.current;
+        setModel((m) => {
+          const keys = { ...m.keys };
+          let entries = m.draft.entries;
+          if (entry) {
+            delete keys[entry.id];
+            if (entryIsPersisted(m, entry)) {
+              const persisted = userEntriesOf(m).find((e) => e.id === entry.id);
+              entries = entries.map((e) => (e.id === entry.id
+                ? {
+                    ...e,
+                    name: persisted ? (persisted.name ?? "") : e.name,
+                    credentialRef: persisted && typeof persisted.credentialRef === "string" ? persisted.credentialRef : "",
+                  }
+                : e));
+            } else {
+              entries = entries.filter((e) => e.id !== entry.id); // 新条目：移出草稿即清草稿
+            }
+          }
+          return { ...m, editingId: null, addOpen: false, keys, editorError: null, draft: { ...m.draft, entries } };
+        });
+        restoreFocus.current = null;
+        if (trigger && typeof trigger.focus === "function") Promise.resolve().then(() => trigger.focus());
+      };
+      const openEditorFor = (entryId, trigger) => {
+        if (lockRef.current) return;
+        restoreFocus.current = trigger ?? null;
+        setModel((m) => ({ ...m, editingId: entryId, editorError: null, addOpen: false }));
       };
       const onDialogKeyDown = (ev) => {
-        if (locked) return;
-        if (ev.key === "Escape") { ev.preventDefault?.(); closeEditor(); return; }
+        if (ev.key === "Escape") {
+          ev.preventDefault?.();
+          cancelEditor(); // O-5：Escape ≡ 点击取消（同清草稿、同焦点回退）
+          return;
+        }
         if (ev.key === "Tab" && ev.currentTarget?.querySelectorAll) {
           const items = [...ev.currentTarget.querySelectorAll("button, input, select, textarea, [tabindex]:not([tabindex='-1'])")].filter((n) => !n.disabled);
           if (items.length) {
@@ -924,18 +1090,17 @@ globalThis.window?.__ModuleLoader__?.load({
             clearDragMarks(ev.currentTarget);
             const moving = ev.dataTransfer?.getData?.("text/plain");
             if (!moving || moving === entry.id) return;
-            setModel((m) => {
-              const list = [...m.draft.entries];
-              const from = list.findIndex((e) => e.id === moving), to = list.findIndex((e) => e.id === entry.id);
-              if (from < 0 || to < 0) return m;
-              // 目标插入位：before=目标原索引 to，after=to+1（均按移除前的原列表计）。
-              // 先移除被拖项：若插入位在其之后，移除后索引左移一位。
-              const pos = side === "after" ? to + 1 : to;
-              const finalIndex = from < pos ? pos - 1 : pos;
-              if (finalIndex === from) return m;
-              const [item] = list.splice(from, 1); list.splice(finalIndex, 0, item);
-              return { ...m, draft: { ...m.draft, entries: list } };
-            });
+            const list = [...model.draft.entries];
+            const from = list.findIndex((e) => e.id === moving), to = list.findIndex((e) => e.id === entry.id);
+            if (from < 0 || to < 0) return;
+            // 目标插入位：before=目标原索引 to，after=to+1（均按移除前的原列表计）。
+            // 先移除被拖项：若插入位在其之后，移除后索引左移一位。
+            const pos = side === "after" ? to + 1 : to;
+            const finalIndex = from < pos ? pos - 1 : pos;
+            if (finalIndex === from) return;
+            const [item] = list.splice(from, 1); list.splice(finalIndex, 0, item);
+            setModel((m) => ({ ...m, draft: { ...m.draft, entries: list } }));
+            commitReorder(list.map((e) => e.id)); // SET-006：重排即落盘
           },
         },
           React.createElement("div", { className: "sc-card-row" },
@@ -953,14 +1118,14 @@ globalThis.window?.__ModuleLoader__?.load({
                   className: "sc-switch-input", type: "checkbox", role: "switch", "aria-checked": entry.enabled,
                   "aria-label": `启用 ${entry.name || row?.[1] || entry.type}`,
                   "data-role": "enabled-toggle", "data-entry-id": entry.id, checked: entry.enabled, disabled: locked,
-                  onChange: (ev) => updateEntry(entry.id, { enabled: Boolean(ev.target.checked) }),
+                  onChange: (ev) => enabledToggleChange(entry.id, ev),
                 }),
                 React.createElement("span", { className: "sc-switch-track", "aria-hidden": "true" }),
                 React.createElement("span", { className: "sc-switch-label" }, "启用"),
               ),
               React.createElement("button", {
                 className: "sc-button-secondary", type: "button", "data-role": "card-edit", "data-entry-id": entry.id, disabled: locked,
-                onClick: (ev) => { if (locked) return; restoreFocus.current = ev.currentTarget ?? null; setModel((m) => ({ ...m, editingId: entry.id, status: m.status.kind === "error" ? IDLE : m.status })); },
+                onClick: (ev) => openEditorFor(entry.id, ev.currentTarget ?? null),
               }, "编辑"),
               React.createElement("button", {
                 className: "sc-button-danger", type: "button", "data-role": "card-remove", "data-entry-id": entry.id, disabled: locked,
@@ -983,43 +1148,67 @@ globalThis.window?.__ModuleLoader__?.load({
         );
       });
       const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
-      const statusNode = model.status.kind === "idle" ? null : React.createElement("p", {
-        className: model.status.kind === "error" ? "sc-status-node sc-error" : "sc-status-node",
-        "data-role": model.status.kind === "error" ? "save-error" : "save-status",
-        "data-state": model.status.kind,
-        role: model.status.kind === "error" ? "alert" : "status",
-      }, model.status.text, ...(model.status.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`)));
+      // SET-007：节级顶部槽——成功（role=status）与错误/冲突（role=alert）互斥，位于首个卡片之前；面板底部零状态节点。
+      const savedNode = model.savedNotice ? React.createElement("p", {
+        className: "sc-saved-notice", "data-role": "save-status", "data-state": "saved", role: "status", "aria-live": "polite",
+      }, model.savedNotice.text) : null;
+      const sectionErrorNode = model.sectionError ? React.createElement("p", {
+        className: "sc-status-node", "data-role": "save-error", "data-state": "error", role: "alert",
+      }, model.sectionError.text, ...(model.sectionError.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`))) : null;
+      // SET-006：提交钮实时校验（在途/只读/缺 revision/校验失败 → 禁用）；新 ref 由受控生成、恒合法，校验用占位 ref 投影。
+      const editorIsCreate = editorEntry ? !entryIsPersisted(model, editorEntry) : false;
+      const editorBlock = (() => {
+        if (!editorEntry) return null;
+        const keyVal = (typeof model.keys[editorEntry.id] === "string" ? model.keys[editorEntry.id] : "").trim();
+        const writesKey = keyVal !== "" && KEYED_TYPES.includes(editorEntry.type);
+        const credRef = (editorEntry.credentialRef ?? "").trim();
+        if (!writesKey && credRef && !POSIX_REF.test(credRef)) {
+          return { text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] };
+        }
+        const check = validate({ ...model.base, ...{ ...model.user, entries: candidateEntriesFor(model, editorEntry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef) } });
+        if (!check.ok) return { text: "无法提交：配置校验未通过", issues: check.issues.map((i) => i.message) };
+        return null;
+      })();
+      const editorProblem = model.editorError || editorBlock;
+      const editorSubmitDisabled = model.busy || model.editorBusy || model.phase !== "ready" || typeof model.revision !== "number" || !!editorBlock;
+      const submitLabel = model.editorBusy ? (editorIsCreate ? "创建中…" : "保存中…") : (editorIsCreate ? "创建工具" : "保存");
       const editor = editorEntry ? React.createElement("div", {
         role: "dialog", "aria-modal": "true", "aria-labelledby": "sc-editor-title",
         "data-role": "editor", onKeyDown: onDialogKeyDown, className: "sc-dialog sc-editor",
       },
-        React.createElement("h4", { id: "sc-editor-title", className: "sc-editor-title" }, `编辑 ${editorEntry.name || editorEntry.type}`),
+        React.createElement("h4", { id: "sc-editor-title", className: "sc-editor-title" }, `${editorIsCreate ? "新建" : "编辑"} ${editorEntry.name || editorEntry.type}`),
         React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "名称"), React.createElement("input", {
           className: "sc-input", type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, disabled: locked,
-          value: editorEntry.name, onChange: (ev) => updateEntry(editorEntry.id, { name: ev.target.value }), autoFocus: true,
+          value: editorEntry.name ?? "", onChange: (ev) => updateEditorField(editorEntry.id, "name", ev.target.value), autoFocus: true,
         })),
         React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "凭据引用"), React.createElement("input", {
           className: "sc-input", type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, disabled: locked,
           value: editorEntry.credentialRef ?? "", placeholder: "例如 TAVILY_API_KEY",
-          onChange: (ev) => updateEntry(editorEntry.id, { credentialRef: ev.target.value }),
+          onChange: (ev) => updateEditorField(editorEntry.id, "credentialRef", ev.target.value),
         })),
         KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "API key（仅写入，不会回显）"), React.createElement("input", {
           className: "sc-input", type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, disabled: locked,
           value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
-          onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, keys: { ...m.keys, [editorEntry.id]: ev.target.value } })); },
+          onChange: (ev) => updateKey(editorEntry.id, ev.target.value),
         })) : null,
-        React.createElement("div", { className: "sc-editor-actions" }, React.createElement("button", { className: "sc-button sc-button-primary sc-button-primary-small", type: "button", disabled: locked, onClick: closeEditor }, "完成")),
+        editorProblem ? React.createElement("p", {
+          className: "sc-status-node", "data-role": "save-error", "data-state": "error", role: "alert",
+        }, editorProblem.text, ...(editorProblem.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`))) : null,
+        React.createElement("div", { className: "sc-editor-actions" },
+          React.createElement("button", { className: "sc-button sc-button-secondary", type: "button", "data-role": "editor-cancel", disabled: model.editorBusy, onClick: cancelEditor }, "取消"),
+          React.createElement("button", { className: "sc-button sc-button-primary", type: "button", "data-role": "editor-submit", disabled: editorSubmitDisabled, onClick: submitEditor }, submitLabel),
+        ),
       ) : null;
       const addPicker = model.addOpen ? React.createElement("div", { role: "group", "aria-label": "选择搜索工具", className: "sc-picker" },
         ...CATALOG_UI.map(([type, label, billing]) => React.createElement("button", {
           key: type, className: "sc-picker-item", type: "button", "data-role": "add-type", "data-type": type, disabled: locked,
-          onClick: () => addEntry(type),
+          onClick: (ev) => addEntry(type, ev.currentTarget ?? null),
         }, React.createElement("strong", { className: "sc-picker-title" }, label), React.createElement("span", { className: "sc-picker-billing" }, billing))),
       ) : null;
       const confirm = model.confirmId ? React.createElement("div", { role: "alertdialog", "aria-modal": "true", className: "sc-dialog sc-confirm" },
         React.createElement("p", null, "移除该搜索工具？不会删除宿主凭据。"),
         React.createElement("div", { className: "sc-confirm-actions" },
-          React.createElement("button", { className: "sc-button-danger sc-delete-confirm", type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null, draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== model.confirmId) } })); } }, "确认移除"),
+          React.createElement("button", { className: "sc-button-danger sc-delete-confirm", type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, disabled: locked, onClick: () => confirmRemoveClick(model.confirmId) }, "确认移除"),
           React.createElement("button", { className: "sc-button sc-button-secondary", type: "button", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null })); } }, "取消"),
         ),
       ) : null;
@@ -1031,25 +1220,40 @@ globalThis.window?.__ModuleLoader__?.load({
         React.createElement("style", { "data-sc-style": "panel" }, PANEL_CSS),
         React.createElement("h3", { className: "sc-title" }, SECTION_TITLE),
         React.createElement("p", { className: "sc-description" }, "搜索工具按列表顺序依次尝试，前一个失败时回退到下一个。"),
+        // SET-007：节级反馈槽（成功/错误/冲突互斥），位于标题与描述之后、卡片列表之前；面板底部零状态节点。
+        savedNode,
+        sectionErrorNode,
         React.createElement("div", { className: "sc-official-row" },
         React.createElement("label", { className: "sc-switch sc-official-switch" },
           React.createElement("input", {
             className: "sc-switch-input", type: "checkbox", role: "switch", "aria-checked": model.draft.useOfficial,
             "aria-label": "DeepSeek 官方 API 使用官方搜索", "data-role": "official-toggle", disabled: locked,
             checked: model.draft.useOfficial,
-            onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, draft: { ...m.draft, useOfficial: Boolean(ev.target.checked) } })); },
+            onChange: (ev) => officialToggleChange(ev),
           }),
           React.createElement("span", { className: "sc-switch-track", "aria-hidden": "true" }),
           React.createElement("span", { className: "sc-switch-label" }, "DeepSeek 官方 API 使用官方搜索"),
         ),
         React.createElement("p", { className: "sc-official-hint", "data-role": "official-hint" }, "仅对 DeepSeek 官方 API 会话生效；关闭后相关会话改用下方工具链。官方搜索不另按次收费，模型用量仍按 token 计费。")),
+        // SET-006：超时输入（B-017）——失焦/回车 且 值变化且合法 才落盘（仅 timeoutMs 键）。
+        React.createElement("div", { className: "sc-timeout-row", "data-role": "timeout" },
+          React.createElement("label", { className: "sc-timeout-label", htmlFor: "sc-timeout-input" }, "回退超时（毫秒）"),
+          React.createElement("input", {
+            id: "sc-timeout-input", className: "sc-input", type: "number", min: "1", step: "1", inputMode: "numeric",
+            "data-role": "field", "data-field": "timeoutMs", disabled: locked,
+            value: model.draft.timeoutText,
+            onChange: (ev) => { if (!lockRef.current) setModel((m) => ({ ...m, sectionError: null, draft: { ...m.draft, timeoutText: ev.target.value } })); },
+            onBlur: timeoutCommit,
+            onKeyDown: (ev) => { if (ev.key === "Enter") { ev.preventDefault?.(); timeoutCommit(); } },
+          }),
+          React.createElement("p", { className: "sc-official-hint" }, "单个工具请求的最长等待；超过后回退到列表中下一个工具。"),
+        ),
         model.draft.entries.length === 0 ? React.createElement("p", { "data-role": "empty-state", style: secondaryTextStyle }, "还没有配置搜索工具，点击下方「添加搜索工具」添加第一条。") : null,
         cardNodes.length ? React.createElement("div", { className: "sc-card-list" }, ...cardNodes) : null,
         React.createElement("div", { className: "sc-add-block" }, React.createElement("div", { className: "sc-add-actions" }, React.createElement("button", { className: "sc-add-button", type: "button", "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "＋ 添加搜索工具")), addPicker),
         confirm,
+        // SET-006：全局保存钮删除——所有落盘走条目级提交或离散动作（O-8 迁移面）。
         editor,
-        React.createElement("button", { className: "sc-button sc-button-primary sc-save-button", type: "button", "data-role": "save", disabled: model.phase !== "ready" || model.status.kind === "pending", onClick: save }, "保存"),
-        statusNode,
       ));
     }
 

@@ -257,7 +257,8 @@ test("SET-002 添加：选择 tavily 后新条目追加到末尾、启用，保�
     const newId = order[3];
     assert.ok(!fixtureEntries().some((e) => e.id === newId), "新条目须有新的稳定 id");
     assert.equal(one(t, ROLE.enabled, { entryId: newId }).props.checked, true, "新条目须默认启用");
-    t = await step(view, t, ROLE.save);
+    // O-8（#51）：SET-006 条目级保存——新条目须经其编辑器提交落盘（无全局保存钮）。
+    t = await step(view, t, ROLE.editorSubmit);
     const saved = stateEntries(state);
     assert.equal(saved.length, 4, "保存后宿主快照应含 4 条");
     assert.equal(saved[3].type, "tavily", "新条目类型须为 tavily");
@@ -271,8 +272,9 @@ test("SET-002 同类型多实例：两次添加 tavily 得到两个互不相同�
   await withEnv(state, async () => {
     const { view, tree } = await openPanel("multi");
     let t = await addType(view, tree, "tavily");
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006——新条目逐条经编辑器提交落盘
     t = await addType(view, t, "tavily");
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit);
     const ids = idsOf(stateEntries(state));
     assert.equal(new Set(ids).size, ids.length, `同类型实例 id 须唯一：${JSON.stringify(ids)}`);
     assert.equal(stateEntries(state).filter((e) => e.type === "tavily").length, 3, "应有 1 个原有 + 2 个新增 tavily");
@@ -285,7 +287,7 @@ test("SET-002 编辑隔离：改名 exa-b 后保存，其余两条的 id/类型/
     const before = fixtureEntries();
     const { view, tree } = await openPanel("edit-iso");
     let t = await setName(view, tree, "exa-b", "Exa 改名");
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006——条目级提交替代全局保存
     const after = stateEntries(state);
     const byId = (id) => after.find((e) => e.id === id);
     assert.equal(byId("exa-b").name, "Exa 改名", "被编辑条目名称须更新");
@@ -321,13 +323,13 @@ test("SET-002 credentialRef 输入校验（R-1）：不合语法的引用名保�
   await withEnv(makeSettingsState(), async ({ fetchStub, state }) => {
     const { view, tree } = await openPanel("ref-grammar");
     let t = await editEntry(view, tree, "exa-b", { ref: "SEARCH_CHAIN_CREDENTIAL:exa-b:1" });
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006——条目级提交
     assert.equal(fetchStub.credentialSets().length, 0, "不合语法的引用名不得发 credentials/set（R-1）");
     assert.equal(fetchStub.mutates().length, 0, "不合语法的引用名不得发 settings/mutate（R-1）");
-    const blocked = byRole(t, ROLE.saveError).length === 1 || one(t, ROLE.save).props.disabled === true;
+    const blocked = byRole(t, ROLE.saveError).length === 1 || one(t, ROLE.editorSubmit).props.disabled === true;
     assert.ok(blocked, "保存须被阻断：须有可见错误（save-error）或保存控件禁用（R-1）");
     t = await act(view, () => fire(one(t, ROLE.field, { field: "credentialRef" }), "onChange", { target: { value: "DEEPSEEK_API_KEY" } }));
-    await step(view, t, ROLE.save);
+    await step(view, t, ROLE.editorSubmit);
     assert.equal(fetchStub.mutates().length, 1, "合法引用名 DEEPSEEK_API_KEY 应照常保存");
     assert.equal(fetchStub.credentialSets().length, 0, "无 key 时合法引用名保存不发 credentials/set");
     assert.equal(state.user.entries.find((e) => e.id === "exa-b").credentialRef, "DEEPSEEK_API_KEY", "合法引用名落入条目");
@@ -351,9 +353,9 @@ test("SET-002 停用：关闭 exa-b 后位置与配置保留；保存后重开�
   const state = makeSettingsState();
   await withEnv(state, async () => {
     const { view, tree } = await openPanel("disable");
-    let t = await setEnabled(view, tree, "exa-b", false);
+    // O-8（#51）：SET-006——启用开关 onChange 即离散落盘，无全局保存步。
+    const t = await setEnabled(view, tree, "exa-b", false);
     assert.deepEqual(cardOrder(t), idsOf(fixtureEntries()), "停用不得改变卡片位置");
-    t = await step(view, t, ROLE.save);
     const reopened = await openPanel("disable-reopen");
     assert.deepEqual(cardOrder(reopened.tree), idsOf(fixtureEntries()), "重开后位置保持");
     assert.equal(one(reopened.tree, ROLE.enabled, { entryId: "exa-b" }).props.checked, false, "重开后 exa-b 须仍为关闭");
@@ -369,9 +371,9 @@ test("SET-002 移除：需二次确认才移除；确认后该条消失，其余
     let t = await step(view, tree, ROLE.remove, { entryId: "exa-b" });
     assert.deepEqual(cardOrder(t), idsOf(fixtureEntries()), "未确认前卡片不得消失");
     assert.equal(fetchStub.mutates().length, 0, "未确认前不得写入");
+    // O-8（#51）：SET-006——确认移除即落盘 unset，无全局保存步。
     t = await step(view, t, ROLE.confirmRemove, { entryId: "exa-b" });
-    t = await step(view, t, ROLE.save);
-    assert.deepEqual(idsOf(stateEntries(state)), ["tavily-a", "bing-c"], "确认并保存后 exa-b 须移除");
+    assert.deepEqual(idsOf(stateEntries(state)), ["tavily-a", "bing-c"], "确认后 exa-b 须移除（即时落盘）");
     assert.equal(stateEntries(state)[0].credentialRef, "TAVILY_KEY_A", "其余条目的凭据引用不得被改动");
     assert.equal(hostStub.calls.length, 0, "移除不得调用宿主 host.call 通道（D-2C：零 host 调用）");
   });
@@ -415,10 +417,11 @@ test("SET-003 保存后读回：移动两次后保存恰一次 mutate，宿主�
   const state = makeSettingsState();
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("kb-save");
+    // O-8（#51）：SET-006——键盘重排即离散落盘，每次移动一次 mutate（取代「移动后统一保存」）。
     let t = await moveWithKey(view, tree, "bing-c", "ArrowUp");
+    assert.equal(fetchStub.mutates().length, 1, "第一次移动即落盘（恰一次 mutate）");
     t = await moveWithKey(view, t, "bing-c", "ArrowUp");
-    t = await step(view, t, ROLE.save);
-    assert.equal(fetchStub.mutates().length, 1, "保存恰好一次 mutate");
+    assert.equal(fetchStub.mutates().length, 2, "第二次移动即落盘（累计恰两次 mutate）");
     assert.deepEqual(idsOf(stateEntries(state)), ["bing-c", "tavily-a", "exa-b"], "宿主快照顺序须与卡片一致");
   });
 });
@@ -500,7 +503,7 @@ test("SET-004 零出站：打开、开关、改名、停用、排序、添加、
     for (const c of fetchStub.calls) {
       assert.ok(allowed.has(c.kind) && isSameOriginApi(c.url), `允许的同源端点集合外的请求（D-2C）：${c.url} ${c.kind}`);
     }
-    assert.equal(fetchStub.mutates().length, 0, "未保存前不得 mutate");
+    // O-8（#51）：SET-006 后离散动作即时落盘，故不再断言零 mutate；本用例钉的是「零供应商出站、零 host.call」。
     assert.equal(hostStub.calls.length, 0, "面板操作不得调用 host.call（D-2C：静态 ctx 无 host 服务）");
   });
 });
@@ -509,7 +512,7 @@ test("SET-004 保存：恰一次 mutate，args 含 ns=search-chain、ops 数组�
   const state = makeSettingsState();
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("save-once");
-    await step(view, await setName(view, tree, "exa-b", "Exa 改名"), ROLE.save);
+    await step(view, await setName(view, tree, "exa-b", "Exa 改名"), ROLE.editorSubmit); // O-8（#51）：SET-006
     const muts = fetchStub.mutates();
     assert.equal(muts.length, 1, "保存恰好一次 mutate");
     const args = muts[0].body.payload.args;
@@ -524,7 +527,8 @@ test("SET-004 修订缺失：describe 回包无 revision 时保存被阻断（�
   await withEnv(makeSettingsState({ omitRevision: true }), async ({ fetchStub }) => {
     const { view, tree } = await openPanel("no-rev");
     const t = await setName(view, tree, "exa-b", "Exa 改名");
-    const saveNode = one(t, ROLE.save);
+    // O-8（#51）：SET-006——缺 revision 时提交钮禁用（读即只读），且面板已有节级错误提示。
+    const saveNode = one(t, ROLE.editorSubmit);
     const flagged = saveNode.props.disabled === true || byRole(t, ROLE.saveError).length > 0;
     assert.ok(flagged, "修订缺失时保存控件须禁用或显示错误");
     fire(saveNode, "onClick");
@@ -538,7 +542,7 @@ test("SET-004 版本冲突：宿主回 CONFIG_CONFLICT → 错误可见、草稿
   await withEnv(state, async () => {
     const { view, tree } = await openPanel("conflict");
     let t = await setName(view, tree, "exa-b", "Exa 冲突草稿");
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006——冲突错误展示于编辑器动作行上方（role=alert）
     assert.ok(byRole(t, ROLE.saveError).length > 0 && textOf(one(t, ROLE.saveError)).length > 0, "冲突须有可见错误");
     assert.match(textOf(t), /Exa 冲突草稿/, "未提交的草稿须保留");
     assert.doesNotMatch(textOf(t), /已保存/, "冲突不得显示已保存");
@@ -551,7 +555,7 @@ test("SET-004 保存失败：宿主拒绝 → 错误可见、草稿保留、宿�
   await withEnv(state, async () => {
     const { view, tree } = await openPanel("save-fail");
     let t = await setName(view, tree, "exa-b", "Exa 失败草稿");
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006——失败保留草稿与编辑器
     assert.ok(byRole(t, ROLE.saveError).length > 0, "保存失败须有可见错误");
     assert.match(textOf(t), /Exa 失败草稿/, "失败后草稿保留");
     assert.equal(state.user.entries[1].name, "Exa 备用", "宿主快照保持已保存值");
@@ -579,7 +583,7 @@ test("P0 写入边界：保存后 mutate 的 ops 与请求体不含秘密键名�
   const state = makeSettingsState({ user: { entries, useOfficialDeepSeekSearch: true, timeoutMs: 25000 } });
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("residual-write");
-    await step(view, await setName(view, tree, "exa-b", "Exa 改名"), ROLE.save);
+    await step(view, await setName(view, tree, "exa-b", "Exa 改名"), ROLE.editorSubmit); // O-8（#51）：SET-006
     const mut = fetchStub.mutates()[0];
     assert.ok(mut, "保存应产生 mutate");
     assert.deepEqual(secretPathsIn(opsOf(mut)), [], "ops 不得含秘密键名（P0）");
@@ -613,7 +617,7 @@ test("P0 无 host 通道（D-2C）：带 key 保存经 credentials/set，面板�
     const added = await addType(view, tree, "exa");
     const newId = cardOrder(added).at(-1);
     let t = await editEntry(view, added, newId, { key: SYNTH_KEY });
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006 条目级提交
     assert.equal(hostStub.calls.length, 0, "带 key 保存亦不得调用 host.call（D-2C：静态 ctx 无 host 服务）");
     assert.equal(fetchStub.credentialSets().length, 1, "带 key 保存须经 credentials/set（D-2C）");
     const regs = await importSelfRegister("no-host-ctx");
@@ -627,7 +631,7 @@ test("P0 凭据 D-2C 保存时序：非空 key 先 credentials/set(newRef,key)�
     const { view, tree } = await openPanel("keyed-order");
     let t = await editEntry(view, tree, "exa-b", { key: SYNTH_KEY });
     assert.equal(leaksIn(t, SYNTH_KEY, { allowDraftInput: true }).length, 0, "草稿期间明文只允许出现在 key 输入框的 value");
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006 条目级提交
     const sets = fetchStub.credentialSets();
     const muts = fetchStub.mutates();
     assert.equal(sets.length, 1, "带非空 key 保存恰一次 credentials/set");
@@ -657,7 +661,7 @@ test("P0 凭据 D-2C 替换：已有引用的条目带新 key 保存 → 写入�
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("keyed-replace");
     const t = await editEntry(view, tree, "tavily-a", { key: SYNTH_KEY });
-    await step(view, t, ROLE.save);
+    await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006
     const sets = fetchStub.credentialSets();
     assert.equal(sets.length, 1, "替换保存恰一次 credentials/set");
     assert.equal(fetchStub.credentialCalls().filter((c) => c.kind === "credentials/unset").length, 0, "替换不得 unset 旧引用（移除/替换均不删宿主凭据）");
@@ -673,9 +677,9 @@ test("P0 凭据 D-2C 替换：已有引用的条目带新 key 保存 → 写入�
 test("P0 凭据 D-2C ref 唯一（R-1）：同一条目连续两次带 key 保存，生成两个不同且合法的 ref（唯一后缀）", async () => {
   await withEnv(makeSettingsState(), async ({ fetchStub }) => {
     const first = await openPanel("ref-uniq-1");
-    await step(first.view, await editEntry(first.view, first.tree, "exa-b", { key: SYNTH_KEY }), ROLE.save);
+    await step(first.view, await editEntry(first.view, first.tree, "exa-b", { key: SYNTH_KEY }), ROLE.editorSubmit); // O-8（#51）：SET-006
     const second = await openPanel("ref-uniq-2");
-    await step(second.view, await editEntry(second.view, second.tree, "exa-b", { key: SYNTH_KEY }), ROLE.save);
+    await step(second.view, await editEntry(second.view, second.tree, "exa-b", { key: SYNTH_KEY }), ROLE.editorSubmit); // O-8（#51）：SET-006
     const refs = fetchStub.credentialSets().map(refOfSet);
     assert.equal(refs.length, 2, "两次带 key 保存应各有一次 credentials/set");
     assert.notEqual(refs[0], refs[1], "每次带 key 保存须生成新 ref，不覆写既有 ref");
@@ -687,7 +691,7 @@ test("P0 凭据 D-2C 写入被拒（credential-rejected）：零 mutate，草稿
   await withEnv(makeSettingsState({ credentialMode: "rejected" }), async ({ fetchStub }) => {
     const { view, tree } = await openPanel("keyed-rejected");
     let t = await editEntry(view, tree, "exa-b", { name: "Exa 草稿", key: SYNTH_KEY });
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006 条目级提交
     assert.equal(fetchStub.mutates().length, 0, "凭据写入被拒时不得发 settings/mutate");
     const err = byRole(t, ROLE.saveError);
     assert.equal(err.length, 1, "保存错误须可见（恰一个 save-error）");
@@ -702,7 +706,7 @@ test("P0 凭据 D-2C 网络失败：credentials/set 抛网络错误 → 零 muta
   await withEnv(makeSettingsState({ credentialMode: "network" }), async ({ fetchStub }) => {
     const { view, tree } = await openPanel("keyed-network");
     let t = await editEntry(view, tree, "exa-b", { name: "Exa 草稿", key: SYNTH_KEY });
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006 条目级提交
     assert.equal(fetchStub.mutates().length, 0, "网络失败时不得发 settings/mutate");
     assert.equal(byRole(t, ROLE.saveError).length, 1, "网络失败须有可见错误");
     assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "Exa 草稿", "草稿保留");
@@ -717,7 +721,7 @@ test("P0 凭据 D-2C 空 key 保存：零 credentials/set，既有 credentialRef
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("keyed-blank");
     const t = await editEntry(view, tree, "tavily-a", { name: "Tavily 改名", key: "" });
-    await step(view, t, ROLE.save);
+    await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006
     assert.equal(fetchStub.credentialCalls().filter((c) => c.kind === "credentials/set").length, 0, "空 key 不得 credentials/set");
     assert.equal(fetchStub.mutates().length, 1, "改名仍须保存");
     const ent = state.user.entries.find((e) => e.id === "tavily-a");
@@ -730,7 +734,7 @@ test("P0 凭据 D-2C 只写回填：保存后重开编辑器，key 输入为空�
   await withEnv(makeSettingsState(), async () => {
     const { view, tree } = await openPanel("keyed-reopen");
     let t = await editEntry(view, tree, "exa-b", { key: SYNTH_KEY });
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006 条目级提交
     if (byRole(t, ROLE.field, { field: "key" }).length === 0) {
       t = await step(view, t, ROLE.edit, { entryId: "exa-b" });
     }
@@ -757,7 +761,7 @@ test("SET-004 零出站（D-2C 保存链）：带 key 保存仅产生同源 /api
   await withEnv(makeSettingsState(), async ({ fetchStub, hostStub }) => {
     const { view, tree } = await openPanel("keyed-zero-out");
     const t = await editEntry(view, tree, "exa-b", { key: SYNTH_KEY });
-    await step(view, t, ROLE.save);
+    await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006
     assert.deepEqual(fetchStub.outbound, [], `保存链不得出站：${JSON.stringify(fetchStub.outbound)}`);
     const allowed = new Set(["settings/describe", "settings/mutate", "credentials/describe", "credentials/set", "credentials/unset"]);
     for (const c of fetchStub.calls) {
@@ -797,7 +801,8 @@ test("R-2 P2-1 base 继承保真：base 层含非表单字段的 openai 条目�
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("base-noop");
     assert.deepEqual(cardOrder(tree), ["base-oa"], "前置：base 层条目须出现在卡片列表（SET-001）");
-    await step(view, tree, ROLE.save);
+    // O-8（#51）：SET-006——无改动的保存 = 打开该条目编辑器原样提交（base-only 条目将被实体化进 user 层）。
+    await step(view, await step(view, tree, ROLE.edit, { entryId: "base-oa" }), ROLE.editorSubmit);
     const muts = fetchStub.mutates();
     if (muts.length === 0 || opsOf(muts[0]).length === 0) return; // 无改动：base 原样保留
     const after = state.user.entries ?? [];
@@ -813,7 +818,7 @@ test("R-2 P2-1 base 继承保真·改名变体：改名 base-oa 后保存，mode
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("base-rename");
     const t = await setName(view, tree, "base-oa", "OpenAI 改名");
-    await step(view, t, ROLE.save);
+    await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006
     assert.equal(fetchStub.mutates().length, 1, "改名后保存恰一次 mutate");
     const after = state.user.entries ?? [];
     assert.deepEqual(after.map((e) => e.id), ["base-oa"], "条目顺序与数量不得改变（P2-1）");
@@ -823,8 +828,8 @@ test("R-2 P2-1 base 继承保真·改名变体：改名 base-oa 后保存，mode
   });
 });
 
-/** R-2 P2-2：在途期间须 disabled 的控件（名称/key 输入框按 data-field 区分）。 */
-const LOCKED_ROLES = [ROLE.save, ROLE.enabled, ROLE.edit, ROLE.add, ROLE.officialToggle];
+/** R-2 P2-2：在途期间须 disabled 的控件（名称/key 输入框按 data-field 区分）。O-8（#51）：SET-006 后为编辑器提交/取消钮。 */
+const LOCKED_ROLES = [ROLE.editorSubmit, ROLE.editorCancel, ROLE.enabled, ROLE.edit, ROLE.add, ROLE.officialToggle];
 function lockedNodes(tree) {
   return allNodes(tree).filter((n) => {
     const p = n.props ?? {};
@@ -837,12 +842,12 @@ test("R-2 P2-2 在途编辑：mutate 挂起期间保存、条目控件与名称/
   await withEnv(makeSettingsState({ deferMutate: true }), async ({ fetchStub }) => {
     const { view, tree } = await openPanel("inflight");
     let t = await editEntry(view, tree, "exa-b", { name: "Exa 在途" });
-    t = await step(view, t, ROLE.save);
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006 条目级提交
     try {
       assert.equal(fetchStub.pendingMutates(), 1, "保存应有一次挂起中的 mutate（deferred）");
-      assert.equal(one(t, ROLE.save).props.disabled, true, "在途期间保存按钮须 disabled=true（P2-2）");
+      assert.equal(one(t, ROLE.editorSubmit).props.disabled, true, "在途期间提交按钮须 disabled=true（P2-2）");
       const pre = lockedNodes(t);
-      for (const role of LOCKED_ROLES.filter((r) => r !== ROLE.save)) {
+      for (const role of LOCKED_ROLES.filter((r) => r !== ROLE.editorSubmit)) {
         assert.ok(byRole(t, role).length > 0, `在途期间须存在控件 ${role}`);
       }
       assert.ok(pre.length >= 6, `在途期间须可见名称与 key 输入框（实得 ${pre.length} 个受控节点）`);
@@ -867,7 +872,7 @@ test("R-2 P2-3 旧冒号 ref + 新 key 保存放行：恰一次 credentials/set�
   const state = makeSettingsState({ user: { entries, useOfficialDeepSeekSearch: true, timeoutMs: 25000 } });
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("legacy-keyed");
-    await step(view, await editEntry(view, tree, "exa-b", { key: SYNTH_KEY }), ROLE.save);
+    await step(view, await editEntry(view, tree, "exa-b", { key: SYNTH_KEY }), ROLE.editorSubmit); // O-8（#51）：SET-006
     const sets = fetchStub.credentialSets();
     assert.equal(sets.length, 1, "带新 key 保存恰一次 credentials/set（P2-3）");
     const newRef = refOfSet(sets[0]);
@@ -892,8 +897,8 @@ test("R-2 P2-3 旧冒号 ref 留空变体：条目原 credentialRef 为冒号形
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("legacy-blocked");
     let t = await setName(view, tree, "exa-b", "Exa 改名");
-    t = await step(view, t, ROLE.save);
-    const blocked = byRole(t, ROLE.saveError).length > 0 || one(t, ROLE.save).props.disabled === true;
+    t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006 条目级提交
+    const blocked = byRole(t, ROLE.saveError).length > 0 || one(t, ROLE.editorSubmit).props.disabled === true;
     assert.ok(blocked, "旧冒号 ref 且无新 key：保存须被阻断（可见错误或保存禁用）（P2-3）");
     assert.equal(fetchStub.mutates().length, 0, "阻断时零 settings/mutate（P2-3）");
     assert.equal(fetchStub.credentialCalls().length, 0, "阻断时零 credentials 调用（P2-3）");
@@ -928,10 +933,10 @@ test("SET-005 持久化：关闭开关并保存后，ops 含 useOfficialDeepSeek
   await withEnv(state, async ({ fetchStub }) => {
     const before = fixtureEntries();
     const { view, tree } = await openPanel("official-save");
-    let t = await act(view, () =>
+    // O-8（#51）：SET-006——顶部官方开关 onChange 即离散落盘（无全局保存步），mutate[0] 已含该键。
+    await act(view, () =>
       fire(one(tree, ROLE.officialToggle), "onChange", { target: { checked: false, value: false } }),
     );
-    t = await step(view, t, ROLE.save);
     const ops = opsOf(fetchStub.mutates()[0]);
     assert.ok(
       ops.some((o) => o.op === "set" && o.path.join(".") === "useOfficialDeepSeekSearch" && o.value === false),
@@ -941,6 +946,81 @@ test("SET-005 持久化：关闭开关并保存后，ops 含 useOfficialDeepSeek
     assert.deepEqual(stateEntries(state), before, "切换开关不得改动自定义条目的配置与位置");
     const reopened = await openPanel("official-reopen");
     assert.equal(one(reopened.tree, ROLE.officialToggle).props.checked, false, "重开后开关仍为关闭");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
+// 第 7 组 · SET-006（#51 追加）条目级保存与离散落盘新增面（O-8）
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+test("SET-006(#51) 超时离散落盘：变化且合法 blur 即时提交（ops 仅 timeoutMs 键）；非法值不写并给可操作错误；成功反馈在节级顶部槽位", async () => {
+  const state = makeSettingsState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("timeout-commit");
+    // 非法值（0）：blur → 不写 + 节级可见错误
+    let t = await act(view, () => fire(one(tree, ROLE.field, { field: "timeoutMs" }), "onChange", { target: { value: "0" } }));
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "timeoutMs" }), "onBlur"));
+    assert.equal(fetchStub.mutates().length, 0, "非法超时（0）不得写");
+    assert.ok(byRole(t, ROLE.saveError).length > 0, "非法超时须有可见错误");
+    assert.match(textOf(one(t, ROLE.saveError)), /正整数/, "错误须可操作（提示正整数毫秒）");
+    // 合法变化：blur → 恰一次 mutate，ops 仅含 timeoutMs 键
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "timeoutMs" }), "onChange", { target: { value: "7777" } }));
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "timeoutMs" }), "onBlur"));
+    assert.equal(fetchStub.mutates().length, 1, "合法超时变化须恰一次 mutate");
+    assert.deepEqual(opsOf(fetchStub.mutates()[0]), [{ op: "set", path: ["timeoutMs"], value: 7777 }], "ops 须仅含 timeoutMs 键");
+    assert.equal(state.user.timeoutMs, 7777, "宿主快照超时已更新");
+    assert.equal(byRole(t, ROLE.saveStatus).length, 1, "成功反馈恰一个（节级顶部槽位）");
+    assert.equal(one(t, ROLE.saveStatus).props["data-state"], "saved", "成功节点 data-state=saved");
+    assert.match(textOf(one(t, ROLE.saveStatus)), /已保存设置/, "成功文案为「已保存设置。」");
+  });
+});
+
+test("SET-006(#51) 取消/Esc（O-5）：零写、清该条目字段草稿与 key 缓冲、关编辑器（新建条目移出列表）；Escape 与取消等价", async () => {
+  await withEnv(makeSettingsState(), async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("cancel-edit");
+    // 编辑条目：改名 + 改引用 → 取消 → 字段草稿还原为已持久化值，零写
+    let t = await editEntry(view, tree, "exa-b", { name: "Exa 废弃", ref: "SHOULD_BE_DISCARDED" });
+    t = await step(view, t, ROLE.editorCancel);
+    assert.equal(fetchStub.mutates().length, 0, "取消不得写");
+    assert.equal(byRole(t, ROLE.editor).length, 0, "取消后编辑器关闭");
+    t = await step(view, t, ROLE.edit, { entryId: "exa-b" });
+    assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "Exa 备用", "取消后字段草稿须清空（还原已持久化值）");
+    assert.equal(one(t, ROLE.field, { field: "credentialRef" }).props.value, "", "exa-b 无持久化引用：取消后不得残留草稿引用");
+    // 新建条目：填名 + key 后 Esc → 新条目移出列表，key 缓冲清零
+    t = await addType(view, t, "brave");
+    assert.equal(cardOrder(t).length, 4, "选类型后新条目出现在列表末尾");
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "Brave 草稿" } }));
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "key" }), "onChange", { target: { value: SYNTH_KEY } }));
+    t = await act(view, () => fire(one(t, ROLE.editor), "onKeyDown", { key: "Escape", preventDefault() {} }));
+    assert.equal(fetchStub.mutates().length, 0, "Escape 不得写（O-5）");
+    assert.equal(byRole(t, ROLE.editor).length, 0, "Escape 后编辑器关闭");
+    assert.equal(cardOrder(t).length, 3, "取消后新建条目须移出草稿列表");
+    assert.deepEqual(leaksIn(t, SYNTH_KEY), [], "取消后明文 key 缓冲须清零（零残留明文）");
+  });
+});
+
+test("SET-006(#51) 取消钮可用矩阵：校验失败 / 上次提交错误 / 缺 revision 均可点；仅提交在途时禁用", async () => {
+  // (a) 校验失败
+  await withEnv(makeSettingsState(), async () => {
+    const { view, tree } = await openPanel("cancel-validation");
+    const t = await editEntry(view, tree, "exa-b", { ref: "bad:ref" });
+    assert.ok(byRole(t, ROLE.saveError).length > 0, "校验失败须有可见错误");
+    assert.equal(one(t, ROLE.editorSubmit).props.disabled, true, "校验失败：提交钮须禁用");
+    assert.equal(one(t, ROLE.editorCancel).props.disabled, false, "校验失败：取消须可点");
+  });
+  // (b) 上次提交错误
+  await withEnv(makeSettingsState({ mutateMode: "conflict" }), async () => {
+    const { view, tree } = await openPanel("cancel-after-error");
+    const t = await step(view, await setName(view, tree, "exa-b", "Exa 错后"), ROLE.editorSubmit);
+    assert.ok(byRole(t, ROLE.saveError).length > 0, "提交错误须可见");
+    assert.equal(one(t, ROLE.editorCancel).props.disabled, false, "上次提交错误：取消须可点");
+  });
+  // (c) 缺 revision（读即只读）
+  await withEnv(makeSettingsState({ omitRevision: true }), async () => {
+    const { view, tree } = await openPanel("cancel-no-rev");
+    const t = await step(view, tree, ROLE.edit, { entryId: "exa-b" });
+    assert.equal(one(t, ROLE.editorSubmit).props.disabled, true, "缺 revision：提交钮须禁用");
+    assert.equal(one(t, ROLE.editorCancel).props.disabled, false, "缺 revision：取消须可点");
   });
 });
 

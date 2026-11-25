@@ -74,8 +74,13 @@ export const ROLE = Object.freeze({
   confirmRemove: "confirm-remove",
   editor: "editor",
   field: "field",
+  // O-8（#51）：SET-006 起全局保存钮（save）废止，编辑器动作行 = 左「取消」右主提交。
+  editorSubmit: "editor-submit",
+  editorCancel: "editor-cancel",
   save: "save",
+  saveStatus: "save-status",
   saveError: "save-error",
+  timeout: "timeout",
 });
 
 export function clone(v) {
