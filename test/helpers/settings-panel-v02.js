@@ -105,6 +105,10 @@ export function makeSettingsState(overrides = {}) {
       timeoutMs: 25000,
     },
     omitRevision: false,
+    // R-2：base 层（只读继承，回包 namespaces[].base）；默认空。
+    base: {},
+    // R-2：true 时 settings/mutate 挂起，直至测试调用 releaseMutate()（deferred 手动释放，不赌定时）。
+    deferMutate: false,
     mutateMode: "ok", // "ok" | "conflict" | "save-failed"
     credentialMode: "ok", // "ok" | "rejected" | "network"
     credentials: {},
@@ -420,6 +424,7 @@ function maskOf(key) {
 export function installSettingsFetch(state) {
   const calls = [];
   const outbound = [];
+  const held = []; // R-2：挂起中的 mutate 释放函数
   const saved = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   const fake = async (url, init = {}) => {
     const path = new URL(String(url), TEST_ORIGIN).pathname;
@@ -432,11 +437,14 @@ export function installSettingsFetch(state) {
     }
     const args = body?.payload?.args ?? {};
     if (kind === "settings/describe") {
-      const ns = { ns: SECTION_ID, autoGenerate: false, base: {}, user: clone(state.user) };
+      const ns = { ns: SECTION_ID, autoGenerate: false, base: clone(state.base ?? {}), user: clone(state.user) };
       if (!state.omitRevision) ns.revision = state.revision;
       return jsonResponse({ ok: true, result: { writable: true, hasDocument: true, namespaces: [ns] } });
     }
     if (kind === "settings/mutate") {
+      if (state.deferMutate) {
+        await new Promise((resolve) => held.push(resolve));
+      }
       if (state.mutateMode === "save-failed") {
         return jsonResponse({ ok: false, error: { code: "CONFIG_SAVE_FAILED", message: "synthetic save failure" } });
       }
@@ -484,6 +492,14 @@ export function installSettingsFetch(state) {
     calls,
     outbound,
     mutates: () => calls.filter((c) => c.kind === "settings/mutate"),
+    /** R-2：当前挂起中的 mutate 数。 */
+    pendingMutates: () => held.length,
+    /** R-2：释放全部挂起的 mutate（幂等）；返回释放的个数。 */
+    releaseMutate() {
+      const rs = held.splice(0);
+      for (const r of rs) r();
+      return rs.length;
+    },
     describes: () => calls.filter((c) => c.kind === "settings/describe"),
     credentialSets: () => calls.filter((c) => c.kind === "credentials/set"),
     credentialCalls: () => calls.filter((c) => c.kind.startsWith("credentials/")),

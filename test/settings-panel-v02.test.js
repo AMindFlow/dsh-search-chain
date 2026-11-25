@@ -39,6 +39,16 @@
 //     每次带 key 保存唯一。语义保持：带 key 保存 → 新 ref、旧引用不删；留空不换 ref。
 //     链级（test/credential-ref-grammar.test.js）：超语法引用在 resolveKey 视为该层未命中，落到环境变量/托管层。
 //
+// ─── R-2（codex P2 增补，三条依据；PR #49 review，实现随后由 dev 做，本段只产出红钉）────────
+// P2-1 base 层继承字段保真：describe 回包 base 中的条目（含 model/proxy 等非表单字段）经保存不得丢失。
+//     钉：保存若产出 ops（非空），应用到 user 后该条目未知字段仍在且值不变，条目顺序与数量不变；
+//     改名变体同样保留未知字段。无改动的保存若不产出 mutate，base 原样保留，视为通过。
+// P2-2 在途编辑：mutate 在途期间，保存按钮、条目控件（enabled-toggle、card-edit、add-tool、official-toggle）
+//     与名称/key 输入框全部 disabled=true；响应完成后不再有 disabled。挂起用 deferred 手动释放，绝不赌定时。
+// P2-3 迁移死路：条目原 credentialRef 为冒号形态时，带新 key 保存须放行（恰一次 credentials/set，ref 为
+//     grammar 合法新引用且含净化 entryId，先于一次 mutate；旧冒号 ref 任何请求体都不出现）。
+//     留空变体（无 key 且超法 ref）维持阻断，零 mutate、零 credentials 调用、零出站。
+//
 // 运行期工件仅 test/；不改 src/、docs/、package.json、.github/。
 
 import test from "node:test";
@@ -754,6 +764,140 @@ test("SET-004 零出站（D-2C 保存链）：带 key 保存仅产生同源 /api
       assert.ok(allowed.has(c.kind) && isSameOriginApi(c.url), `允许端点集合外的请求（D-2C）：${c.url} ${c.kind}`);
     }
     assert.equal(hostStub.calls.length, 0, "保存链不得调用 host.call");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
+// R-2（codex P2 增补）：在途编辑、base 继承保真、旧冒号 ref 迁移
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+const BASE_OA = Object.freeze({
+  id: "base-oa",
+  type: "openai",
+  name: "OpenAI 基础",
+  enabled: true,
+  model: "gpt-4o",
+  proxy: "http://127.0.0.1:8080",
+});
+
+/**
+ * base 层带一条 openai（含非表单字段），user 层不含 entries 键（P2-1 夹具）。
+ * 注：client 投影为 {...base, ...user}（src/client-entry.js L465），user 若带 entries 数组会整体遮住 base 的 entries，
+ * 故「user 为空」取不带 entries 键的形态。
+ */
+function baseFixtureState() {
+  return makeSettingsState({
+    base: { entries: [clone(BASE_OA)] },
+    user: { useOfficialDeepSeekSearch: true, timeoutMs: 25000 },
+  });
+}
+
+test("R-2 P2-1 base 继承保真：base 层含非表单字段的 openai 条目，不做修改直接保存 → 若产出 ops，应用到 user 后 model/proxy 仍在且值不变；条目顺序与数量不变", async () => {
+  const state = baseFixtureState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("base-noop");
+    assert.deepEqual(cardOrder(tree), ["base-oa"], "前置：base 层条目须出现在卡片列表（SET-001）");
+    await step(view, tree, ROLE.save);
+    const muts = fetchStub.mutates();
+    if (muts.length === 0 || opsOf(muts[0]).length === 0) return; // 无改动：base 原样保留
+    const after = state.user.entries ?? [];
+    assert.deepEqual(after.map((e) => e.id), ["base-oa"], "条目顺序与数量不得改变（P2-1）");
+    const kept = after[0] ?? {};
+    assert.equal(kept.model, BASE_OA.model, "未知字段 model 保存后须仍在且值不变（P2-1）");
+    assert.equal(kept.proxy, BASE_OA.proxy, "未知字段 proxy 保存后须仍在且值不变（P2-1）");
+  });
+});
+
+test("R-2 P2-1 base 继承保真·改名变体：改名 base-oa 后保存，model/proxy 仍保留，条目数量与顺序不变", async () => {
+  const state = baseFixtureState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("base-rename");
+    const t = await setName(view, tree, "base-oa", "OpenAI 改名");
+    await step(view, t, ROLE.save);
+    assert.equal(fetchStub.mutates().length, 1, "改名后保存恰一次 mutate");
+    const after = state.user.entries ?? [];
+    assert.deepEqual(after.map((e) => e.id), ["base-oa"], "条目顺序与数量不得改变（P2-1）");
+    assert.equal(after[0].name, "OpenAI 改名", "改名须落入 user 层");
+    assert.equal(after[0].model, BASE_OA.model, "改名后未知字段 model 仍在且值不变（P2-1）");
+    assert.equal(after[0].proxy, BASE_OA.proxy, "改名后未知字段 proxy 仍在且值不变（P2-1）");
+  });
+});
+
+/** R-2 P2-2：在途期间须 disabled 的控件（名称/key 输入框按 data-field 区分）。 */
+const LOCKED_ROLES = [ROLE.save, ROLE.enabled, ROLE.edit, ROLE.add, ROLE.officialToggle];
+function lockedNodes(tree) {
+  return allNodes(tree).filter((n) => {
+    const p = n.props ?? {};
+    if (p["data-role"] === ROLE.field) return p["data-field"] === "name" || p["data-field"] === "key";
+    return LOCKED_ROLES.includes(p["data-role"]);
+  });
+}
+
+test("R-2 P2-2 在途编辑：mutate 挂起期间保存、条目控件与名称/key 输入框 disabled=true；释放响应后恢复可编辑", async () => {
+  await withEnv(makeSettingsState({ deferMutate: true }), async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("inflight");
+    let t = await editEntry(view, tree, "exa-b", { name: "Exa 在途" });
+    t = await step(view, t, ROLE.save);
+    try {
+      assert.equal(fetchStub.pendingMutates(), 1, "保存应有一次挂起中的 mutate（deferred）");
+      assert.equal(one(t, ROLE.save).props.disabled, true, "在途期间保存按钮须 disabled=true（P2-2）");
+      const pre = lockedNodes(t);
+      for (const role of LOCKED_ROLES.filter((r) => r !== ROLE.save)) {
+        assert.ok(byRole(t, role).length > 0, `在途期间须存在控件 ${role}`);
+      }
+      assert.ok(pre.length >= 6, `在途期间须可见名称与 key 输入框（实得 ${pre.length} 个受控节点）`);
+      for (const n of pre) {
+        const tag = n.props["data-field"] ? `${n.props["data-role"]}/${n.props["data-field"]}` : n.props["data-role"];
+        assert.equal(n.props.disabled, true, `在途期间 ${tag} 须 disabled=true（P2-2）`);
+      }
+    } finally {
+      fetchStub.releaseMutate();
+    }
+    t = await settle(view);
+    assert.equal(fetchStub.mutates().length, 1, "释放后恰一次 mutate");
+    const stillLocked = lockedNodes(t).filter((n) => n.props.disabled === true);
+    assert.equal(stillLocked.length, 0, `响应完成后不得仍有 disabled：${stillLocked.map((n) => n.props["data-role"]).join(",")}（P2-2）`);
+  });
+});
+
+test("R-2 P2-3 旧冒号 ref + 新 key 保存放行：恰一次 credentials/set（合法新 ref、含净化 entryId）先于一次 mutate；条目终态 credentialRef=新 ref；旧冒号 ref 不出现在任何请求体", async () => {
+  const LEGACY = "search-chain-credential:exa-b:1";
+  const entries = fixtureEntries();
+  entries[1].credentialRef = LEGACY;
+  const state = makeSettingsState({ user: { entries, useOfficialDeepSeekSearch: true, timeoutMs: 25000 } });
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("legacy-keyed");
+    await step(view, await editEntry(view, tree, "exa-b", { key: SYNTH_KEY }), ROLE.save);
+    const sets = fetchStub.credentialSets();
+    assert.equal(sets.length, 1, "带新 key 保存恰一次 credentials/set（P2-3）");
+    const newRef = refOfSet(sets[0]);
+    assert.ok(newRef, "credentials/set 请求体须含 SEARCH_CHAIN_CREDENTIAL_ 前缀的新 ref");
+    assert.match(newRef, REF_GRAMMAR, "新 ref 须匹配 POSIX grammar（R-1）");
+    assert.match(newRef, /^search_chain_credential_exa_b_/i, "新 ref 含净化 entryId（exa-b → exa_b）");
+    const muts = fetchStub.mutates();
+    assert.equal(muts.length, 1, "credentials/set 成功后恰一次 settings/mutate（P2-3）");
+    assert.ok(sets[0].seq < muts[0].seq, "credentials/set 须先于 settings/mutate");
+    const entry = state.user.entries.find((e) => e.id === "exa-b");
+    assert.equal(entry.credentialRef, newRef, "条目终态 credentialRef 须为新 ref（P2-3）");
+    const wire = JSON.stringify(fetchStub.calls.map((c) => c.body ?? null));
+    assert.ok(!wire.includes(LEGACY), "旧冒号 ref 不得出现在任何请求体（P2-3）");
+  });
+});
+
+test("R-2 P2-3 旧冒号 ref 留空变体：条目原 credentialRef 为冒号形态且无新 key → 保存阻断：零 mutate、零 credentials 调用、零出站", async () => {
+  const LEGACY = "search-chain-credential:exa-b:1";
+  const entries = fixtureEntries();
+  entries[1].credentialRef = LEGACY;
+  const state = makeSettingsState({ user: { entries, useOfficialDeepSeekSearch: true, timeoutMs: 25000 } });
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("legacy-blocked");
+    let t = await setName(view, tree, "exa-b", "Exa 改名");
+    t = await step(view, t, ROLE.save);
+    const blocked = byRole(t, ROLE.saveError).length > 0 || one(t, ROLE.save).props.disabled === true;
+    assert.ok(blocked, "旧冒号 ref 且无新 key：保存须被阻断（可见错误或保存禁用）（P2-3）");
+    assert.equal(fetchStub.mutates().length, 0, "阻断时零 settings/mutate（P2-3）");
+    assert.equal(fetchStub.credentialCalls().length, 0, "阻断时零 credentials 调用（P2-3）");
+    assert.deepEqual(fetchStub.outbound, [], "阻断时零出站（P2-3）");
   });
 });
 

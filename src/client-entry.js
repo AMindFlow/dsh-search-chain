@@ -165,9 +165,14 @@ globalThis.window?.__ModuleLoader__?.load({
     function mergeEntry(prior, formEntry) {
       if (!isPlainObject(formEntry)) return formEntry; // 非对象原样交写闸拒绝
       const saved = typeof formEntry.id === "string" ? prior.get(formEntry.id) : undefined;
+      // 草稿包含 effective entry 的完整配置，写 user 层时须 materialize base 条目；
+      // 仍保留 user 原有 secret/未知字段，再由草稿中的受支持值覆盖。
       const next = saved ? { ...saved } : {};
-      for (const k of MANAGED_ENTRY_KEYS) {
-        if (formEntry[k] !== undefined) next[k] = formEntry[k];
+      for (const [k, value] of Object.entries(formEntry)) {
+        if (SECRET_FIELD.test(k)) continue;
+        if (MANAGED_ENTRY_KEYS.includes(k) || k === "proxy" || ["string", "number", "boolean"].includes(typeof value)) {
+          next[k] = value;
+        }
       }
       if (next.credentialRef === "") delete next.credentialRef;
       return next;
@@ -330,13 +335,25 @@ globalThis.window?.__ModuleLoader__?.load({
     function draftFrom(config) {
       const entries = Array.isArray(config.entries) ? config.entries : [];
       return {
-        entries: entries.map((e) => ({
-          id: String(e.id),
-          type: typeof e.type === "string" ? e.type : TOOL_TYPES[0],
-          name: typeof e.name === "string" ? e.name : "",
-          enabled: e.enabled !== false,
-          credentialRef: typeof e.credentialRef === "string" ? e.credentialRef : "",
-        })),
+        entries: entries.map((e) => {
+          const passthrough = {};
+          if (isPlainObject(e)) {
+            for (const [k, value] of Object.entries(e)) {
+              if (HANDLED_ENTRY_FIELDS.includes(k) || SECRET_FIELD.test(k)) continue;
+              if (["string", "number", "boolean"].includes(typeof value)) passthrough[k] = value;
+            }
+            // proxy is a supported structured field; strip secret-shaped nested keys defensively.
+            if (Object.prototype.hasOwnProperty.call(e, "proxy")) passthrough.proxy = stripSecrets(e.proxy);
+          }
+          return {
+            ...passthrough,
+            id: String(e.id),
+            type: typeof e.type === "string" ? e.type : TOOL_TYPES[0],
+            name: typeof e.name === "string" ? e.name : "",
+            enabled: e.enabled !== false,
+            credentialRef: typeof e.credentialRef === "string" ? e.credentialRef : "",
+          };
+        }),
         useOfficial: config.useOfficialDeepSeekSearch !== false,
         timeoutText: config.timeoutMs === undefined ? "" : String(config.timeoutMs),
       };
@@ -448,6 +465,7 @@ globalThis.window?.__ModuleLoader__?.load({
       });
       const alive = React.useRef(true);
       const restoreFocus = React.useRef(null);
+      const locked = model.status.kind === "pending";
 
       const load = (keepStatus = false) => {
         setModel((m) => ({ ...m, phase: "loading" }));
@@ -489,12 +507,16 @@ globalThis.window?.__ModuleLoader__?.load({
         return () => { alive.current = false; };
       }, []);
 
-      const updateEntry = (id, patch) => setModel((m) => ({
-        ...m,
-        draft: { ...m.draft, entries: m.draft.entries.map((e) => e.id === id ? { ...e, ...patch } : e) },
-        status: m.status.kind === "error" ? IDLE : m.status,
-      }));
+      const updateEntry = (id, patch) => {
+        if (locked) return;
+        setModel((m) => ({
+          ...m,
+          draft: { ...m.draft, entries: m.draft.entries.map((e) => e.id === id ? { ...e, ...patch } : e) },
+          status: m.status.kind === "error" ? IDLE : m.status,
+        }));
+      };
       const moveEntry = (id, delta) => setModel((m) => {
+        if (locked || m.status.kind === "pending") return m;
         const from = m.draft.entries.findIndex((e) => e.id === id);
         const to = from + delta;
         if (from < 0 || to < 0 || to >= m.draft.entries.length) return m;
@@ -503,28 +525,35 @@ globalThis.window?.__ModuleLoader__?.load({
         return { ...m, draft: { ...m.draft, entries } };
       });
       const addEntry = (type) => {
+        if (locked) return;
         const label = CATALOG_UI.find((x) => x[0] === type)?.[1] ?? type;
         const id = `search_chain_${Date.now().toString(36)}_${++entryIdSeq}`;
         setModel((m) => ({ ...m, addOpen: false, draft: { ...m.draft, entries: [...m.draft.entries, { id, type, name: label, enabled: true, credentialRef: "" }] } }));
       };
       const save = async () => {
-        if (model.phase !== "ready" || typeof model.revision !== "number") return;
-        const bad = model.draft.entries.find((e) => e.credentialRef && !POSIX_REF.test(e.credentialRef.trim()));
+        if (locked || model.status.kind === "pending" || model.phase !== "ready" || typeof model.revision !== "number") return;
+        // 先把本次非空 key 将生成的新引用投影到临时 entries，再校验剩余引用；
+        // 这样迁移旧冒号 ref 时，旧值既不会阻断，也不会进入任何请求体。
+        let entries = model.draft.entries.map((e) => ({ ...e }));
+        const credentialWrites = [];
+        for (let i = 0; i < entries.length; i++) {
+          const value = typeof model.keys[entries[i].id] === "string" ? model.keys[entries[i].id].trim() : "";
+          if (!KEYED_TYPES.includes(entries[i].type) || !value) continue;
+          const ref = credentialRefFor(entries[i].id);
+          entries[i] = { ...entries[i], credentialRef: ref };
+          credentialWrites.push({ ref, value });
+        }
+        const bad = entries.find((e) => e.credentialRef && !POSIX_REF.test(e.credentialRef.trim()));
         if (bad) {
           setModel((m) => ({ ...m, status: { kind: "error", text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] } }));
           return;
         }
         setModel((m) => ({ ...m, status: { kind: "pending", text: "保存中…", issues: [] } }));
         try {
-          let entries = model.draft.entries.map((e) => ({ ...e }));
-          for (let i = 0; i < entries.length; i++) {
-            const value = typeof model.keys[entries[i].id] === "string" ? model.keys[entries[i].id].trim() : "";
-            if (!KEYED_TYPES.includes(entries[i].type) || !value) continue;
-            const ref = credentialRefFor(entries[i].id);
+          for (const { ref, value } of credentialWrites) {
             const response = await credentialRpc("set", { ref, value });
             const result = unwrap(response);
             if (!result.ok) throw new Error(result.message || "凭据服务拒绝写入");
-            entries[i] = { ...entries[i], credentialRef: ref };
           }
           const form = {
             entries,
@@ -565,11 +594,13 @@ globalThis.window?.__ModuleLoader__?.load({
         }
       };
       const closeEditor = () => {
+        if (locked) return;
         setModel((m) => ({ ...m, editingId: null }));
         const node = restoreFocus.current;
         if (node && typeof node.focus === "function") Promise.resolve().then(() => node.focus());
       };
       const onDialogKeyDown = (ev) => {
+        if (locked) return;
         if (ev.key === "Escape") { ev.preventDefault?.(); closeEditor(); return; }
         if (ev.key === "Tab" && ev.currentTarget?.querySelectorAll) {
           const items = [...ev.currentTarget.querySelectorAll("button, input, select, textarea, [tabindex]:not([tabindex='-1'])")].filter((n) => !n.disabled);
@@ -597,8 +628,9 @@ globalThis.window?.__ModuleLoader__?.load({
         return React.createElement("article", {
           key: entry.id, "data-role": "card", "data-entry-id": entry.id,
           style: cardStyle,
-          onDragOver: (ev) => ev.preventDefault?.(),
+          onDragOver: (ev) => { if (!locked) ev.preventDefault?.(); },
           onDrop: (ev) => {
+            if (locked) return;
             ev.preventDefault?.();
             const moving = ev.dataTransfer?.getData?.("text/plain");
             if (!moving || moving === entry.id) return;
@@ -618,23 +650,24 @@ globalThis.window?.__ModuleLoader__?.load({
             React.createElement("input", {
               type: "checkbox", role: "switch", "aria-checked": entry.enabled,
               "aria-label": `启用 ${entry.name || row?.[1] || entry.type}`,
-              "data-role": "enabled-toggle", "data-entry-id": entry.id, checked: entry.enabled,
+              "data-role": "enabled-toggle", "data-entry-id": entry.id, checked: entry.enabled, disabled: locked,
               onChange: (ev) => updateEntry(entry.id, { enabled: Boolean(ev.target.checked) }),
             }), "启用"),
           React.createElement("button", {
-            type: "button", "data-role": "card-edit", "data-entry-id": entry.id,
-            onClick: (ev) => { restoreFocus.current = ev.currentTarget ?? null; setModel((m) => ({ ...m, editingId: entry.id, status: m.status.kind === "error" ? IDLE : m.status })); },
+            type: "button", "data-role": "card-edit", "data-entry-id": entry.id, disabled: locked,
+            onClick: (ev) => { if (locked) return; restoreFocus.current = ev.currentTarget ?? null; setModel((m) => ({ ...m, editingId: entry.id, status: m.status.kind === "error" ? IDLE : m.status })); },
           }, "编辑"),
           React.createElement("button", {
-            type: "button", "data-role": "card-remove", "data-entry-id": entry.id,
-            onClick: () => setModel((m) => ({ ...m, confirmId: entry.id })),
+            type: "button", "data-role": "card-remove", "data-entry-id": entry.id, disabled: locked,
+            onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: entry.id })); },
           }, "移除"),
           React.createElement("button", {
-            type: "button", "data-role": "drag-handle", "data-entry-id": entry.id,
-            draggable: true, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
+            type: "button", "data-role": "drag-handle", "data-entry-id": entry.id, disabled: locked,
+            draggable: !locked, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
             title: "拖动排序；也可按方向键调整位置",
-            onDragStart: (ev) => ev.dataTransfer?.setData?.("text/plain", entry.id),
+            onDragStart: (ev) => { if (!locked) ev.dataTransfer?.setData?.("text/plain", entry.id); },
             onKeyDown: (ev) => {
+              if (locked) return;
               if (ev.key === "ArrowUp") { ev.preventDefault?.(); moveEntry(entry.id, -1); }
               else if (ev.key === "ArrowDown") { ev.preventDefault?.(); moveEntry(entry.id, 1); }
             },
@@ -655,31 +688,31 @@ globalThis.window?.__ModuleLoader__?.load({
       },
         React.createElement("h4", { id: "sc-editor-title" }, `编辑 ${editorEntry.name || editorEntry.type}`),
         React.createElement("label", { style: fieldLabelStyle }, "名称", React.createElement("input", {
-          type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, style: inputStyle,
+          type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
           value: editorEntry.name, onChange: (ev) => updateEntry(editorEntry.id, { name: ev.target.value }), autoFocus: true,
         })),
         React.createElement("label", { style: fieldLabelStyle }, "凭据引用", React.createElement("input", {
-          type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, style: inputStyle,
+          type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
           value: editorEntry.credentialRef ?? "", placeholder: "例如 TAVILY_API_KEY",
           onChange: (ev) => updateEntry(editorEntry.id, { credentialRef: ev.target.value }),
         })),
         KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { style: fieldLabelStyle }, "API key（仅写入，不会回显）", React.createElement("input", {
-          type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, style: inputStyle,
+          type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
           value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
-          onChange: (ev) => setModel((m) => ({ ...m, keys: { ...m.keys, [editorEntry.id]: ev.target.value } })),
+          onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, keys: { ...m.keys, [editorEntry.id]: ev.target.value } })); },
         })) : null,
-        React.createElement("button", { type: "button", style: buttonStyle, onClick: closeEditor }, "完成"),
+        React.createElement("button", { type: "button", style: buttonStyle, disabled: locked, onClick: closeEditor }, "完成"),
       ) : null;
       const addPicker = model.addOpen ? React.createElement("div", { role: "group", "aria-label": "选择搜索工具", style: secondarySurfaceStyle },
         ...CATALOG_UI.map(([type, label, billing]) => React.createElement("button", {
-          key: type, type: "button", "data-role": "add-type", "data-type": type, style: buttonStyle,
+          key: type, type: "button", "data-role": "add-type", "data-type": type, style: buttonStyle, disabled: locked,
           onClick: () => addEntry(type),
         }, React.createElement("strong", null, label), React.createElement("span", { style: secondaryTextStyle }, ` — ${billing}`))),
       ) : null;
       const confirm = model.confirmId ? React.createElement("div", { role: "alertdialog", "aria-modal": "true", style: secondarySurfaceStyle },
         React.createElement("p", null, "移除该搜索工具？不会删除宿主凭据。"),
-        React.createElement("button", { type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, style: buttonStyle, onClick: () => setModel((m) => ({ ...m, confirmId: null, draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== model.confirmId) } })) }, "确认移除"),
-        React.createElement("button", { type: "button", style: buttonStyle, onClick: () => setModel((m) => ({ ...m, confirmId: null })) }, "取消"),
+        React.createElement("button", { type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, style: buttonStyle, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null, draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== model.confirmId) } })); } }, "确认移除"),
+        React.createElement("button", { type: "button", style: buttonStyle, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null })); } }, "取消"),
       ) : null;
       return React.createElement("section", {
         "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT,
@@ -689,15 +722,15 @@ globalThis.window?.__ModuleLoader__?.load({
         React.createElement("label", { style: { display: "flex", alignItems: "center", gap: "8px", color: theme("label-primary") } },
           React.createElement("input", {
             type: "checkbox", role: "switch", "aria-checked": model.draft.useOfficial,
-            "aria-label": "DeepSeek 官方 API 使用官方搜索", "data-role": "official-toggle",
+            "aria-label": "DeepSeek 官方 API 使用官方搜索", "data-role": "official-toggle", disabled: locked,
             checked: model.draft.useOfficial,
-            onChange: (ev) => setModel((m) => ({ ...m, draft: { ...m.draft, useOfficial: Boolean(ev.target.checked) } })),
+            onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, draft: { ...m.draft, useOfficial: Boolean(ev.target.checked) } })); },
           }), "DeepSeek 官方 API 使用官方搜索"),
         React.createElement("p", { "data-role": "official-hint", style: { ...secondaryTextStyle, marginBlock: "0 8px" } }, "仅对 DeepSeek 官方 API 会话生效；关闭后相关会话改用下方工具链。官方搜索不另按次收费，模型用量仍按 token 计费。"),
         model.draft.entries.length === 0 ? React.createElement("p", { "data-role": "empty-state", style: secondaryTextStyle }, "还没有配置搜索工具，点击下方「添加搜索工具」添加第一条。") : null,
         ...cardNodes,
         addPicker,
-        React.createElement("button", { type: "button", style: buttonStyle, "data-role": "add-tool", onClick: () => setModel((m) => ({ ...m, addOpen: !m.addOpen })) }, "添加搜索工具"),
+        React.createElement("button", { type: "button", style: buttonStyle, "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "添加搜索工具"),
         confirm,
         editor,
         React.createElement("button", { type: "button", style: saveButtonStyle, "data-role": "save", disabled: model.phase !== "ready" || model.status.kind === "pending", onClick: save }, "保存"),
