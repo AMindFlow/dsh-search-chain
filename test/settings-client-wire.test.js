@@ -79,8 +79,10 @@ const SECTION_ID = "search-chain";
 const SECTION_TITLE = "网页搜索链";
 const SECTION_ORDER = 30; // [L2]：agent-presets 20 之后
 const PACKAGE_ID = "dsh-search-chain"; // [M3]：load 注册 id 恒 = 包名
-// v0.1 只读指示器文案在场性（标题 + 「设置→插件→…」编辑指引）：
-const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "插件"];
+// 区域标题 + 编辑指引要素（#46 BCF-006 迁移：文案改实际可走路径「设置→插件→已安装→
+// dsh-search-chain→配置表单」；旧「dsh-search-chain 配置区」句式废止——bundle 页当时只有
+// 启用开关，指引不可走。新注册面见 test/client-bundle-config.test.js 第 1 组）：
+const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "设置", "插件", "已安装", "dsh-search-chain", "配置表单"];
 // live [L3]：client 平台真实服务目录（factory 产物 inject 的消息参照）。
 const CLIENT_SERVICE_CATALOG = [
   "layout", "locale", "sessions", "slots", "theme", "timer", "uiWorkspace", "workspaces",
@@ -374,7 +376,7 @@ test("factory 面：factory(fakeRequire) 返回 {inject:[\"slots\"],apply}；fak
 // 4. 挂载形状（v0.2 T2 有效钉迁移到 factory 产物）+ 只读渲染树 + 无 react 降级
 // ────────────────────────────────────────────────────────────────────────────────────────
 
-test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」「插件」；无 react 安全降级；effect cleanup（[L1][L2]）", async () => {
+test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」与 #46 新指引要素（设置/插件/已安装/dsh-search-chain/配置表单）；无 react 安全降级；effect cleanup（[L1][L2]，#46 BCF-006 文案迁移）", async () => {
   const registrations = await importSelfRegister("mount");
   if (registrations.length !== 1 || typeof registrations[0].factory !== "function") {
     assert.fail(
