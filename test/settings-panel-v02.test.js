@@ -1291,6 +1291,61 @@ test("二轮(B-012) 键盘重排×未提交新建草稿并存：重排 op 自最
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
+// 第 10 组 · 三轮修复（round-3）：B-012 键盘重排焦点断链
+//   症状（run-5 探针实锤）：初始聚焦=drag-handle；第一次 ArrowUp 生效（mutate 载荷正确）；
+//   首次按键后 activeElement=空——重排渲染把卡片 DOM 节点物理挪位（浏览器规范 blur 原聚焦元素），
+//   且提交在途 busy→把手 disabled 二次 blur、解锁后浏览器不自动回焦 → 第二下 ArrowUp 落空。
+//   修复：回焦意图（model.pendingHandleFocus）+ 把手 ref 登记（handleRefs）+ 渲染提交后 effect 回焦：
+//   首焦不消费（锁定周期必然到来）→ 经历锁定渲染 → 解锁后焦点仍在「空位」则回焦并消费；
+//   用户期间移走焦点则只消费不抢焦。contract 纯函数 reorderFocusTarget 裁决回焦目标（测试面）。
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+test("三轮(B-012) 键盘重排焦点跟随：连续两次 ArrowUp 各自 mutate、修订单调；把手带 ref 登记（回焦机制接线）；边界移动不写", async () => {
+  const state = makeSettingsState(); // [tavily-a, exa-b, bing-c]，revision 3
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("b012-focus-follow");
+    const n0 = fetchStub.mutates().length;
+    // 第一次 ArrowUp：bing-c 2 号位 → 1 号位。
+    let t = await moveWithKey(view, tree, "bing-c", "ArrowUp");
+    assert.equal(fetchStub.mutates().length, n0 + 1, "第一次 ArrowUp 必须产生一次 mutate");
+    // 回焦接线：被移动条目的把手节点必须登记 ref 回调——真实 React 中该回调把手 DOM 节点存入
+    // handleRefs，重排渲染提交后回焦 effect 按 entryId 找回新位把手并 focus()（焦点跟随被移动条目）。
+    const handle1 = one(t, ROLE.dragHandle, { entryId: "bing-c" });
+    assert.equal(typeof handle1.props.ref, "function", "把手按钮必须登记 ref（回焦 effect 经被移动条目 id 找回把手）");
+    // 第二次 ArrowUp：真实宿主中依赖焦点已跟随 bing-c 恢复（effect 于渲染提交后回焦）；
+    // harness 无真实 DOM 焦点，fire 直调 handler——此处钉住单写者管线对连续移动持续可用（第二下不得落空）。
+    t = await moveWithKey(view, t, "bing-c", "ArrowUp");
+    const ms = fetchStub.mutates().slice(n0);
+    assert.equal(ms.length, 2, "连续两次 ArrowUp 必须各自产生一次 mutate（第二下不得落空）");
+    assert.deepEqual(ms.map((m) => m.body?.payload?.args?.expectedRevision), [3, 4],
+      "两次重排的 expectedRevision 单调递增（单写者串行、各自从读回快照起算）");
+    assert.deepEqual(idsOf(stateEntries(state)), ["bing-c", "tavily-a", "exa-b"], "持久层顺序连续两次上移到位");
+    assert.deepEqual(cardOrder(t).slice(0, 3), ["bing-c", "tavily-a", "exa-b"], "页内视图顺序与持久投影一致");
+    // 边界：bing-c 已在 0 号位——第三次 ArrowUp 越界无效（不写、不抛、不产生读回）。
+    const d0 = fetchStub.describes().length;
+    t = await moveWithKey(view, t, "bing-c", "ArrowUp");
+    assert.equal(fetchStub.mutates().length, n0 + 2, "边界外移动不得写");
+    assert.equal(fetchStub.describes().length, d0, "边界外移动不得引发提交/读回");
+  });
+});
+
+test("三轮(B-012) 回焦目标裁决 reorderFocusTarget 纯逻辑：被移动条目仍在列表才回焦，否则放弃意图", async () => {
+  const C = await pureContract();
+  const entries = [
+    { id: "a", type: "exa", name: "A", enabled: true, credentialRef: "" },
+    { id: "b", type: "bing", name: "B", enabled: true, credentialRef: "" },
+  ];
+  assert.equal(C.reorderFocusTarget("b", entries), "b", "被移动条目仍在列表 → 回焦目标=该条目");
+  assert.equal(C.reorderFocusTarget("a", [entries[1], entries[0]]), "a", "列表重排后条目仍在 → 仍回焦（焦点跟随条目而非位置）");
+  assert.equal(C.reorderFocusTarget("gone", entries), null, "条目已不在列表（如已移除）→ 放弃意图");
+  assert.equal(C.reorderFocusTarget("", entries), null, "空 id → 放弃");
+  assert.equal(C.reorderFocusTarget(null, entries), null, "非字符串 id → 放弃");
+  assert.equal(C.reorderFocusTarget("b", undefined), null, "列表缺失 → 放弃");
+  assert.equal(C.reorderFocusTarget("b", "nope"), null, "列表非数组 → 放弃");
+  assert.equal(C.reorderFocusTarget("b", [{ id: "b" }, null, 42]), "b", "列表含非对象项：按存在性裁决不受影响");
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
 // 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
 // ────────────────────────────────────────────────────────────────────────────────────────
 

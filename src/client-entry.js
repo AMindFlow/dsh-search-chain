@@ -321,6 +321,16 @@ globalThis.window?.__ModuleLoader__?.load({
       return out;
     }
 
+    /**
+     * 三轮修复（B-012 键盘重排焦点断链）：重排渲染提交后的回焦目标裁决——键盘焦点须跟随被移动条目。
+     * 仅当被移动条目仍在新列表中才回焦（条目已被移除等 → 放弃意图）；入参非字符串/空、列表非法 → null。
+     */
+    function reorderFocusTarget(movedId, nextEntries) {
+      if (typeof movedId !== "string" || movedId === "") return null;
+      if (!Array.isArray(nextEntries)) return null;
+      return nextEntries.some((e) => isPlainObject(e) && e.id === movedId) ? movedId : null;
+    }
+
     // ─────────────────────── SET-008 跨分区草稿保全：纯函数面（Component.contract） ───────────────────────
     // cache: Map；key = 条目 id（新建条目为稳定临时 id）| 全局键 draftCacheGlobalKey（超时草稿）。
     // 条目记录 = { mode:"edit"|"create", type, fields:{ name, credentialRef }, key, baseRevision }；
@@ -384,6 +394,8 @@ globalThis.window?.__ModuleLoader__?.load({
       // 二轮修复（B-007/009/B-012）：编辑器绑定守卫与权威快照乐观更新（纯函数面，测试直测）。
       singleEntryDiff,
       applyOpsToLayer,
+      // 三轮修复（B-012 键盘重排焦点断链）：重排渲染提交后的回焦目标裁决（纯函数面，测试直测）。
+      reorderFocusTarget,
     });
 
     // ───────────────────────────── 组件 ─────────────────────────────
@@ -839,6 +851,8 @@ globalThis.window?.__ModuleLoader__?.load({
         savedNotice: null,
         sectionError: null,
         editorError: null,
+        // 三轮修复（B-012）：重排回焦意图——被移动条目 id；渲染提交后 effect 据此回焦（焦点跟随条目）。
+        pendingHandleFocus: null,
       });
       const alive = React.useRef(true);
       const restoreFocus = React.useRef(null);
@@ -860,6 +874,11 @@ globalThis.window?.__ModuleLoader__?.load({
       const latestRef = React.useRef({ user: null, base: null, revision: undefined });
       const readChainRef = React.useRef(Promise.resolve());
       const commitChainRef = React.useRef(Promise.resolve());
+      // 三轮修复（B-012 键盘重排焦点断链）：把手按钮 DOM 节点登记（ref 回调 entryId→节点）——
+      // 重排渲染提交后按被移动条目 id 找回新位把手；focusIntentLockedRef 记录回焦意图挂起期间
+      // 是否经历过锁定渲染（busy→把手 disabled→浏览器 blur），解锁后据此回焦并消费意图。
+      const handleRefs = React.useRef(new Map());
+      const focusIntentLockedRef = React.useRef(false);
       const drainReads = () => readChainRef.current;
       const enqueueCommit = (fn) => {
         const run = commitChainRef.current.then(fn);
@@ -989,6 +1008,38 @@ globalThis.window?.__ModuleLoader__?.load({
         load();
         return () => { alive.current = false; };
       }, []);
+
+      // 三轮修复（B-012 键盘重排焦点断链）：重排渲染提交时 React 键控列表把卡片 DOM 节点物理挪位，
+      // 浏览器按规范 blur 原聚焦把手（run-5 探针实锤：首次 ArrowUp 生效、其后 activeElement=空、第二下落空）；
+      // 且提交在途 busy→locked 把手 disabled 会二次 blur、解锁后浏览器不自动回焦。
+      // 焦点须跟随被移动条目：effect 于渲染提交后运行（新位 DOM 就绪），经 handleRefs 按 entryId 取节点 focus()。
+      // 意图生命周期：moveEntry 写入 pendingHandleFocus；首焦（未锁定渲染）聚焦但不消费——reorder 提交必然
+      // 引发锁定周期（busy→disabled→blur），意图须存活到解锁渲染；解锁后若焦点仍在「空位」（body）= 失焦
+      // 源于我们的 disabled → 回焦并消费；用户期间已把焦点移到别处 → 只消费不抢焦（尊重用户）。
+      React.useEffect(() => {
+        const intent = model.pendingHandleFocus;
+        if (!intent) return;
+        const target = reorderFocusTarget(intent, model.draft.entries);
+        if (!target) {
+          setModel((m) => (m.pendingHandleFocus === intent ? { ...m, pendingHandleFocus: null } : m));
+          return;
+        }
+        const el = handleRefs.current.get(target);
+        if (locked) {
+          focusIntentLockedRef.current = true; // 提交在途：把手 disabled（浏览器已 blur）——保留意图待解锁渲染
+          return;
+        }
+        if (!el || el.disabled) return;
+        if (focusIntentLockedRef.current) {
+          focusIntentLockedRef.current = false;
+          const doc = typeof document === "undefined" ? null : document;
+          const blank = !doc || !doc.activeElement || doc.activeElement === doc.body;
+          if (blank) el.focus(); // 失焦源于提交锁定的 disabled——回焦；用户已移走焦点则尊重用户
+          setModel((m) => (m.pendingHandleFocus === intent ? { ...m, pendingHandleFocus: null } : m));
+          return;
+        }
+        el.focus(); // 首焦（未锁定）：聚焦但不消费——锁定周期必然到来，解锁后本 effect 再聚焦并消费
+      }, [model.pendingHandleFocus, locked]);
 
       // ─────────────────────── SET-006：条目级提交与离散落盘 ───────────────────────
       // 所有落盘以“最新持久化快照（user 层）”为基线构造，载荷只含该处变更；
@@ -1131,7 +1182,9 @@ globalThis.window?.__ModuleLoader__?.load({
         const to = from + delta;
         if (from < 0 || to < 0 || to >= list.length) return;
         [list[from], list[to]] = [list[to], list[from]];
-        setModel((m) => ({ ...m, draft: { ...m.draft, entries: list } }));
+        // 三轮修复（B-012）：记录回焦意图——重排渲染挪位 DOM 会 blur 原聚焦把手，
+        // 渲染提交后 effect 按被移动条目 id 回焦（键盘焦点跟随条目，连续按键可持续排序）。
+        setModel((m) => ({ ...m, draft: { ...m.draft, entries: list }, pendingHandleFocus: id }));
         commitReorder(list.map((e) => e.id));
       };
       const addEntry = (type, trigger) => {
@@ -1362,6 +1415,11 @@ globalThis.window?.__ModuleLoader__?.load({
                 className: "sc-drag-handle", type: "button", "data-role": "drag-handle", "data-entry-id": entry.id, disabled: locked,
                 draggable: !locked, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
                 title: "拖动排序；也可按方向键调整位置",
+                // 三轮修复（B-012）：登记把手节点（entryId→node）——重排渲染提交后回焦 effect 按被移动条目 id 取新位节点。
+                ref: (el) => {
+                  if (el) handleRefs.current.set(entry.id, el);
+                  else handleRefs.current.delete(entry.id);
+                },
                 onDragStart: (ev) => { if (locked) return; ev.dataTransfer?.setData?.("text/plain", entry.id); ev.currentTarget?.closest?.('[data-role="card"]')?.setAttribute?.("data-dragging", ""); },
                 onDragEnd: (ev) => { clearDragMarks(ev.currentTarget); },
                 onKeyDown: (ev) => {
