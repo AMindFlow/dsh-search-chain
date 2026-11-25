@@ -1097,6 +1097,15 @@ globalThis.window?.__ModuleLoader__?.load({
         const base = isPlainObject(m && m.base) ? m.base : {};
         return typeof base.useOfficialDeepSeekSearch === "boolean" ? base.useOfficialDeepSeekSearch : true;
       };
+      // 五轮补充（codex 同族残留收口，lead (z) 点头）：timeout「值未变化」对照合并后有效值（user 显式数值
+      // 优先 → base → schema 默认 25000，与 draftFrom 投影同判据）；旧版只读 user 层，base 有值且无覆盖时
+      // 重输当前有效值会写冗余 user override（同 P2#2 错层族）。
+      const effectiveTimeoutMsOf = (m) => {
+        const user = isPlainObject(m && m.user) ? m.user : {};
+        if (typeof user.timeoutMs === "number") return user.timeoutMs;
+        const base = isPlainObject(m && m.base) ? m.base : {};
+        return typeof base.timeoutMs === "number" ? base.timeoutMs : DEFAULT_TIMEOUT_MS;
+      };
 
       // 离散动作立即落盘：成功=生效确认（重新读取投影）；失败=保留意图（草稿保留目标值）+ 节级顶部可操作错误。
       // 二轮修复（单写者）：提交整体在 commitChain 队列内执行——(a) 先 await 全部在途读回落进 latestRef；
@@ -1179,7 +1188,10 @@ globalThis.window?.__ModuleLoader__?.load({
         }
         setModel((m) => ({ ...m, sectionError: null, draft: { ...m.draft, timeoutText: String(parsed) } }));
         // 「值未变化」判定同样对照最新持久快照（闭包 user 可能陈旧）→ 移入提交链内，ops 为空即不写。
-        const run = commitDiscrete((snap) => (Number(snap.user.timeoutMs) === parsed ? [] : [{ op: "set", path: ["timeoutMs"], value: parsed }]), "已保存设置。");
+        // 五轮补充（codex 同族残留收口，lead (z) 点头）：对照合并后有效值（user 显式数值 → base → 默认 25000）
+        // 判「变没变」——继承 world（base 有 timeoutMs、user 无覆盖）重输当前有效值零 mutate，
+        // 新值落 user 层单键 override（与 official 开关同形，不连带具化条目列表）。
+        const run = commitDiscrete((snap) => (effectiveTimeoutMsOf(snap) === parsed ? [] : [{ op: "set", path: ["timeoutMs"], value: parsed }]), "已保存设置。");
         run.then((ok) => { if (ok) draftCache.delete(DRAFT_CACHE_GLOBAL_KEY); }, () => {});
       };
 

@@ -1599,6 +1599,40 @@ test("五轮(codex P2) SET-008 全语义草稿复原：编辑 A 未提交→开 
   });
 });
 
+test("五轮补充(codex 同族残留收口，lead (z) 点头) timeoutCommit 有效值对照：继承 world（base 有 timeoutMs、user 无覆盖）重输当前有效值零 mutate；新值落 user 层单键 override", async () => {
+  const state = makeSettingsState({
+    user: {},
+    base: { entries: fixtureEntries(), useOfficialDeepSeekSearch: true, timeoutMs: 30000 },
+  });
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("r5-timeout-inherited");
+    assert.equal(one(tree, ROLE.field, { field: "timeoutMs" }).props.value, "30000", "有效值=继承 base=30000：输入框初值即有效值");
+    const n0 = fetchStub.mutates().length;
+    // (a) 重输当前有效值 30000（onChange+同帧 blur）→ 对照有效值判「值未变化」→ 零 mutate
+    //     （旧版只读 user 层：Number(undefined)=NaN≠30000 → 写冗余 override 污染 user 层）。
+    let t = await act(view, () => {
+      const input = one(tree, ROLE.field, { field: "timeoutMs" });
+      fire(input, "onChange", { target: { value: "30000" }, currentTarget: { value: "30000" } });
+      fire(input, "onBlur", { currentTarget: { value: "30000" } });
+    });
+    assert.equal(fetchStub.mutates().length, n0, "重输继承有效值=值未变化：零 mutate（不得写冗余 user override）");
+    assert.equal(state.user.timeoutMs, undefined, "user 层未污染");
+    assert.equal(one(t, ROLE.field, { field: "timeoutMs" }).props.value, "30000", "输入框仍为有效值");
+    // (b) 输新值 45000 → 提交载荷= user 层单键 override（与 official 开关同形，不连带具化条目列表）。
+    t = await act(view, () => {
+      const input = one(t, ROLE.field, { field: "timeoutMs" });
+      fire(input, "onChange", { target: { value: "45000" }, currentTarget: { value: "45000" } });
+      fire(input, "onBlur", { currentTarget: { value: "45000" } });
+    });
+    const ms = fetchStub.mutates().slice(n0);
+    assert.equal(ms.length, 1, "继承 world 超时新值必须恰落盘一次");
+    assert.deepEqual(opsOf(ms[0]), [{ op: "set", path: ["timeoutMs"], value: 45000 }], "载荷仅 user 层单键 override（与 official 开关同形）");
+    assert.equal(state.user.timeoutMs, 45000, "user 层 override 已写入");
+    assert.equal(state.user.entries, undefined, "不连带具化条目列表（仅自身键）");
+    assert.equal(one(t, ROLE.field, { field: "timeoutMs" }).props.value, "45000", "输入框反映持久值（UI 与持久一致）");
+  });
+});
+
 // ────────────────────────────────────────────────────────────────────────────────────────
 // 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
 // ────────────────────────────────────────────────────────────────────────────────────────
