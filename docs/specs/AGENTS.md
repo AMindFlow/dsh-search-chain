@@ -17,6 +17,7 @@
 | --- | --- |
 | dsh 注册、安装与回退 | [dsh-integration.md](draft/dsh-integration.md) |
 | 搜索配置区域与交互 | [settings-ui.md](draft/settings-ui.md) |
+| bundle 页配置入口（v0.1 配置 UI） | [bundle-config-ui.md](draft/bundle-config-ui.md) |
 | 配置、凭据、代理与直连 | [config-network.md](draft/config-network.md) |
 | 首期工具目录 | [providers.md](draft/providers.md) |
 | OpenAI 搜索适配 | [openai.md](draft/openai.md) |

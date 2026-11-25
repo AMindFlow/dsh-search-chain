@@ -38,7 +38,8 @@
 //        → 本区取 order 30（追加在既有区之后）。
 //   [L3] Client 平台服务目录：layout / locale / sessions / slots / theme / timer / uiWorkspace /
 //        workspaces —— 无 configEditor、无 credentials。factory 产物 inject 声明缺席服务 → 模块
-//        整体不激活（references/practices.md）。故 inject 恰为 ["slots"]，多一个都红。
+//        整体不激活（references/practices.md）。故 inject 恰为 ["slots"]，多一个都红——真机定案
+//        （#46）："host" 亦幻影（声明 → pending waiting for service: host；见 PHANTOM_SERVICES 注）。
 //   [L4] host web 服务对 client 仅 @Remote listProviders —— v0.1 无「客户端编辑宿主配置」桥。
 //
 // ─── v0.1 范围裁决（docs/specs/draft/settings-ui.md 设计决定 / settings-ui.md:37）─────────
@@ -79,14 +80,21 @@ const SECTION_ID = "search-chain";
 const SECTION_TITLE = "网页搜索链";
 const SECTION_ORDER = 30; // [L2]：agent-presets 20 之后
 const PACKAGE_ID = "dsh-search-chain"; // [M3]：load 注册 id 恒 = 包名
-// v0.1 只读指示器文案在场性（标题 + 「设置→插件→…」编辑指引）：
-const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "插件"];
+// 区域标题 + 编辑指引要素（#46 rev 轮，P1-1 已证路径定案：真机 verify-ui-46 步骤 6a-6b 实证
+// 可走路径 = 侧栏「插件」→ dsh-search-chain 卡片 → 详情页配置表单；「设置→…」路由仍未证
+// （nav 无设置入口）→ 禁「设置→」前缀，设置页路由仍为规格 BCF-006 开放项。历史：六要素
+// 钉过约束废 → 放宽为 设置+包名 → 本轮按已证路径重新收紧（git 历史可考））：
+const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "dsh-search-chain", "插件", "详情", "配置表单"];
 // live [L3]：client 平台真实服务目录（factory 产物 inject 的消息参照）。
 const CLIENT_SERVICE_CATALOG = [
   "layout", "locale", "sessions", "slots", "theme", "timer", "uiWorkspace", "workspaces",
 ];
 // v0.1 已知幻影面（[L3][L4]）：出现在 inject 里必须红，且红名可读。
-const PHANTOM_SERVICES = ["configEditor", "credentials"];
+const PHANTOM_SERVICES = ["configEditor", "credentials", "host"];
+// ↑ "host"（#46 迁移轮，真机两轮探针定案，BCF-001 冲突史）：静态 client factory 声明
+//   inject:["slots","host"] → 包不激活 `pending (waiting for service: host)`；未声明读
+//   ctx.host → 抛 `cannot get property "host" without inject`。host.call → 宿主半通道作废，
+//   表单读写走同源 settings RPC（bundle-config-ui.md [C3][C8]）。
 
 // cache-bust：自注册模块的每次动态 import 用新 URL（?v=）绕开 ESM 模块缓存，
 // 保证 [M1] 的 import 期 load 副作用每次重新执行。
@@ -374,7 +382,7 @@ test("factory 面：factory(fakeRequire) 返回 {inject:[\"slots\"],apply}；fak
 // 4. 挂载形状（v0.2 T2 有效钉迁移到 factory 产物）+ 只读渲染树 + 无 react 降级
 // ────────────────────────────────────────────────────────────────────────────────────────
 
-test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」「插件」；无 react 安全降级；effect cleanup（[L1][L2]）", async () => {
+test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」与 #46 已证路径指引要素（插件/详情/配置表单，禁「设置→」，BCF-006 P1-1）；无 react 安全降级；effect cleanup（[L1][L2]）", async () => {
   const registrations = await importSelfRegister("mount");
   if (registrations.length !== 1 || typeof registrations[0].factory !== "function") {
     assert.fail(
@@ -396,10 +404,12 @@ test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register
       );
     }
     // 恰 1 次 inject；注册懒挂载：apply 时点不得已 register（[M1] 模板：inject 懒回调）。
+    // #46 BCF-001：apply 另含 plugins.bundle.config 槽（见 client-bundle-config.test.js 第 1 组），
+    // 故钉 settings.section 的 inject 次数（不再钉 apply 的总 inject 数）。
     assert.equal(
-      h.injects.length,
+      h.injects.filter((x) => x.name === SLOT).length,
       1,
-      `须恰调用 ctx.slots.inject 1 次；现 ${h.injects.length} 次`,
+      `settings.section 须恰调用 ctx.slots.inject 1 次；现 ${h.injects.filter((x) => x.name === SLOT).length} 次`,
     );
     assert.equal(h.injects[0].name, SLOT, `inject 槽名须为 "${SLOT}"`);
     assert.equal(typeof h.injects[0].factory, "function", "inject 第二参须为懒工厂函数");
@@ -443,9 +453,13 @@ test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register
     for (const mark of COMPONENT_TEXT_MARKS) {
       assert.ok(
         text.includes(mark),
-        `组件文案须含「${mark}」（v0.1 只读面：标题 + 「设置→插件→…」编辑指引）；实收文本：${JSON.stringify(text)}`,
+        `组件文案须含「${mark}」（P1-1 已证路径：侧栏插件→卡片→详情页配置表单，verify 6a-6b 实证）；实收文本：${JSON.stringify(text)}`,
       );
     }
+    assert.ok(
+      !text.includes("设置→"),
+      `指引禁「设置→」前缀——设置页路由未证（[C6] nav 无设置入口，BCF-006 开放项）；实收文本：${JSON.stringify(text)}`,
+    );
   } catch (e) {
     failure = e;
   } finally {
@@ -538,7 +552,8 @@ test("幂等：factory 产物同一 ctx 重复 apply 不双 inject；挂载后�
   } catch (e) {
     assert.fail(`apply(ctx) 在 live 形状 ctx 上直接抛错（见第 4 组）：${e && e.message}`);
   }
-  assert.equal(h.injects.length, 1, "重复 apply 不得双 inject");
+  // #46 BCF-001：总 inject 数含 plugins.bundle.config 槽，钉 settings.section 的次数。
+  assert.equal(h.injects.filter((x) => x.name === SLOT).length, 1, "重复 apply 不得双 inject（settings.section）");
   h.mountInjected(0);
   assert.equal(h.regs.length, 1, "重复 apply + 挂载后仍恰 1 个 settings.section 注册");
   const cleanups = runEffects(h.effects);

@@ -12,13 +12,13 @@
 | --- | --- | --- | --- |
 | 凭据形状 | 把 `credentialService.resolve(ref)` 的返回值当作字符串 | 按 `{ value, source }` 或 `undefined` 读取，取 `value`，并去掉首尾空白 | 旧版在真实宿主上取不到 key，表现为 `SKIPPED_NO_KEY`。升级后需要逐条目验证。 |
 | 托管引用（第三层） | 通过 `readRecord(环境变量名)` 读取 `api-key` 记录 | 通过 `resolve(环境变量名)` 读取托管引用，不再读取记录 | 原先保存在 `api-key` 记录（如 `<owner>/<id>`）中的 key 不再被读取。需要以环境变量名为引用名重新保存，或改用条目引用。 |
-| `credentialRef` 规范化 | 引用名原样使用 | 读取时去掉首尾空白，再用于解析 | 首尾含空格的旧引用名解析会落空，表现为 `SKIPPED_NO_KEY` 或退回后续来源。在配置区把引用名改正确即可（v0.2 面板重新保存会生成干净的新引用）。 |
-| 明文 key 字段 | 条目中的 `apiKey` 等字段可能仍在配置中 | 键名匹配 `apikey`、`api_key`、`key`、`secret`、`token`、`password`、`auth`、`authorization`（大小写不敏感）的字段在读取时丢弃，且不会被使用 | 旧配置中的明文 key 不再生效，不会迁移到凭据服务，也不会被自动删除。在配置区手动删除这些字段，并另行补 key（检查清单第 3 步）。 |
-| 旧版 YAML 凭据层 | 生产入口在仓库历史中从未传入旧版 YAML | **v0.1 不自动导入旧版 YAML**：链侧代码层保留，但生产装配不传数据源，永不生效 | 依赖 `openai`、`tavily`、`deepseek` 顶层 YAML 项的，需在配置区、环境变量或托管引用中手动重建。TODO（发布验收）：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)。 |
+| `credentialRef` 规范化 | 引用名原样使用 | 读取时去掉首尾空白，再用于解析 | 首尾含空格的旧引用名解析会落空，表现为 `SKIPPED_NO_KEY` 或退回后续来源。在配置表单把引用名改正确即可（v0.2 面板重新保存会生成干净的新引用）。 |
+| 明文 key 字段 | 条目中的 `apiKey` 等字段可能仍在配置中 | 键名匹配 `apikey`、`api_key`、`key`、`secret`、`token`、`password`、`auth`、`authorization`（大小写不敏感）的字段在读取时丢弃，且不会被使用 | 旧配置中的明文 key 不再生效，不会迁移到凭据服务，也不会被自动删除。在配置表单手动删除这些字段，并另行补 key（检查清单第 3 步）。 |
+| 旧版 YAML 凭据层 | 生产入口在仓库历史中从未传入旧版 YAML | **v0.1 不自动导入旧版 YAML**：链侧代码层保留，但生产装配不传数据源，永不生效 | 依赖 `openai`、`tavily`、`deepseek` 顶层 YAML 项的，需在配置表单、环境变量或托管引用中手动重建。TODO（发布验收）：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)。 |
 | 注入声明 `inject` | 早期版本为 `["web", "configEditor"]`；之后为 `["web", "configEditor", "credentials"]` | `["web", "configEditor", "credentials", "agents"]` | 新增 `agents`，用于 DeepSeek 官方分支读取当前会话的路由。宿主必须提供这些服务，缺失时的宿主行为未在本仓库实机验证。升级后请重新启用插件，并在新会话中验证。 |
 | PAC 与配置错误 | 条目执行期的 `PAC_*` 和 `CONFIG_*` 错误会中断整次搜索 | 作为条目级失败记录到 attempts（原码保留），然后继续下一个条目；条目 open 期的带码错误（如代理形状问题）同样降级（`6963535`，FB-006 裁决 27）。全局配置错误和 `TRANSPORT_RELEASED` 仍直接抛出 | **v0.1 变化提示**：一个条目的 PAC 失败不再让整次搜索失败。如果你之前靠这种失败来阻止搜索，需要改为关闭该条目。排查时查看 attempts。 |
 | 响应体上限 | 供应商正文与 PAC 全量读取，无字节上限 | PAC 与七家供应商正文统一 2 MiB 上限（`584fc66`，`MAX_RESPONSE_BYTES`；bing 的 `MAX_BODY_BYTES` 为同源常量别名）：超限早停，PAC 记 `PAC_FETCH_FAILED`、2xx 正文超限记 `ENTRY_BAD_RESPONSE` | 正常大小的响应不受影响；持续返回超大正文的条目会以异常响应失败。 |
-| 设置页区域 | 「网页搜索链」区域未挂载，是否出现需要实机确认 | `05c97ac` 起由 client 产物自注册为**只读指示器**（标题+指引文案）；编辑一律走「设置 → 插件 → dsh-search-chain」配置区 | 设置页预期出现该区域（v0.1 待实机确认）但不可编辑；带列表与 key 输入框的面板编辑 UI 是 v0.2。 |
+| 设置页区域 | 「网页搜索链」区域未挂载，是否出现需要实机确认 | `05c97ac` 起由 client 产物自注册为**只读指示器**（标题+指引文案）；编辑一律走「插件」页的 dsh-search-chain 详情页（配置表单） | 设置页预期出现该区域（v0.1 待实机确认）但不可编辑；带列表与 key 输入框的面板编辑 UI 是 v0.2。 |
 | 代理错误归因 | 适配器抛出的已带码代理或配置错误可能被压成 `ENTRY_NETWORK` | 原码保留（例如 `ENTRY_PROXY`） | 代理问题不再被误报为直连网络问题。 |
 | 配置校验 | 早期开发版在宿主 `0.2.2-rc.5` 上激活失败（`validate is not a function`） | 以 Standard Schema 形式提供 `Config`，可以正常激活 | 如果旧版本无法启用，升级后需要重新安装并启用。 |
 | 未知配置键 | 未对旧版单独核对 | 写入时保留配置行中的未知键（其他插件的键）；`entries` 的每一项在读取时只保留标量参数 | 其他插件或旧版残留的顶层键不会导致保存失败。 |
@@ -28,7 +28,7 @@
 以下问题在升级后仍然存在，见 [快速开始](getting-started.md#7-已知限制当前版本) 的已知限制：
 
 - 代理，以及 PAC 命中代理的路由，以 `ENTRY_PROXY` 失败：零出站、不会自动改走直连。与旧版相比语义更明确（原码入 attempts 并逐条目降级）；PAC 文件本身会真实直连下载并求值，返回 `DIRECT` 时可正常直连出站。该行为已有本地回环复测佐证：[复测 fixture](evidence/proxy-retest-v0.1.mjs)、[复测输出](evidence/proxy-retest-v0.1.log)。
-- 设置页的「网页搜索链」区域是只读指示器，编辑一律走「设置 → 插件 → dsh-search-chain」配置区；面板编辑 UI 是 v0.2。
+- 设置页的「网页搜索链」区域是只读指示器，编辑一律走「插件」页的 dsh-search-chain 详情页（配置表单）；面板编辑 UI 是 v0.2。
 - v0.1 不自动导入旧版 YAML 凭据（TODO：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)）。
 - `QUOTA_LIMITED` 和 Gemini 的消息级额度判定仍待证认。
 
@@ -38,8 +38,8 @@
 
 1. **备份**：在修改 profile 之前，备份 profile 中的插件配置和搜索选择。手工修改前先备份，这是 DSH-003 的要求。
 2. **记录现有条目**：列出每个条目的 `id`、`type`、`enabled`、`credentialRef` 和 `proxy`。确认哪些条目原先依赖明文 key、旧版 YAML 或托管记录。
-3. **检查明文 key**：如果条目中含有 `apiKey`、`key`、`token` 等字段，升级后它们会被忽略，也不会被自动删除。在配置区删掉这些字段，并按 [快速开始](getting-started.md#4-凭据) 另行补 key（v0.1 用环境变量或凭据引用；面板 key 输入框是 v0.2）。
-4. **检查 `credentialRef`**：引用名首尾空白的，在配置区改为去空白后的正确引用名，或指向重新保存的新引用。
+3. **检查明文 key**：如果条目中含有 `apiKey`、`key`、`token` 等字段，升级后它们会被忽略，也不会被自动删除。在配置表单删掉这些字段，并按 [快速开始](getting-started.md#4-凭据) 另行补 key（v0.1 用环境变量或凭据引用；面板 key 输入框是 v0.2）。
+4. **检查 `credentialRef`**：引用名首尾空白的，在配置表单改为去空白后的正确引用名，或指向重新保存的新引用。
 5. **检查托管 key**：如果 key 之前保存在 `api-key` 记录中，需要以对应的环境变量名作为引用名，在宿主凭据服务中重新保存。本仓库未提供这一步的界面，入口以宿主为准。
 6. **检查旧版 YAML**：v0.1 不自动导入旧版 YAML。如果依赖 `openai`、`tavily`、`deepseek` 的顶层 YAML 项，把这些 key 手动迁移到条目引用、环境变量或托管引用（TODO：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)）。
 7. **检查代理条目**：`proxy` 为固定 HTTP(S) 代理 URL 的条目当前必以 `ENTRY_PROXY` 失败（零出站）。`proxy` 为 PAC 的条目会真实下载并求值 PAC：结果为 `DIRECT` 时可正常直连出站，命中 `PROXY`/`HTTPS` 指令时同样以 `ENTRY_PROXY` 失败。如果直连可用，删除 `proxy` 或让 PAC 对这些目标返回 `DIRECT`；否则接受这一限制，并把这些条目关闭或排到后面。
