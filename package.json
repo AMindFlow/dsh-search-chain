@@ -29,6 +29,7 @@
     "@deepseek-ai/dsh-launch-environment": "0.2.2-rc.5"
   },
   "scripts": {
-    "test": "node --test --test-timeout=30000 test/"
+    "test": "node --test --test-timeout=30000 test/",
+    "verify:desktop-43": "node scripts/verify-desktop-43.mjs"
   }
 }

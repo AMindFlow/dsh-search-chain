@@ -33,6 +33,20 @@ function hostResolveConfigValidate(Config, input) {
 /** 原文第二道闸：result.issues 真值 = 装载失败（undefined/null 视为通过）。 */
 const hostAccepts = (result) => !result.issues;
 
+// #43 迁移注记（最小对齐）：新契约下 Config 为 schemastery 节点，volatile 字段的 parse 输出是
+// createVolatile 包裹（schemastery src/index.ts:521-530），宿主消费面是 plainConfig 的
+// `isVolatile(value) ? plainConfig(value.get())`（app.asar 实证）。解包后的比较=原「value 原样返回」
+// 的语义等价面；现手写实现无包裹，解包=恒等，两种实现下同绿。宿主读取位契约由
+// config-schemastery-contract.test.js 钉，此处不扩面。
+function plainValue(v) {
+  if (v !== null && typeof v === "object" && typeof v.get === "function") return plainValue(v.get());
+  if (Array.isArray(v)) return v.map(plainValue);
+  if (v !== null && typeof v === "object") {
+    return Object.fromEntries(Object.entries(v).map(([k, c]) => [k, plainValue(c)]));
+  }
+  return v;
+}
+
 test("装载面：Config[\"~standard\"] 字面 Standard Schema 存在（version=1，vendor 非空，validate 函数）", async (t) => {
   const mod = await load(t);
   if (!mod) return;
@@ -62,7 +76,9 @@ test("CFG-001 schema 面：合法配置 → 无 issues，result.value 原样返�
     assert.ok(hostAccepts(result),
       `合法配置必须通过 schema（got issues: ${JSON.stringify(result.issues)}）：${JSON.stringify(input)}`);
     assert.ok("value" in result, "成功结果必须携带 value（Standard Schema：{value}）");
-    assert.deepEqual(result.value, before, "value 原样返回输入（默认值注入归 normalizeConfig，不在 schema 面）");
+    // #43 迁移注记：经宿主 plainConfig 解包后比较（volatile 包裹为宿主消费面，解包语义见文件头）；
+    // P2-2 未知键透传面不变（schemastery object 非 strict merge，src/index.ts:808-822）。
+    assert.deepEqual(plainValue(result.value), before, "value 经宿主解包面=输入原样（默认值注入归 normalizeConfig，不在 schema 面）");
     assert.deepEqual(input, before, "validate 不得改动调用方输入对象");
   }
 });
