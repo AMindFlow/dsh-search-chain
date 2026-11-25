@@ -524,9 +524,11 @@ async function navClick(text) {
 // ───────── O-1 挂载语义探针 + B-022..026 载体收敛（run-10 实证）─────────
 // run-10 崩溃位取证：官方 shell 分区切换时我方面板保持挂载（未 unmount）——O-1 定案。
 // 前置守卫禁 throw（全量无短路纪律）；三观测（DOM 在场性/display 遮挡/React 活值回环）正式入 measured。
-// B-022..026 载体收敛为「设置视图关闭-重开」（必卸载路径，run-10 实证选路）；B-022 expected「section
-// switch」/B-026 property「section remount」字面词面经 lead 提交 Luna call-7 微修订，语义核
-// （卸载-重挂载后草稿保全/冲突告警/零写入）不变——执行器不改目录语义，仅换已证可达的载体路径。
+// B-022..026 载体收敛为「设置视图关闭-重开」。【lead 裁定：载体实机不可达已定案（run-11 三通道实测
+// drawer-close-btn/settings-toggle did=false、escape 被编辑器先吞；分区切换不卸载）→ call-7 取消，
+// B-022/B-026 实机定态=SKIP gap（三观测+attempts 自证），回填/冲突面由单测覆盖+代码走查；B-025 v1
+// PASS 判词保留入基线档案。本函数保留 accel-mod-comma 通道（asar 宿主规格「Mod+, 切换设置弹窗开关」
+// 实证）：若后续轮次该通道关闭成功，SKIP 定态自动升级为真载体判别，无需改判据。】
 async function mountProbe() {
   return evaluate(`() => { const r = document.querySelector('${ROOT}'); let hidden = null;
     if (r) { let n = r; for (let i = 0; i < 6 && n; i++, n = n.parentElement) { const cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden') { hidden = cs.display + '/' + cs.visibility; break; } } }
@@ -556,9 +558,17 @@ async function settingsViewCycle() {
     try { const did = await fn(); await wait(500); closed = !(await mountProbe()).present; attempts.push({ label, did, closed }); }
     catch (e) { attempts.push({ label, err: String((e && e.message) || e).slice(0, 60) }); }
   };
+  // Mod+, 加速通道（asar 宿主规格原文实证：「设置位于最前方或没有模态弹窗时，设置命令（Desktop 为
+  // Mod+,）切换设置弹窗的开关」；且「Tab 顺序中，分区按钮先于头部操作和关闭按钮」= 关闭钮存在但无
+  // label 特征（run-11 三通道 did=false 一致）。加速键不经 DOM 选择器，是唯一有规格背书的单按关闭通道。）
+  await tryClose("accel-mod-comma", async () => {
+    await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: ",", code: "Comma", windowsVirtualKeyCode: 188, nativeVirtualKeyCode: 188, modifiers: 4 });
+    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: ",", code: "Comma", windowsVirtualKeyCode: 188, nativeVirtualKeyCode: 188, modifiers: 4 });
+    return true;
+  });
   await tryClose("drawer-close-btn", () => evaluate(`() => { const b = [...document.querySelectorAll('button,[role="button"]')].find((n) => /关闭|close/i.test((n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('title') || '')) || /^[×✕✖]$/.test((n.innerText || '').trim())); if (!b) return false; b.click(); return true; }`, 30000));
   await tryClose("settings-toggle", () => evaluate(`() => { const cands = [...document.querySelectorAll('button,a,[role="button"],[role="menuitem"]')]; const item = cands.find((n) => /^(设置|Settings)$/i.test((n.innerText || n.getAttribute('aria-label') || n.getAttribute('title') || '').trim())); if (!item) return false; item.click(); return true; }`, 30000));
-  await tryClose("escape", async () => { await pressKey("Escape", "Escape", 27); return true; });
+  await tryClose("escape", async () => { await pressKey("Escape", "Escape", 27); return true; }); // run-11 实测 did=true closed=false（编辑器先吞=O-5 修订前佐证）
   if (!closed) return { closed: false, attempts, post: await mountProbe() };
   await wait(600);
   await openSettings();
@@ -2094,7 +2104,7 @@ try {
     if (ed22) { await submitEditor("edit"); await reloadAndReopen(); }
     const st22 = await ui.state();
     await exec("B-022", "light", async () => {
-      if (!cyc22.closed) throw new SkipGap(`载体不可达：设置视图未能关闭 ${JSON.stringify(cyc22.attempts).slice(0, 140)}；O-1 实证=分区切换 unmounted=${o1.unmounted}，不满足卸载-重挂载前提（载体词面 awaiting Luna call-7 微修订）`);
+      if (!cyc22.closed) throw new SkipGap(`载体不可达：设置视图未能关闭 ${JSON.stringify(cyc22.attempts).slice(0, 140)}；O-1 实证=分区切换 unmounted=${o1.unmounted}，不满足卸载-重挂载前提【lead 裁定：载体实机不可达已定案；若本轮 accel-mod-comma 通道关闭成功则自动转真载体判别】`);
       const mis = [];
       if (o1.unmounted) mis.push(`异常：分区切换竟卸载了面板（与 run-10 实证相反，复核 O-1）got ${JSON.stringify(o1)}`);
       if (!ed22) mis.push("重挂载后编辑器未自动重开（SET-008：匹配条目的编辑窗应自动恢复）");
@@ -2138,7 +2148,7 @@ try {
       const mis = [];
       if (!closed24) mis.push("取消后编辑器未关闭");
       if (mut24) mis.push(`取消产生 ${mut24} 次 mutate（取消必须零写入）`);
-      if (noReopen24 === null) mis.push(`载体不可达（设置视图未能关闭 ${JSON.stringify(cyc24.attempts).slice(0, 80)}）：重挂载不恢复子项不可判（O-1：分区切换=未卸载；载体词面 awaiting Luna call-7）`);
+      if (noReopen24 === null) mis.push(`载体不可达（设置视图未能关闭 ${JSON.stringify(cyc24.attempts).slice(0, 80)}）：重挂载不恢复子项不可判（lead 裁定：载体实机不可达已定案）`);
       else if (!noReopen24) mis.push("取消草稿竟被缓存（重挂载自动重开=清除未生效）");
       if (act === "none" || act === "BODY") mis.push(`取消后焦点回落到 body（应回焦点触发元素）got ${act}`);
       if (act === "missing-cancel") mis.push('missing element: 编辑器「取消」按钮（SET-008 v2 显式取消面，v1 实现无此钮）');
@@ -2185,7 +2195,7 @@ try {
       await exec("B-026", "light", async () => { throw new SkipGap(`冲突注入端不可行（宿主 describe/mutate 非执行器可写：${JSON.stringify(inj).slice(0, 120)}）；草稿+乐观并发 UI 面记 gap`); });
     } else {
       const n26 = (await calls()).length;
-      const cyc26 = await settingsViewCycle(); // 载体=设置视图重开/run-10 实证（B-026 property「section remount」词面 awaiting Luna call-7；卸载-重挂载语义核不变）
+      const cyc26 = await settingsViewCycle(); // 载体=设置视图重开（lead 裁定：载体实机不可达已定案，SKIP 定态；accel 通道若通则自动转真判别）
       if (!cyc26.closed) {
         await cancelEditor().catch(() => {});
         await exec("B-026", "light", async () => { throw new SkipGap(`载体不可达：设置视图未能关闭 ${JSON.stringify(cyc26.attempts).slice(0, 100)}；卸载-重挂载冲突前提无法构造（O-1 实证：分区切换=未卸载）`); });
