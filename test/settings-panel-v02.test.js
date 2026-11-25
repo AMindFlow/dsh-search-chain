@@ -1444,6 +1444,162 @@ test("四轮(B-007/009/019) 名称门裁决 entryNameGate 纯逻辑：trim 后�
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
+// 第 12 组 · 五轮修复（round-5，codex 复审 P1+P2 继承层与草稿恢复四项）
+//   同根（宿主层模型）：user 层数组存在即整段遮蔽 base 层数组（无行级合并）；
+//   旧版各 op 构造器只以 user 层为底 → 纯继承世界（base 有条目、user: {}）的编辑/新建/离散动作
+//   要么静默零 ops、要么落盘只含单条而遮蔽整个继承数组（数据丢失）。
+//   复现配方（codex 评论即蓝本）：makeSettingsState({ user: {}, base: { entries: fixtureEntries(), … } })。
+//   修复 = 有效持久视图（effectiveEntriesOf = user 层有 entries ? user 层 : base 层，保序保兄弟）
+//   + singleEntryDiff 守卫对照继承底板（他行零改动语义不变）+ SET-008 读回复原全部在场草稿。
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+test("五轮(codex P1) 继承列表遮蔽：改名继承条目/继承世界新建，落盘均整单具化有效列表（保序保兄弟，不得遮蔽继承数组）", async () => {
+  const inheritedState = () => makeSettingsState({
+    user: {},
+    base: { entries: fixtureEntries(), useOfficialDeepSeekSearch: true, timeoutMs: 25000 },
+  });
+  // (a) 改名 tavily-a（继承行）：旧版候选=[tavily-a] 单条落盘 → user 层遮蔽 base 三行（只剩它可见）。
+  {
+    const state = inheritedState();
+    await withEnv(state, async ({ fetchStub }) => {
+      const { view, tree } = await openPanel("r5-inherited-rename");
+      assert.deepEqual(cardOrder(tree), ["tavily-a", "exa-b", "bing-c"], "继承条目页内可见（继承合并视图）");
+      const n0 = fetchStub.mutates().length;
+      let t = await setName(view, tree, "tavily-a", "Tavily 改");
+      t = await step(view, t, ROLE.editorSubmit);
+      assert.equal(fetchStub.mutates().length, n0 + 1, "改名继承条目必须落盘一次（守卫对照继承底板放行，不得拒发/静默）");
+      const entries = state.user.entries;
+      assert.ok(Array.isArray(entries), "落盘后 user 层持有完整有效列表（具化）");
+      assert.deepEqual(idsOf(entries), ["tavily-a", "exa-b", "bing-c"], "保序保兄弟：user 层不得遮蔽成单条（P1 必拦面）");
+      assert.equal(entries[0].name, "Tavily 改", "改名生效");
+      assert.equal(entries[1].name, "Exa 备用", "兄弟行 exa-b 不丢");
+      assert.equal(entries[2].name, "Bing 公开", "兄弟行 bing-c 不丢");
+      assert.equal(fetchStub.credentialSets().length, 0, "纯改名不涉及凭据写入");
+      assert.deepEqual(cardOrder(t), ["tavily-a", "exa-b", "bing-c"], "读回后页内仍 3 条（世界视图一致）");
+      assert.ok(textOf(t).includes("Tavily 改"), "页内视图反映改名");
+    });
+  }
+  // (b) 继承世界新建 bing：旧版候选=[bing] 单条落盘 → 三条继承兄弟全没。
+  {
+    const state = inheritedState();
+    await withEnv(state, async ({ fetchStub }) => {
+      const { view, tree } = await openPanel("r5-inherited-create");
+      const n0 = fetchStub.mutates().length;
+      let t = await addType(view, tree, "bing");
+      assert.equal(cardOrder(t).length, 4, "草稿 4 条（3 继承 + 1 新建幽灵）");
+      t = await step(view, t, ROLE.editorSubmit); // 名称预填 "Bing RSS"（非空，过名称门）
+      assert.equal(fetchStub.mutates().length, n0 + 1, "继承世界新建必须落盘一次");
+      const ids = idsOf(state.user.entries);
+      assert.deepEqual(ids.slice(0, 3), ["tavily-a", "exa-b", "bing-c"], "三条继承兄弟行不得被遮蔽丢失（P1 必拦面）");
+      assert.equal(ids.length, 4, "新条目追加在有效列表末尾");
+      assert.ok(ids[3].startsWith("search_chain_"), "新条目为本次新建的稳定临时 id");
+      assert.equal(state.user.entries[3].type, "bing", "新条目即本次新建 bing");
+      assert.equal(state.user.entries[0].name, "Tavily 主", "兄弟行值原样保持");
+      assert.deepEqual(cardOrder(t).slice(0, 3), ["tavily-a", "exa-b", "bing-c"], "读回后页内视图与持久一致");
+    });
+  }
+});
+
+test("五轮(codex P2) official 开关比对错层：base=false 且 user 无覆盖 → 打开开关必须落盘 user 层 override", async () => {
+  const state = makeSettingsState({
+    user: {},
+    base: { entries: fixtureEntries(), useOfficialDeepSeekSearch: false, timeoutMs: 25000 },
+  });
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("r5-official-inherited");
+    assert.equal(one(tree, ROLE.officialToggle).props.checked, false, "有效值=继承 base=false：开关初态关");
+    const n0 = fetchStub.mutates().length;
+    const t = await act(view, () => fire(one(tree, ROLE.officialToggle), "onChange", { target: { checked: true, value: true } }));
+    const ms = fetchStub.mutates().slice(n0);
+    assert.equal(ms.length, 1, "打开开关必须恰落盘一次（旧版只读 user 层误判「已是 true」→ 零 mutate：UI 显示开、实际关）");
+    assert.deepEqual(opsOf(ms[0]), [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: true }], "载荷仅 user 层 override=true（从合并后有效配置判「变没变」）");
+    assert.equal(state.user.useOfficialDeepSeekSearch, true, "user 层 override 已写入");
+    assert.equal(one(t, ROLE.officialToggle).props.checked, true, "开关态开（UI 与持久一致）");
+    assert.equal(stateEntries(state), undefined, "user 层无 entries：开关提交不得连带具化条目列表（仅自身键）");
+  });
+});
+
+test("五轮(codex P2) 继承条目的离散动作必须落盘（旧版 idx===-1 静默零 ops）：启用开关/移除/重排各于纯继承世界复现", async () => {
+  const inheritedState = () => makeSettingsState({
+    user: {},
+    base: { entries: fixtureEntries(), useOfficialDeepSeekSearch: true, timeoutMs: 25000 },
+  });
+  // (a) 启用开关（继承行 exa-b 关）：整单具化有效列表，兄弟不丢。
+  {
+    const state = inheritedState();
+    await withEnv(state, async ({ fetchStub }) => {
+      const { view, tree } = await openPanel("r5-inh-toggle");
+      const n0 = fetchStub.mutates().length;
+      const t = await setEnabled(view, tree, "exa-b", false);
+      assert.equal(fetchStub.mutates().length, n0 + 1, "继承条目启用开关必须落盘一次（旧版 user 层 findIndex===-1 → 静默零 ops）");
+      assert.deepEqual(idsOf(state.user.entries), ["tavily-a", "exa-b", "bing-c"], "整单具化有效列表（兄弟行不丢）");
+      assert.equal(state.user.entries[1].enabled, false, "关闭已持久化");
+      assert.equal(state.user.entries[0].enabled, true, "兄弟行 enabled 值原样保持");
+      assert.deepEqual(cardOrder(t), ["tavily-a", "exa-b", "bing-c"], "页内视图与持久一致");
+    });
+  }
+  // (b) 移除（继承行 exa-b）：移除后的有效列表具化（该行从有效视图消失，读回不复活）。
+  {
+    const state = inheritedState();
+    await withEnv(state, async ({ fetchStub }) => {
+      const { view, tree } = await openPanel("r5-inh-remove");
+      const n0 = fetchStub.mutates().length;
+      let t = await step(view, tree, ROLE.remove, { entryId: "exa-b" });
+      t = await step(view, t, ROLE.confirmRemove, { entryId: "exa-b" });
+      assert.equal(fetchStub.mutates().length, n0 + 1, "继承条目移除必须落盘一次（旧版静默零 ops → 页内删卡后读回条目复活=数据不一致）");
+      assert.deepEqual(idsOf(state.user.entries), ["tavily-a", "bing-c"], "具化后移除行从有效视图消失（遮蔽 base）");
+      assert.deepEqual(cardOrder(t), ["tavily-a", "bing-c"], "页内条目已移除（读回不复活）");
+    });
+  }
+  // (c) 键盘重排（继承行 bing-c 两次上移）：重排后的有效列表整单具化。
+  {
+    const state = inheritedState();
+    await withEnv(state, async ({ fetchStub }) => {
+      const { view, tree } = await openPanel("r5-inh-reorder");
+      const n0 = fetchStub.mutates().length;
+      let t = await moveWithKey(view, tree, "bing-c", "ArrowUp");
+      t = await moveWithKey(view, t, "bing-c", "ArrowUp");
+      const ms = fetchStub.mutates().slice(n0);
+      assert.equal(ms.length, 2, "继承条目每次键盘移动必须各落盘一次（旧版：user 层空列表 → 目标 id 全被过滤 → 静默零 ops）");
+      assert.deepEqual(idsOf(state.user.entries), ["bing-c", "tavily-a", "exa-b"], "重排后的有效列表已具化进 user 层");
+      assert.deepEqual(cardOrder(t), ["bing-c", "tavily-a", "exa-b"], "页内顺序与持久一致");
+      assert.equal(state.user.entries[0].name, "Bing 公开", "条目名恒随自身 id（B-007 名错乱回归面）");
+    });
+  }
+});
+
+test("五轮(codex P2) SET-008 全语义草稿复原：编辑 A 未提交→开 B→保存 B→读回后 A 的未提交字段必须复原（重开 A 读到草稿、再保存不丢）", async () => {
+  const state = makeSettingsState(); // 标准 user 层 3 条夹具：复原路径与层模型无关（旧版缺陷在任何世界都成立）
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("r5-draft-restore");
+    const n0 = fetchStub.mutates().length;
+    // 编辑 A（tavily-a）：改名不提交（字段入 SET-008 草稿缓存，未持久化）。
+    let t = await setName(view, tree, "tavily-a", "Tavily 草稿A");
+    assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "Tavily 草稿A", "前置：A 的草稿字段在编辑器");
+    // 切换到 B（exa-b）：开 B 的编辑器（A 的未提交字段随切换保留在草稿缓存）。
+    t = await act(view, () => fire(one(t, ROLE.edit, { entryId: "exa-b" }), "onClick", {}));
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "Exa 草稿B" } }));
+    // 保存 B → 成功读回（keepStatus 后台刷新）。
+    t = await step(view, t, ROLE.editorSubmit);
+    assert.equal(fetchStub.mutates().length, n0 + 1, "B 的保存恰一次 mutate");
+    assert.equal(stateEntries(state).find((e) => e.id === "exa-b").name, "Exa 草稿B", "B 改名已持久化");
+    // 关键验收（codex P2）：读回重建后 A 的未提交字段从草稿缓存复原回页内——
+    // 旧版只复原活动编辑器行（B 提交后已关）→ A 回退持久值、页内消失。
+    assert.ok(textOf(one(t, ROLE.card, { entryId: "tavily-a" })).includes("Tavily 草稿A"),
+      "读回后 A 的未提交名称复原在页内（SET-008：所有在场草稿都要复原，不只活动编辑器）");
+    // 重开 A：编辑器读到复原的草稿值（不得回退持久名）。
+    t = await act(view, () => fire(one(t, ROLE.edit, { entryId: "tavily-a" }), "onClick", {}));
+    assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "Tavily 草稿A", "重开 A 读到复原草稿（不查缓存则此处回退为「Tavily 主」）");
+    // 再保存 A：草稿落盘（旧版此步把缓存永久删掉=草稿丢失的终点；修复后草稿值即提交值）。
+    t = await step(view, t, ROLE.editorSubmit);
+    assert.equal(fetchStub.mutates().length, n0 + 2, "A 的再保存落盘一次");
+    assert.equal(stateEntries(state).find((e) => e.id === "tavily-a").name, "Tavily 草稿A", "A 的未提交草稿未丢失");
+    assert.equal(stateEntries(state).find((e) => e.id === "exa-b").name, "Exa 草稿B", "B 的持久值未受 A 提交影响（他行零改动）");
+    assert.equal(byRole(t, ROLE.saveError).length, 0, "全程零节级错误（自身提交不得制造假版本冲突）");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
 // 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
 // ────────────────────────────────────────────────────────────────────────────────────────
 

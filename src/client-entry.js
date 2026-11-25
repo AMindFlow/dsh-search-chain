@@ -970,13 +970,32 @@ globalThis.window?.__ModuleLoader__?.load({
             let sectionError;
             if (keepStatus) {
               // 后台快照刷新：不清缓存、不覆盖在编字段与在编超时草稿（SET-008）。
-              draft = overlayEditingDraft(m, draft);
-              if (draftCache.has(DRAFT_CACHE_GLOBAL_KEY)) draft = { ...draft, timeoutText: m.draft.timeoutText };
+              // 五轮修复（codex 复审 P2·SET-008 完整语义）：所有在场草稿都要复原，不只活动编辑器的行——
+              // 旧版仅 overlayEditingDraft 回覆盖活动编辑器行：编辑 A（未提交）→开 B→保存 B→读回重建后
+              // A 的未提交字段从页内消失；重开 A 只读（已回退的）草稿行、不查 draftCache，再保存把
+              // 缓存永久删掉，草稿丢失。次序：(1) 自身提交读回先自对齐 baseRevision（自身写不得制造
+              // 假版本冲突）；(2) draftCacheApply 对重建草稿执行全量复原（被切换走条目的编辑字段回填、
+              // 未提交新建重追加、全局超时草稿，与初始挂载重挂校验同判据）；(3) 活动编辑器在编字段仍由
+              // overlayEditingDraft 护住（现值优先于缓存回填）；活动编辑器不受后台刷新影响（不取 overlay.editingId）。
               if (selfCommitPending && typeof proj.revision === "number") {
                 for (const rec of draftCache.values()) rec.baseRevision = proj.revision;
                 selfCommitPending = false;
               }
-              sectionError = m.sectionError;
+              const overlay = draftCacheApply(draftCache, proj, draft);
+              if (overlay) {
+                draft = overlay.draft;
+                nextKeys = { ...m.keys, ...overlay.keys };
+                draft = overlayEditingDraft(m, draft);
+                if (draftCache.has(DRAFT_CACHE_GLOBAL_KEY)) draft = { ...draft, timeoutText: m.draft.timeoutText };
+                sectionError = overlay.conflicts.length > 0
+                  ? { text: "设置已被外部变更：未提交草稿已保留（未静默丢弃、未自动重放）", issues: overlay.conflicts.map((c) => c.text) }
+                  : m.sectionError;
+              } else {
+                // 无缓存记录（或投影缺 revision）：旧路径——仅护在编字段/在编超时草稿。
+                draft = overlayEditingDraft(m, draft);
+                if (draftCache.has(DRAFT_CACHE_GLOBAL_KEY)) draft = { ...draft, timeoutText: m.draft.timeoutText };
+                sectionError = m.sectionError;
+              }
             } else {
               // 初始挂载：SET-008 重挂校验（版本一致→回填+自动重开；冲突/外部删除→顶部告警，保留草稿，不静默丢弃/重放）。
               sectionError = typeof proj.revision !== "number"
@@ -1055,11 +1074,29 @@ globalThis.window?.__ModuleLoader__?.load({
       }, [model.pendingHandleFocus, locked]);
 
       // ─────────────────────── SET-006：条目级提交与离散落盘 ───────────────────────
-      // 所有落盘以“最新持久化快照（user 层）”为基线构造，载荷只含该处变更；
+      // 所有落盘以“最新持久化快照”为基线构造，载荷只含该处变更；
       // 其他条目或全局字段的未提交草稿一律不得混入（O-4：expectedRevision 互斥提交）。
+      // 五轮修复（codex 复审 P1/P2 同根·宿主层模型）：数组是整段遮蔽（user.entries 存在即整体取代
+      // base.entries，无行级合并）——有效持久列表 = user 层有 entries ? user 层 : base 层（保序保兄弟）。
+      // 全部 op 构造器改以有效列表起算：首次 user 层写入即整单具化有效列表（toOps 对空 user 层逐行整条
+      // set），不得只写 user 层而丢继承兄弟行（= 静默遮蔽整个继承数组）。
       const userEntriesOf = (m) => (Array.isArray(m.user.entries) ? m.user.entries : []);
       const baseEntriesOf = (m) => (Array.isArray(m.base.entries) ? m.base.entries : []);
-      const persistedOfficialOf = (m) => (m.user.useOfficialDeepSeekSearch !== false);
+      const effectiveEntriesOf = (m) => {
+        const user = isPlainObject(m && m.user) ? m.user : {};
+        if (Array.isArray(user.entries)) return user.entries;
+        const base = isPlainObject(m && m.base) ? m.base : {};
+        return Array.isArray(base.entries) ? base.entries : [];
+      };
+      // P2 official 开关：「变没变」从合并后有效配置取值再判（base=false 且 user 无覆盖 → 有效值 false；
+      // 旧版只读 user 层 `!== false`，误判「已是 true」→ 打开开关零 mutate：UI 显示开、实际关）。
+      // 缺省 true = SET-005 schema 默认（与 draftFrom 投影同判据）。
+      const effectiveOfficialOf = (m) => {
+        const user = isPlainObject(m && m.user) ? m.user : {};
+        if (typeof user.useOfficialDeepSeekSearch === "boolean") return user.useOfficialDeepSeekSearch;
+        const base = isPlainObject(m && m.base) ? m.base : {};
+        return typeof base.useOfficialDeepSeekSearch === "boolean" ? base.useOfficialDeepSeekSearch : true;
+      };
 
       // 离散动作立即落盘：成功=生效确认（重新读取投影）；失败=保留意图（草稿保留目标值）+ 节级顶部可操作错误。
       // 二轮修复（单写者）：提交整体在 commitChain 队列内执行——(a) 先 await 全部在途读回落进 latestRef；
@@ -1117,11 +1154,13 @@ globalThis.window?.__ModuleLoader__?.load({
       };
 
       // 顶部官方开关：onChange 即离散提交（仅自身键）。
+      // 五轮修复（codex 复审 P2）：比对「变没变」从合并后有效配置取值——继承 base=false 且 user 无覆盖时
+      // 打开开关必须落盘（user 层写 override=true），不得零 mutate（UI 显示开、实际关）。
       const officialToggleChange = (ev) => {
         const target = Boolean(ev.target && ev.target.checked);
         if (lockRef.current) return;
         setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, useOfficial: target } }));
-        commitDiscrete((m) => (persistedOfficialOf(m) === target ? [] : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }]), "已保存设置。");
+        commitDiscrete((m) => (effectiveOfficialOf(m) === target ? [] : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }]), "已保存设置。");
       };
 
       // 超时输入：失焦/回车 且 值有变化且合法 才提交（仅 timeoutMs 键）；成功后清 __global__ 草稿记录（SET-008）。
@@ -1145,19 +1184,26 @@ globalThis.window?.__ModuleLoader__?.load({
       };
 
       // 卡片启用开关：onChange 即离散提交（仅自身 enabled 键；未提交的新条目无持久化变更）。
+      // 五轮修复（codex 复审 P2·继承条目的离散动作不落盘）：以有效持久列表起算——继承条目（base 层、
+      // user 层无同 id 行）的开关同样落盘：把有效列表（含变更行）整单具化进 user 层（数组整段遮蔽语义
+      // 下，只写单字段会丢全部继承兄弟行）。user 层世界有效列表==user 层，toOps 仍产出单字段 op（载荷不变）。
       const enabledToggleChange = (entryId, ev) => {
         const target = Boolean(ev.target && ev.target.checked);
         if (lockRef.current) return;
         setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, entries: m.draft.entries.map((e) => (e.id === entryId ? { ...e, enabled: target } : e)) } }));
         commitDiscrete((m) => {
-          const list = userEntriesOf(m);
+          const list = effectiveEntriesOf(m);
           const idx = list.findIndex((e) => e.id === entryId);
-          if (idx < 0) return [];
-          return (list[idx].enabled !== false) === target ? [] : [{ op: "set", path: ["entries", String(idx), "enabled"], value: target }];
+          if (idx < 0) return []; // 未提交新条目无持久化变更
+          if ((list[idx].enabled !== false) === target) return []; // 意图未变化：无需写（对照有效值）
+          return toOps({ entries: list.map((e) => (e.id === entryId ? { ...e, enabled: target } : e)) }, { entries: userEntriesOf(m) });
         }, "已保存设置。");
       };
 
       // 移除确认：清草稿（含 SET-008 缓存记录：条目已不存在，其草稿作废）+ 落盘 unset（仅该条目键）。
+      // 五轮修复（codex 复审 P2）：继承条目的移除同样落盘——user 层行按原路径单行 unset（载荷不变）；
+      // 继承行（base 层）则把移除后的有效列表整单具化进 user 层（遮蔽 base，该行从有效视图消失）；
+      // 旧版对继承行 idx===-1 静默零 ops（页内删卡后读回条目复活=数据不一致）。
       const confirmRemoveClick = (entryId) => {
         if (lockRef.current) return;
         draftCache.delete(entryId);
@@ -1170,22 +1216,31 @@ globalThis.window?.__ModuleLoader__?.load({
           draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== entryId) },
         }));
         commitDiscrete((m) => {
-          const idx = userEntriesOf(m).findIndex((e) => e.id === entryId);
-          return idx < 0 ? [] : [{ op: "unset", path: ["entries", String(idx)] }];
+          const user = userEntriesOf(m);
+          const uIdx = user.findIndex((e) => e.id === entryId);
+          if (uIdx >= 0) return [{ op: "unset", path: ["entries", String(uIdx)] }];
+          const list = effectiveEntriesOf(m);
+          const idx = list.findIndex((e) => e.id === entryId);
+          if (idx < 0) return [];
+          return toOps({ entries: list.filter((e) => e.id !== entryId) }, { entries: user });
         }, "已保存设置。");
       };
 
       // 拖拽/键盘重排：草稿先行（视觉即时），随后以持久化快照的相对顺序落盘（D-1 整条编码，仅 entries 键）。
+      // 五轮修复（codex 复审 P2）：以有效持久列表起算——纯继承世界（user 层无 entries）的重排同样落盘：
+      // 把重排后的有效列表整单具化进 user 层；旧版 user 层空列表 → 目标 id 全被过滤 → 静默零 ops。
+      // user 层世界有效列表==user 层，载荷与旧版逐字节一致。
       const commitReorder = (orderIds) => {
         const ids = orderIds || model.draft.entries.map((e) => e.id);
         commitDiscrete((m) => {
-          const list = userEntriesOf(m);
+          const user = userEntriesOf(m);
+          const list = effectiveEntriesOf(m);
           const present = new Set(list.map((e) => e.id));
           const targetIds = ids.filter((id) => present.has(id));
-          if (targetIds.length !== list.length) return []; // 草稿含未提交新条目：持久化顺序不受影响
+          if (targetIds.length !== list.length) return []; // 草稿含未提交新条目（不在有效列表）：持久化顺序不受影响
           if (targetIds.every((id, i) => id === list[i].id)) return [];
           const byId = new Map(list.map((e) => [e.id, e]));
-          return toOps({ entries: targetIds.map((id) => byId.get(id)) }, { entries: list });
+          return toOps({ entries: targetIds.map((id) => byId.get(id)) }, { entries: user });
         }, "已保存设置。");
       };
       const moveEntry = (id, delta) => {
@@ -1219,13 +1274,19 @@ globalThis.window?.__ModuleLoader__?.load({
       };
 
       // 二轮修复：同时查权威快照——创建提交成功但读回未落定时闭包 user 缺该条目，误判 create 会使重挂校验误报版本冲突。
-      const entryIsPersisted = (m, entry) => userEntriesOf(m).some((e) => e.id === entry.id)
-        || (latestRef.current && userEntriesOf(latestRef.current).some((e) => e.id === entry.id));
+      // 五轮修复（codex 复审 P1/P2 同根）：继承条目（base 层已持久）同样判为已持久——驱动编辑器编辑/新建
+      // 语义、取消时恢复持久值（而非当作新条目删行）、SET-008 缓存记录 mode（edit 而非 create）。
+      const entryIsPersisted = (m, entry) => effectiveEntriesOf(m).some((e) => e.id === entry.id)
+        || (latestRef.current && effectiveEntriesOf(latestRef.current).some((e) => e.id === entry.id));
 
       // 编辑器提交的候选条目列表：按稳定条目 id 合并该条目全部托管字段，
       // 其余条目取持久化快照值；载荷不含其他条目/全局字段草稿（SET-006）。
+      // 五轮修复（codex 复审 P1·继承列表遮蔽——必拦）：候选从有效持久列表（继承合并视图，保序保兄弟）
+      // 起算——编辑继承条目原位只改该行；新建追加有效列表末尾。旧版只以 user 层起算：继承条目不可见
+      // → 编辑继承条目被误走「新建追加」分支、落盘只含该条 → user 层遮蔽整个继承数组（改名 → 只剩它；
+      // 新建 → 继承兄弟行全没）。toOps 底仍为 user 层：对空 user 层逐行整条 set = 有效列表整单具化。
       const candidateEntriesFor = (m, entry, credRef) => {
-        const list = userEntriesOf(m);
+        const list = effectiveEntriesOf(m);
         const patch = { id: entry.id, type: entry.type, name: entry.name, enabled: entry.enabled };
         if (credRef) patch.credentialRef = credRef;
         if (list.some((e) => e.id === entry.id)) {
@@ -1236,17 +1297,15 @@ globalThis.window?.__ModuleLoader__?.load({
             return out;
           });
         }
-        const baseEntry = baseEntriesOf(m).find((e) => e.id === entry.id);
-        const added = baseEntry ? { ...baseEntry, ...patch } : { ...patch };
-        if (baseEntry && !credRef) delete added.credentialRef;
-        return [...list, added];
+        return [...list, { ...patch }];
       };
 
       // 条目级提交（新建=创建 / 编辑=更新）：先凭据后配置；成功=该条目整体生效并关闭编辑器；
       // 失败=编辑器原地保留（字段与 key 缓冲不丢）+ 动作行上方 role=alert 错误。
       // 二轮修复（单写者 + 绑定守卫）：提交在 commitChain 队列内执行——先 await 在途读回落进 latestRef，
       // 再自权威快照 snap 起算：candidate = candidateEntriesFor(snap, entry, credRef)、expectedRevision = snap.revision；
-      // 且必须通过 singleEntryDiff(snap.user, candidate, boundId)——候选与最新持久列表若不在绑定条目一行上
+      // 且必须通过 singleEntryDiff({entries: 有效持久列表}, candidate, boundId)——候选与最新持久列表（继承合并
+      // 视图，五轮修复起算有效列表：守卫意图「他行零改动」对继承底板同样成立）若不在绑定条目一行上
       // 存在漂移（stale 快照竞态）则拒发（B-007/009：旧代码以陈旧 user 列表为底，toOps 把他条目当「我的差异」LWW 覆盖）。
       const submitEditor = () => {
         const entry = model.draft.entries.find((e) => e.id === model.editingId);
@@ -1288,7 +1347,10 @@ globalThis.window?.__ModuleLoader__?.load({
             }
             const candidate = candidateEntriesFor(snap, entry, credRef);
             // 绑定守卫：漂移即拒发（可见报错，不得静默覆盖他条目）。
-            if (!singleEntryDiff(snap.user, candidate, boundId)) {
+            // 五轮修复（codex 复审 P1 配套）：对照有效持久列表（继承合并视图）裁决——继承条目的候选行
+            // 对 base 底板「他行零改动」即放行（旧版对照 user 层：继承编辑被误走新建分支，守卫按长度
+            // +1 拒发=继承条目永远无法提交；继承新建则把 user 层空列表当底板，守卫与遮蔽缺陷同源）。
+            if (!singleEntryDiff({ entries: effectiveEntriesOf(snap) }, candidate, boundId)) {
               throw new Error("提交目标与编辑器绑定条目不一致（持久快照漂移），本次写入已拒绝；请重新保存");
             }
             const check = validate({ ...snap.base, ...{ ...snap.user, entries: candidate } });
@@ -1333,7 +1395,9 @@ globalThis.window?.__ModuleLoader__?.load({
           if (entry) {
             delete keys[entry.id];
             if (entryIsPersisted(m, entry)) {
-              const persisted = userEntriesOf(m).find((e) => e.id === entry.id);
+              // 五轮修复（codex 复审 P1/P2 配套）：持久值取有效行——继承条目的取消恢复到 base 值；
+              // 旧版 entryIsPersisted 对继承条目误判新建（删行=页内丢失继承条目）且此处查不到持久行。
+              const persisted = effectiveEntriesOf(m).find((e) => e.id === entry.id);
               entries = entries.map((e) => (e.id === entry.id
                 ? {
                     ...e,
