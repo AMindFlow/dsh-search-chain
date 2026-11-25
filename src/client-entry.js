@@ -894,11 +894,17 @@ globalThis.window?.__ModuleLoader__?.load({
           el.removeAttribute("data-dragging");
         }
       };
+      // 落点语义（指示线与实际插入共用）：指针在目标卡上半部 → before（插到目标之前），下半部 → after（插到目标之后）。
+      const dropSide = (ev) => {
+        const card = ev.currentTarget;
+        if (!card?.getBoundingClientRect || typeof ev.clientY !== "number") return "after";
+        const r = card.getBoundingClientRect();
+        return ev.clientY < r.top + r.height / 2 ? "before" : "after";
+      };
       const markDropTarget = (ev) => {
         const card = ev.currentTarget;
         if (!card?.getBoundingClientRect || !card.setAttribute) return;
-        const r = card.getBoundingClientRect();
-        const pos = ev.clientY < r.top + r.height / 2 ? "before" : "after";
+        const pos = dropSide(ev);
         for (const el of dragList(card)?.querySelectorAll?.("[data-drop-target]") ?? []) if (el !== card) el.removeAttribute("data-drop-target");
         if (card.getAttribute("data-drop-target") !== pos) card.setAttribute("data-drop-target", pos);
       };
@@ -913,6 +919,8 @@ globalThis.window?.__ModuleLoader__?.load({
           onDrop: (ev) => {
             if (locked) return;
             ev.preventDefault?.();
+            // 先读取落点侧（与指示线同一判定），再清理拖拽标记。
+            const side = dropSide(ev);
             clearDragMarks(ev.currentTarget);
             const moving = ev.dataTransfer?.getData?.("text/plain");
             if (!moving || moving === entry.id) return;
@@ -920,7 +928,12 @@ globalThis.window?.__ModuleLoader__?.load({
               const list = [...m.draft.entries];
               const from = list.findIndex((e) => e.id === moving), to = list.findIndex((e) => e.id === entry.id);
               if (from < 0 || to < 0) return m;
-              const [item] = list.splice(from, 1); list.splice(to, 0, item);
+              // 目标插入位：before=目标原索引 to，after=to+1（均按移除前的原列表计）。
+              // 先移除被拖项：若插入位在其之后，移除后索引左移一位。
+              const pos = side === "after" ? to + 1 : to;
+              const finalIndex = from < pos ? pos - 1 : pos;
+              if (finalIndex === from) return m;
+              const [item] = list.splice(from, 1); list.splice(finalIndex, 0, item);
               return { ...m, draft: { ...m.draft, entries: list } };
             });
           },
