@@ -302,6 +302,8 @@ function collectText(node, out = []) {
 // fetch 注入面（规格「设计决定·fetch 注入面」）：记录 envelope，回放 describe/mutate 样本
 // ────────────────────────────────────────────────────────────────────────────────────────
 
+const REVISION = 7; // describe 回包 ns 视图 revision（P2-2：mutate 的 expectedRevision 原样回传值）
+
 function describeEnvelope(user, extra = {}) {
   return {
     ok: true,
@@ -309,10 +311,42 @@ function describeEnvelope(user, extra = {}) {
       writable: true,
       hasDocument: true,
       namespaces: [
-        { ns: SECTION_ID, autoGenerate: false, base: {}, user: user ?? {}, ...extra },
+        { ns: SECTION_ID, autoGenerate: false, revision: REVISION, base: {}, user: user ?? {}, ...extra },
       ],
     },
   };
+}
+
+/** 与 src/config.js SECRET_FIELD 同集的明文字段名（P2-1：toOps set 值递归不得携带）。 */
+const SECRET_FIELD = /^(apikey|api_key|key|secret|token|password|auth|authorization)$/i;
+
+function findSecretPaths(v, path = "$", hits = []) {
+  if (v === null || typeof v !== "object") return hits;
+  for (const [k, child] of Array.isArray(v) ? v.entries() : Object.entries(v)) {
+    if (SECRET_FIELD.test(k)) hits.push(`${path}.${k}`);
+    findSecretPaths(child, `${path}.${k}`, hits);
+  }
+  return hits;
+}
+
+function stripSecrets(v) {
+  if (Array.isArray(v)) return v.map(stripSecrets);
+  if (v !== null && typeof v === "object") {
+    const out = {};
+    for (const [k, child] of Object.entries(v)) if (!SECRET_FIELD.test(k)) out[k] = stripSecrets(child);
+    return out;
+  }
+  return v;
+}
+
+function deepFindKey(v, key) {
+  if (v === null || typeof v !== "object") return { found: false };
+  if (!Array.isArray(v) && key in v) return { found: true, value: v[key] };
+  for (const child of Array.isArray(v) ? v : Object.values(v)) {
+    const r = deepFindKey(child, key);
+    if (r.found) return r;
+  }
+  return { found: false };
 }
 
 /**
@@ -604,6 +638,32 @@ test("#46 保存通道：合法草稿点保存 → settings/mutate envelope（ns
   deny.fetchStub.restore();
 });
 
+test("#46 expectedRevision 乐观并发（P2-2）：mutate envelope 原样回传 describe 回包 revision；冲突回包（非 ok）→ error 锚点、无 saved、不静默（BCF-005 [C8]）", async () => {
+  const CURRENT = { entries: [], useOfficialDeepSeekSearch: true, timeoutMs: 30000 };
+  const { rec, renderStable, fetchStub } = await mountBundle("expected-rev", (url) =>
+    /settings\/describe/.test(url)
+      ? describeEnvelope(CURRENT)
+      : { ok: false, result: { ok: false }, error: { message: "expectedRevision 冲突（样本）" } },
+  );
+  let tree = await renderStable(rec.Component, { view: "page" });
+  await new Promise((r) => setImmediate(r));
+  tree = await renderStable(rec.Component, { view: "page" });
+  const save = findActionClick(tree, "save");
+  assert.ok(save, "[data-config-action=\"save\"] 动作须有可调用 onClick");
+  save();
+  tree = await renderStable(rec.Component, { view: "page" });
+  const mutated = fetchStub.calls.filter((c) => /settings\/mutate/.test(c.url));
+  assert.ok(mutated.length >= 1, "点保存必须经 settings/mutate 写入（BCF-005）");
+  pinEnvelope(mutated[0], "settings/mutate");
+  const rev = deepFindKey(mutated[0].body.payload, "expectedRevision");
+  assert.ok(rev.found, `mutate payload 必须携带 expectedRevision——describe 回包 ns 视图 revision 原样回传（[C8] descriptor 实证：args 增 expectedRevision；P2-2）；实收 payload：${JSON.stringify(mutated[0].body.payload).slice(0, 400)}`);
+  assert.equal(rev.value, REVISION, `expectedRevision 必须恰等于 describe 回包 revision（原样回传，不得缺省/自造/改写）；实收 ${JSON.stringify(rev.value)}`);
+  const flat = JSON.stringify(tree);
+  assert.ok(flat.includes("error") || flat.includes("失败"), "冲突回包（非 ok）必须进 error 态，不得静默");
+  assert.equal(findByAttr(tree, "data-config-status", "saved").length, 0, "冲突不得显示 saved");
+  fetchStub.restore();
+});
+
 // ════════════════════════════════════════════════════════════════════════════════════════
 // 3. Component.contract：对比钉 + 内联语义（BCF-004）
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -740,7 +800,64 @@ test("#46 contract.merge 合并语义与凭据边界：管理字段覆盖；apiK
     if (op.op === "unset") assert.ok(!("value" in op), "unset 不得带 value（[C8] zod strict）");
     assert.ok(!JSON.stringify(op).includes("S1-LEGACY-SECRET"), "任何 op 不得携带既有明文 key 值（apiKey 路径零 op）");
   }
-  assert.deepEqual(applyOps(structuredClone(LEGACY_RAW), ops), raw2, "toOps 产物经测试权威 reducer 作用于 current 必须 ≡ merge 输出（规格「设计决定·toOps 权威 reducer」）");
+  assert.deepEqual(
+    stripSecrets(applyOps(structuredClone(LEGACY_RAW), ops)),
+    stripSecrets(raw2),
+    "toOps 产物经测试权威 reducer 作用于 current 必须 ≡ merge 输出（双侧脱敏后全等——ops 面明文剥离见 P2-1 独立钉，透传保证在 merged 面，规格「设计决定·toOps 权威 reducer」）",
+  );
+});
+
+test("#46 toOps 明文剥离（P2-1 防泄）：任何 set 值递归不得携带 SECRET_FIELD 键（rev 复现：current=[A(apiKey),B] 改名保存——整条 set 含 apiKey 即红线）（BCF-004）", async () => {
+  const { contract } = await loadContract("ops-leak-pin");
+  const CURRENT = {
+    entries: [
+      { id: "A", type: "bing", name: "a", enabled: true, apiKey: "S1-LEAK-CHECK", token: "T-LEAK" },
+      { id: "B", type: "tavily", name: "b", enabled: true },
+    ],
+    timeoutMs: 30000,
+    useOfficialDeepSeekSearch: true,
+  };
+  const FORM = {
+    entries: [
+      { id: "A", type: "bing", name: "改名-a1", enabled: false },
+      { id: "B", type: "tavily", name: "b1", enabled: true },
+    ],
+  };
+  const merged = contract.merge(structuredClone(FORM), structuredClone(CURRENT));
+  const ops = contract.toOps(merged, CURRENT);
+  for (const op of ops) {
+    if (op.op !== "set") continue;
+    const leaks = findSecretPaths(op.value);
+    assert.deepEqual(
+      leaks,
+      [],
+      `set ${JSON.stringify(op.path)} 的值递归携带明文字段 ${JSON.stringify(leaks)}——toOps 输出必须逐值剥离 SECRET_FIELD（apiKey/token 等），整条条目 set 是 rev 复现的泄形（P2-1）`,
+    );
+    assert.ok(!JSON.stringify(op).includes("S1-LEAK-CHECK") && !JSON.stringify(op).includes("T-LEAK"), "set 值不得含既有明文值");
+  }
+  assert.equal(merged.entries.find((e) => e.id === "A").apiKey, "S1-LEAK-CHECK", "merged 面透传保证不变（apiKey 由宿主保留，不新增不丢失）");
+  assert.deepEqual(
+    stripSecrets(applyOps(structuredClone(CURRENT), ops)),
+    stripSecrets(merged),
+    "剥离明文后 reducer 重放仍 ≡ merged（ops 语义完整性不因剥离缺损）",
+  );
+
+  // rev 复现原形：current=[A(apiKey),B]、form=[A,A']（重复 id）→ 曾泄形 set ["entries","1"] 整条含 apiKey
+  const REPRO_OPS = contract.toOps(
+    contract.merge(
+      { entries: [{ id: "A", type: "bing", name: "a", enabled: true }, { id: "A", type: "bing", name: "A'", enabled: true }] },
+      structuredClone(CURRENT),
+    ),
+    CURRENT,
+  );
+  for (const op of REPRO_OPS) {
+    if (op.op !== "set") continue;
+    assert.deepEqual(
+      findSecretPaths(op.value),
+      [],
+      `rev 复现原形（form=[A,A'] 重复 id）下 set ${JSON.stringify(op.path)} 整条值再次携带明文——任何 set 值必须递归剥离 SECRET_FIELD（P2-1）`,
+    );
+  }
 });
 
 test("#46 contract.validate 写闸：合法补全缺省；非法 → {ok:false, code:CONFIG_INVALID} + 非空可读 issues（判定与 normalizeConfig 全等由对比钉承担）（BCF-004/005）", async () => {

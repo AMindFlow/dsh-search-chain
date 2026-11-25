@@ -80,11 +80,11 @@ const SECTION_ID = "search-chain";
 const SECTION_TITLE = "网页搜索链";
 const SECTION_ORDER = 30; // [L2]：agent-presets 20 之后
 const PACKAGE_ID = "dsh-search-chain"; // [M3]：load 注册 id 恒 = 包名
-// 区域标题 + 编辑指引要素（#46 BCF-006 迁移轮，放宽定案：真机取证 settings 面板从侧栏 nav
-// 未达，「已安装/配置表单」等路径措辞的 DOM 锚点是规格开放项，取证前不过约束——初版六要素
-// 钉过约束已废，git 历史可考；旧「dsh-search-chain 配置区」句式仍废止。
-// bundle 配置注册面见 test/client-bundle-config.test.js 第 1 组）：
-const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "设置", "dsh-search-chain"];
+// 区域标题 + 编辑指引要素（#46 rev 轮，P1-1 已证路径定案：真机 verify-ui-46 步骤 6a-6b 实证
+// 可走路径 = 侧栏「插件」→ dsh-search-chain 卡片 → 详情页配置表单；「设置→…」路由仍未证
+// （nav 无设置入口）→ 禁「设置→」前缀，设置页路由仍为规格 BCF-006 开放项。历史：六要素
+// 钉过约束废 → 放宽为 设置+包名 → 本轮按已证路径重新收紧（git 历史可考））：
+const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "dsh-search-chain", "插件", "详情", "配置表单"];
 // live [L3]：client 平台真实服务目录（factory 产物 inject 的消息参照）。
 const CLIENT_SERVICE_CATALOG = [
   "layout", "locale", "sessions", "slots", "theme", "timer", "uiWorkspace", "workspaces",
@@ -382,7 +382,7 @@ test("factory 面：factory(fakeRequire) 返回 {inject:[\"slots\"],apply}；fak
 // 4. 挂载形状（v0.2 T2 有效钉迁移到 factory 产物）+ 只读渲染树 + 无 react 降级
 // ────────────────────────────────────────────────────────────────────────────────────────
 
-test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」与 #46 放宽指引要素（设置/包名，BCF-006 开放项不过约束）；无 react 安全降级；effect cleanup（[L1][L2]）", async () => {
+test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」与 #46 已证路径指引要素（插件/详情/配置表单，禁「设置→」，BCF-006 P1-1）；无 react 安全降级；effect cleanup（[L1][L2]）", async () => {
   const registrations = await importSelfRegister("mount");
   if (registrations.length !== 1 || typeof registrations[0].factory !== "function") {
     assert.fail(
@@ -453,9 +453,13 @@ test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register
     for (const mark of COMPONENT_TEXT_MARKS) {
       assert.ok(
         text.includes(mark),
-        `组件文案须含「${mark}」（v0.1 只读面：标题 + 「设置→插件→…」编辑指引）；实收文本：${JSON.stringify(text)}`,
+        `组件文案须含「${mark}」（P1-1 已证路径：侧栏插件→卡片→详情页配置表单，verify 6a-6b 实证）；实收文本：${JSON.stringify(text)}`,
       );
     }
+    assert.ok(
+      !text.includes("设置→"),
+      `指引禁「设置→」前缀——设置页路由未证（[C6] nav 无设置入口，BCF-006 开放项）；实收文本：${JSON.stringify(text)}`,
+    );
   } catch (e) {
     failure = e;
   } finally {
