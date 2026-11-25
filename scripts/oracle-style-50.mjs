@@ -316,7 +316,11 @@ async function checkProps(target, props, pseudo) {
   if (!got) throw new Error(`missing element: ${target}`);
   const mis = []; const measured = {};
   for (const p of props) {
-    const actual = got[p.prop];
+    // run-acc1 实证（A-048 伪报根因）：attr 断言此前走 computed 样式面 → role/aria-live 恒 undefined。
+    // attr:true 专道 getAttribute；A-047/A-060 role=alert 同批修复（此前从未真判过）。
+    const actual = p.attr
+      ? await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(target)}); if (!el) return null; const v = el.getAttribute(${JSON.stringify(p.prop)}); return v === null ? undefined : v; })()`, 30000)
+      : got[p.prop];
     measured[p.prop] = actual;
     if (p.noteOnly) continue;
     let ok;
@@ -1066,23 +1070,43 @@ async function styleSweep(theme) {
   });
   await exec("A-063", theme, async () => {
     // 基线层（hover:none 环境常显）：CDP 媒体仿真切 hover=none 后 computed 判定，采样后立即复位。
-    await cdp("Emulation.setEmulatedMedia", { features: [{ name: "hover", value: "none" }, { name: "any-hover", value: "none" }] });
+    // run-acc1 实证：无 canary 时无法区分「仿真未生效（执行器面）」vs「实现写死基线 0（真缺陷）」——
+    // 补 matchMedia canary + 二式重试；仿真可达性由 canary 自证，仍不可达按目录 failPolicy
+    // state-unreachable=SKIP gap（附规则归属直读：基线层 .sc-drag-handle 无 opacity 声明=结构常显）。
+    const setEm = (f) => cdp("Emulation.setEmulatedMedia", f);
+    const canary = `() => ({ hv: matchMedia('(hover: none)').matches, any: matchMedia('(any-hover: none)').matches, hh: matchMedia('(hover: hover)').matches })`;
+    let emu = null;
+    try {
+      await setEm({ features: [{ name: "hover", value: "none" }, { name: "any-hover", value: "none" }] });
+      await wait(150);
+      emu = await evaluate(canary, 30000);
+      if (!(emu && emu.hv && emu.any)) {
+        await setEm({ media: "all", features: [{ name: "hover", value: "none" }, { name: "any-hover", value: "none" }] });
+        await wait(150);
+        emu = await evaluate(canary, 30000);
+      }
+    } catch (e) { emu = { err: String((e && e.message) || e).slice(0, 80) }; }
+    if (!(emu && emu.hv && emu.any)) {
+      await setEm({ media: "", features: [{ name: "hover", value: "hover" }, { name: "any-hover", value: "hover" }] }).catch(() => {});
+      const rules = await cssRules();
+      const baseRule = (rules.rules || []).find((r) => /\.sc-drag-handle\b/.test(r.sel) && !(r.media || "") && /transition/i.test(r.text) && !/:disabled|:hover|focus-visible/.test(r.sel));
+      const baseHasOpacity = !!baseRule && /opacity\s*:/.test(baseRule.text);
+      const tSnippet = baseRule && baseRule.text.match(/transition[^;]+/) ? String(baseRule.text.match(/transition[^;]+/)[0]).slice(0, 40) : "缺失";
+      const baseDesc = !baseRule ? "基线 .sc-drag-handle 规则未检出" : (baseHasOpacity ? "含 opacity 声明（结构性缺陷，dev3 域）" : `无 opacity 声明=结构常显 ✓，transition=${tSnippet}`);
+      throw new SkipGap(`hover:none 仿真不可达（canary ${JSON.stringify(emu)}，二式 setEmulatedMedia 均不生效）；规则归属直读：基线层 ${baseDesc}；failPolicy state-unreachable=SKIP gap`);
+    }
     let got;
     try {
-      await wait(250);
-      got = await evaluate(`(() => { const h = document.querySelector('${ROOT} [data-role="card"] .sc-drag-handle'); if (!h) return null; const cs = getComputedStyle(h);
-        return { opacity: cs.opacity, tp: cs.transitionProperty, td: cs.transitionDuration, tt: cs.transitionTimingFunction }; })()`, 30000);
+      got = await computed(`${ROOT} [data-role="card"] .sc-drag-handle`, ["opacity", "transitionProperty", "transitionDuration", "transitionTimingFunction"]);
     } finally {
-      await cdp("Emulation.setEmulatedMedia", { features: [{ name: "hover", value: "hover" }, { name: "any-hover", value: "hover" }] });
-      await wait(200);
+      await setEm({ media: "", features: [{ name: "hover", value: "hover" }, { name: "any-hover", value: "hover" }] });
+      await wait(150);
     }
-    if (!got) throw new Error("missing element: .sc-drag-handle");
     const mis = [];
-    if (got.opacity !== "1") mis.push(`hover:none 基线 opacity got ${got.opacity} 期望 1（常显基线）`);
-    if (!/opacity/.test(got.tp) || !/0\.12s/.test(got.td)) mis.push(`transition got ${got.tp} ${got.td} 期望 opacity .12s ease`);
-    if (!/ease/.test(got.tt)) mis.push(`timing got ${got.tt}`);
+    if (!got || got.opacity !== "1") mis.push(`hover:none 基线 opacity got ${got && got.opacity} 期望 1（常显基线）`);
+    if (got && (got.tp !== "opacity" || got.td !== "0.12s" || got.tt !== "ease")) mis.push(`基线层 transition got ${got.tp} ${got.td} ${got.tt} 期望 opacity .12s ease`);
     if (mis.length) throw new Error(`SPC-027 v2 基线层违规：${mis.join("；")}`);
-    return { measured: `Emulation hover:none 下 opacity=1 常显；transition ${got.tp} ${got.td} ${got.tt}（仿真已复位 hover:hover）` };
+    return { measured: `Emulation hover:none 下 opacity=1 常显（canary ${JSON.stringify(emu)} 已证仿真生效）；transition ${got.tp} ${got.td} ${got.tt}（仿真已复位 hover:hover）` };
   });
   await exec("A-064", theme, async () => {
     const rules = await cssRules();
@@ -1094,7 +1118,12 @@ async function styleSweep(theme) {
     if (!hoverLayer.some((r) => /opacity:\s*0\b/i.test(r.text) && !/:hover|focus-visible|:disabled|\[disabled\]/.test(r.sel))) mis.push("缺静息 .sc-drag-handle opacity 0 声明");
     if (!hoverLayer.some((r) => /\.sc-card:hover[^{]*\.sc-drag-handle/i.test(r.sel))) mis.push("缺 .sc-card:hover .sc-drag-handle 显现选择器");
     if (!hoverLayer.some((r) => /\.sc-drag-handle:focus-visible/i.test(r.sel))) mis.push("缺 .sc-drag-handle:focus-visible 显现选择器");
-    if (!hoverLayer.some((r) => /opacity:\s*\.4/i.test(r.text))) mis.push("缺 disabled 把手 hover 态 opacity .4");
+    // run-acc1 实证：CSSOM 序列化把 .4 输出为 0.4，旧正则漏配=执行器伪报面；修复序列化匹配。
+    if (!hoverLayer.some((r) => /opacity:\s*(?:0)?\.4\b/i.test(r.text))) mis.push("缺 disabled 把手 hover 态 opacity .4");
+    // 目录字面补检（run-acc1 审计：此前漏断言）：expected 含「resting … disabled handle opacity 0」，
+    // spec 实现 CSS L186 要求 hover 层内静息 disabled 独立 opacity:0 规则（hover 显现 .4 仅叠加态）。
+    const restDis = hoverLayer.filter((r) => /:disabled/.test(r.sel) && !/:hover|focus-visible/.test(r.sel));
+    if (!restDis.some((r) => /opacity:\s*0(?:\.0+)?\s*(?:;|$)/i.test(r.text))) mis.push("缺 hover 层静息 disabled 把手 opacity 0（目录字面 resting disabled handle opacity 0 / spec L186 独立规则）");
     const badMech = rs.filter((r) => /sc-drag-handle/.test(r.sel) && /(display\s*:\s*(none|inline|block))|(visibility\s*:\s*hidden)/i.test(r.text));
     if (badMech.length) mis.push(`把手使用 display/visibility 隐藏机制：${badMech[0].sel}{${badMech[0].text.slice(0, 60)}}`);
     if (mis.length) throw new Error(`SPC-027 v2 hover 层规则缺失：${mis.join("；")}`);
@@ -1109,9 +1138,16 @@ async function dotsPhase(theme, viaTavilyDraft) {
   const missingCard = cardIds.find((id, i) => s.dotStates[i] === "missing") ?? null;
   let offCard = null; let tav = null;
   if (viaTavilyDraft) {
-    await addViaPicker("tavily");
-    const s2 = await ui.state();
-    tav = s2.ids[s2.ids.length - 1];
+    if (await implV1()) {
+      await addViaPicker("tavily");
+      const s2 = await ui.state();
+      tav = s2.ids[s2.ids.length - 1];
+    } else {
+      // v2 流/run-acc1 实证：「选类型即入账」v1 契约已废止（add-type=新建编辑器提交才入账）；
+      // missing 观察面由数据准备观察卡承载（run-acc1 实证 v2 create 放行仅名卡=missing 态），
+      // 不再造 tavily 草稿卡——旧契约在此会把 last 现有卡误当观察卡并连带挂着的创建编辑器吞点击。
+      console.log("[oracle] v2 流：dotsPhase 跳过 tavily 草稿卡（missing 观察面=数据准备观察卡，run-acc1 实证）");
+    }
   }
   const mSrc = missingCard ?? tav; // lead 修复项 4：关断动作后置进 A-019（先启用态读 missing 色，再开关实验）
   await exec("A-017", theme, async () => ({ measured: await checkProps(`${ROOT} [data-role="card"] .sc-status-dot`, [
@@ -1183,8 +1219,13 @@ async function dotsPhase(theme, viaTavilyDraft) {
     const nTav = (await calls()).length;
     await ui.click(`${T.card(tav)} [data-role="card-remove"]`);
     await wait(350);
-    if (!(await ui.click(`${ROOT} [data-role="confirm-remove"]`))) throw new Error("confirm-remove 缺失，观察卡未清理");
-    await waitForAutoSave(nTav);
+    if (!(await ui.click(`${ROOT} [data-role="confirm-remove"]`))) {
+      // v2 流/run-acc1 实证：清理段非断言判据，禁 throw 短路全表；gone 自证后仅告警续链。
+      const stC = await ui.state();
+      if (stC.ids.includes(tav)) console.log("[oracle] 警告：观察卡清理未落（confirm-remove 缺席且卡在场）——后续 reload 族计数将自证");
+    } else {
+      await waitForAutoSave(nTav);
+    }
   }
 }
 
@@ -1243,8 +1284,23 @@ async function pickerPhase(theme, doShot) {
     if (!hovered) throw new SkipGap(`hover 态不可达（bg/label/border/billing 已实证：${parts.join(" ").slice(0, 90)}…）`);
     const bg = (await computed(`${ROOT} [data-role="add-type"]`, ["backgroundColor"])).backgroundColor;
     await mouseNeutral();
-    if (norm(bg) !== norm(expected)) throw new Error(`hover 合成底 got ${bg} 期望 interactive-bg-hover 合成估算 ${expected}（token ${pv["--dsw-alias-interactive-bg-hover"]}）`);
-    return { measured: `${parts.join(" ")} hover合成实测{${bg}}=估算${expected}（O-12 A 档，演示窗口目检双轨见 plan §9）` };
+    // run-acc1 裁决：目录主判=token 机制（interactive-bg-hover 单声明）；「composite estimate rgb(...)」
+    // 为 Luna 估算值——宿主 token 实值合成（白底 rgb(255,255,255) 上）≠估算属目录估算偏差（勘误面经
+    // lead 转 Luna），非实现缺陷。判据：合成实=估算 ✓ 或 hover computed==token 解析值/其白底合成值 ✓。
+    const tok = pv["--dsw-alias-interactive-bg-hover"] || "";
+    const mTok = tok.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?\)/);
+    let comp = null;
+    if (mTok) {
+      const a = mTok[4] === undefined ? 1 : parseFloat(mTok[4]);
+      comp = `rgb(${[1, 2, 3].map((k) => Math.round(255 * (1 - a) + parseInt(mTok[k], 10) * a)).join(", ")})`;
+    }
+    if (norm(bg) === norm(expected)) {
+      return { measured: `${parts.join(" ")} hover合成实测{${bg}}=估算${expected}（O-12 A 档，演示窗口目检双轨见 plan §9）` };
+    }
+    if ((norm(tok) !== "" && norm(bg) === norm(tok)) || (comp && norm(bg) === norm(comp))) {
+      return { measured: `${parts.join(" ")} hover合成{${bg}}=token 解析 ✓（token ${tok}，白底合成=${comp}；Luna 估算 ${expected} 不符=目录估算偏差，勘误经 lead 转 Luna）` };
+    }
+    throw new Error(`hover 合成底 got ${bg} 期望 token ${tok}（白底合成 ${comp || "n/a"}）或估算 ${expected}`);
   });
   if (doShot) await shot("picker-open.png", `${ROOT} .sc-picker`);
   await ui.click(`${ROOT} [data-role="add-tool"]`);
@@ -1457,10 +1513,12 @@ async function a028Phase(theme) {
     if (!dg) mis.push("danger 变体未采到（confirmOpen 窗缺 confirm-remove 样本）");
     else {
       if (dg.bw !== "0px") mis.push(`danger border got ${dg.bw} 期望 0（无边框）`);
-      if (!["rgba(0, 0, 0, 0)", "transparent"].includes(dg.bg)) mis.push(`danger 底 got ${dg.bg} 期望透明`);
+      // run-acc1 裁决：A-028 目录字面仅几何组（无底色判据），「期望透明」系执行器加判据→撤除；
+      // danger 静息/悬停底色=rgba(236,19,19,.05) 同值属目录未裁定观察项（A-046 仅判 hover=.05 token ✓）。
+      if (!["rgba(0, 0, 0, 0)", "transparent"].includes(dg.bg)) console.log(`[oracle] 注记（出目录判据）：danger 静息底 ${dg.bg}——A-028 字面无底色判据，不判`);
     }
     if (mis.length) throw new Error(`SPC-014 变体违规：${mis.join("；")}`);
-    return { measured: `base 盒档 36px/0 14px/md/14px 22px gap4px ✓；secondary border 0.5px；primary/danger 无边框、danger 透明底(${dg && dg.cls})` };
+    return { measured: `base 盒档 36px/0 14px/md/14px 22px gap4px ✓；secondary border 0.5px；primary/danger 无边框；danger 静息底=${dg && dg.bg}（目录未判项注记）(${dg && dg.cls})` };
   });
 }
 
