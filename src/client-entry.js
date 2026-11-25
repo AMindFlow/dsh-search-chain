@@ -288,7 +288,61 @@ globalThis.window?.__ModuleLoader__?.load({
       return ops;
     }
 
-    const contract = Object.freeze({ merge, validate, toOps });
+    // ─────────────────────── SET-008 跨分区草稿保全：纯函数面（Component.contract） ───────────────────────
+    // cache: Map；key = 条目 id（新建条目为稳定临时 id）| 全局键 draftCacheGlobalKey（超时草稿）。
+    // 条目记录 = { mode:"edit"|"create", type, fields:{ name, credentialRef }, key, baseRevision }；
+    // 全局记录 = { timeoutText, baseRevision }。
+    // draftCacheApply 语义（重挂校验）：
+    //   版本一致 → 回填字段/key/超时，并给出自动重开的 editingId（新建=重新入列+重开）；
+    //   版本冲突 → 草稿保留（仍回填）+ conflicts(kind=version)——提交=按最新版本重放、取消=显式丢弃；
+    //   外部删除 → conflicts(kind=deleted) 且自 cache 移除该记录（带因显式丢弃）；
+    //   投影无 revision 或 cache 为空 → null（跳过校验）。不静默丢弃、不自动重放。
+    const DRAFT_CACHE_GLOBAL_KEY = "__global__";
+    function draftCacheApply(cache, proj, draft) {
+      if (!cache || !proj || typeof proj.revision !== "number" || cache.size === 0) return null;
+      let entries = draft.entries;
+      const keys = {};
+      let editingId = null;
+      const conflicts = [];
+      for (const [id, rec] of cache) {
+        if (id === DRAFT_CACHE_GLOBAL_KEY) {
+          if (typeof rec.baseRevision !== "number" || rec.baseRevision !== proj.revision) {
+            conflicts.push({ text: "回退超时：起草后设置版本已变化，草稿已保留", kind: "version" });
+          }
+          continue;
+        }
+        const label = (rec.fields && rec.fields.name) || rec.type || id;
+        const existing = entries.find((e) => e.id === id);
+        if (rec.mode === "create") {
+          if (existing) { conflicts.push({ text: `新条目「${label}」：当前设置已存在同 id 条目，按版本冲突处理`, kind: "version" }); continue; }
+          entries = [...entries, { id, type: rec.type, name: (rec.fields && rec.fields.name) ?? "", enabled: true, credentialRef: (rec.fields && rec.fields.credentialRef) ?? "" }];
+          keys[id] = rec.key ?? "";
+          if (!editingId) editingId = id;
+          continue;
+        }
+        if (!existing) {
+          conflicts.push({ text: `条目「${label}」已被外部删除：其草稿无法重放，已随本提示丢弃`, kind: "deleted" });
+          cache.delete(id);
+          continue;
+        }
+        entries = entries.map((e) => (e.id === id
+          ? { ...e, name: (rec.fields && rec.fields.name) ?? e.name, credentialRef: (rec.fields && rec.fields.credentialRef) ?? (e.credentialRef ?? "") }
+          : e));
+        if (rec.key) keys[id] = rec.key;
+        if (!editingId) editingId = id;
+        if (typeof rec.baseRevision !== "number" || rec.baseRevision !== proj.revision) {
+          conflicts.push({ text: `条目「${label}」：起草后设置版本已变化；提交即按最新版本写入，或点击取消丢弃草稿`, kind: "version" });
+        }
+      }
+      const globalRec = cache.get(DRAFT_CACHE_GLOBAL_KEY);
+      return {
+        draft: { ...draft, entries, timeoutText: globalRec ? globalRec.timeoutText : draft.timeoutText },
+        keys,
+        editingId,
+        conflicts,
+      };
+    }
+    const contract = Object.freeze({ merge, validate, toOps, draftCacheApply, draftCacheGlobalKey: DRAFT_CACHE_GLOBAL_KEY });
 
     // ───────────────────────────── 组件 ─────────────────────────────
 
@@ -365,6 +419,14 @@ globalThis.window?.__ModuleLoader__?.load({
     /** settings.section 完整设置面板（第二参）。所有配置读写均经同源 Remote API。 */
     let entryIdSeq = 0;
     let credentialRefSeq = 0;
+    // SET-008：跨分区草稿保全缓存——模块工厂级（每 import 实例一份）：
+    // key = 条目 id（新建条目为稳定临时 id）| "__global__"（超时草稿）；
+    // 记录 = { mode:"edit"|"create", type, fields:{ name, credentialRef }, key, baseRevision }。
+    // 仅在成功提交或显式取消时清对应记录；卸载与后台快照刷新不清缓存、不静默覆盖在编字段。
+    // selfCommitPending：本实例自身成功提交待读回 → 读回后把存活记录的 baseRevision 自对齐到新修订
+    // （自身写不触发假冲突；外部版本推进仍冲突）。
+    const draftCache = new Map();
+    let selfCommitPending = false;
     const KEYED_TYPES = TOOL_TYPES.filter((type) => type !== "bing");
     const CATALOG_UI = [
       ["openai", "OpenAI", "按 OpenAI API 账户用量计费。"],
@@ -729,7 +791,7 @@ globalThis.window?.__ModuleLoader__?.load({
       lockRef.current = model.busy || model.editorBusy;
       const locked = model.busy || model.editorBusy;
 
-      // 刷新不得静默覆盖在编字段（SET-008 语义；② 起由模块级缓存在此回填）：
+      // 刷新不得静默覆盖在编字段（SET-008 语义）：
       // keepStatus=提交成功后的后台刷新时，正在编辑的条目字段与明文 key 缓冲保留现值。
       const overlayEditingDraft = (m, draft) => {
         if (!m.editingId) return draft;
@@ -739,6 +801,29 @@ globalThis.window?.__ModuleLoader__?.load({
           ...draft,
           entries: draft.entries.map((e) => (e.id === m.editingId ? { ...e, name: prev.name, credentialRef: prev.credentialRef, enabled: prev.enabled } : e)),
         };
+      };
+
+      // ─────────────────────── SET-008：跨分区草稿保全（模块级缓存读写与重挂校验） ───────────────────────
+      // 字段/key/超时变更同步进缓存（首改建档，baseRevision=建档时当前宿主修订）；
+      // 成功提交/显式取消清对应记录；卸载与后台刷新不清缓存、不覆盖。
+      const cacheBaseRevision = (m) => (typeof m.revision === "number" ? m.revision : undefined);
+      const syncEntryCache = (m, id, entry, keyVal) => {
+        if (!entry) return;
+        const rec = draftCache.get(id) || {
+          mode: entryIsPersisted(m, entry) ? "edit" : "create",
+          type: entry.type,
+          fields: {},
+          key: "",
+          baseRevision: cacheBaseRevision(m),
+        };
+        rec.fields = { name: entry.name, credentialRef: entry.credentialRef ?? "" };
+        rec.key = keyVal ?? "";
+        draftCache.set(id, rec);
+      };
+      const syncGlobalCache = (m, timeoutText) => {
+        const rec = draftCache.get(DRAFT_CACHE_GLOBAL_KEY) || { timeoutText: String(DEFAULT_TIMEOUT_MS), baseRevision: cacheBaseRevision(m) };
+        rec.timeoutText = timeoutText;
+        draftCache.set(DRAFT_CACHE_GLOBAL_KEY, rec);
       };
 
       const load = (keepStatus = false) => {
@@ -759,7 +844,35 @@ globalThis.window?.__ModuleLoader__?.load({
           const normalized = check.ok ? check.config : effective;
           setModel((m) => {
             let draft = draftFrom(normalized);
-            if (keepStatus) draft = overlayEditingDraft(m, draft);
+            let nextKeys = m.keys;
+            let editingId = keepStatus ? m.editingId : null;
+            let sectionError;
+            if (keepStatus) {
+              // 后台快照刷新：不清缓存、不覆盖在编字段与在编超时草稿（SET-008）。
+              draft = overlayEditingDraft(m, draft);
+              if (draftCache.has(DRAFT_CACHE_GLOBAL_KEY)) draft = { ...draft, timeoutText: m.draft.timeoutText };
+              if (selfCommitPending && typeof proj.revision === "number") {
+                for (const rec of draftCache.values()) rec.baseRevision = proj.revision;
+                selfCommitPending = false;
+              }
+              sectionError = m.sectionError;
+            } else {
+              // 初始挂载：SET-008 重挂校验（版本一致→回填+自动重开；冲突/外部删除→顶部告警，保留草稿，不静默丢弃/重放）。
+              sectionError = typeof proj.revision !== "number"
+                ? { text: "宿主投影缺少 revision，禁止保存（请重新打开设置）", issues: [] }
+                : check.ok ? null : { text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) };
+              const overlay = draftCacheApply(draftCache, proj, draft);
+              if (overlay) {
+                draft = overlay.draft;
+                nextKeys = { ...m.keys, ...overlay.keys };
+                editingId = overlay.editingId;
+                if (overlay.conflicts.length > 0) {
+                  sectionError = { text: "设置已被外部变更：未提交草稿已保留（未静默丢弃、未自动重放）", issues: overlay.conflicts.map((c) => c.text) };
+                }
+              }
+            }
+            // addOpen / editorError 不在此重置（经 ...m 保留，与 ① 行为一致）；
+            // keys/editingId 为 SET-008 重挂校验产物（keepStatus 时即 m.keys / m.editingId）。
             return {
               ...m,
               phase: typeof proj.revision === "number" ? "ready" : "unavailable",
@@ -767,12 +880,10 @@ globalThis.window?.__ModuleLoader__?.load({
               user: proj.user,
               revision: proj.revision,
               draft,
+              keys: nextKeys,
+              editingId,
               savedNotice: keepStatus ? m.savedNotice : null,
-              sectionError: keepStatus
-                ? m.sectionError
-                : typeof proj.revision !== "number"
-                  ? { text: "宿主投影缺少 revision，禁止保存（请重新打开设置）", issues: [] }
-                  : check.ok ? null : { text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) },
+              sectionError,
             };
           });
         }, (err) => {
@@ -818,18 +929,23 @@ globalThis.window?.__ModuleLoader__?.load({
           return false;
         }
         setModel((m) => ({ ...m, busy: false, savedNotice: { text: successText } }));
+        selfCommitPending = true; // SET-008：自身成功提交 → 读回后把存活草稿记录的 baseRevision 自对齐
         load(true);
         return true;
       };
 
-      // 编辑器字段变更：写入草稿并清除该编辑器错误态（SET-008 起同步模块级缓存）。
+      // 编辑器字段变更：写入草稿、清除该编辑器错误态，并同步模块级缓存（SET-008）。
       const updateEditorField = (id, field, value) => {
         if (lockRef.current) return;
+        const entry = model.draft.entries.find((e) => e.id === id);
         setModel((m) => ({ ...m, editorError: null, draft: { ...m.draft, entries: m.draft.entries.map((e) => (e.id === id ? { ...e, [field]: value } : e)) } }));
+        if (entry) syncEntryCache(model, id, { ...entry, [field]: value }, typeof model.keys[id] === "string" ? model.keys[id] : "");
       };
       const updateKey = (id, value) => {
         if (lockRef.current) return;
+        const entry = model.draft.entries.find((e) => e.id === id);
         setModel((m) => ({ ...m, editorError: null, keys: { ...m.keys, [id]: value } }));
+        if (entry) syncEntryCache(model, id, entry, value);
       };
 
       // 顶部官方开关：onChange 即离散提交（仅自身键）。
@@ -840,8 +956,8 @@ globalThis.window?.__ModuleLoader__?.load({
         commitDiscrete((m) => (persistedOfficialOf(m) === target ? [] : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }]), "已保存设置。");
       };
 
-      // 超时输入：失焦/回车 且 值有变化且合法 才提交（仅 timeoutMs 键）。
-      const timeoutCommit = () => {
+      // 超时输入：失焦/回车 且 值有变化且合法 才提交（仅 timeoutMs 键）；成功后清 __global__ 草稿记录（SET-008）。
+      const timeoutCommit = async () => {
         if (lockRef.current) return;
         const text = String(model.draft.timeoutText ?? "").trim();
         const parsed = Number(text);
@@ -850,9 +966,10 @@ globalThis.window?.__ModuleLoader__?.load({
           return;
         }
         setModel((m) => ({ ...m, sectionError: null, draft: { ...m.draft, timeoutText: String(parsed) } }));
-        if (parsed === persistedTimeoutOf(model)) return; // 值未变化：不写
+        if (parsed === persistedTimeoutOf(model)) { draftCache.delete(DRAFT_CACHE_GLOBAL_KEY); return; } // 值未变化：不写，草稿与已持久化一致
         setModel((m) => ({ ...m, savedNotice: null }));
-        commitDiscrete(() => [{ op: "set", path: ["timeoutMs"], value: parsed }], "已保存设置。");
+        const ok = await commitDiscrete(() => [{ op: "set", path: ["timeoutMs"], value: parsed }], "已保存设置。");
+        if (ok) draftCache.delete(DRAFT_CACHE_GLOBAL_KEY);
       };
 
       // 卡片启用开关：onChange 即离散提交（仅自身 enabled 键；未提交的新条目无持久化变更）。
@@ -868,9 +985,10 @@ globalThis.window?.__ModuleLoader__?.load({
         }, "已保存设置。");
       };
 
-      // 移除确认：清草稿 + 落盘 unset（仅该条目键）。
+      // 移除确认：清草稿（含 SET-008 缓存记录：条目已不存在，其草稿作废）+ 落盘 unset（仅该条目键）。
       const confirmRemoveClick = (entryId) => {
         if (lockRef.current) return;
+        draftCache.delete(entryId);
         setModel((m) => ({
           ...m,
           confirmId: null,
@@ -921,6 +1039,8 @@ globalThis.window?.__ModuleLoader__?.load({
           editorError: null,
           draft: { ...m.draft, entries: [...m.draft.entries, { id, type, name: label, enabled: true, credentialRef: "" }] },
         }));
+        // SET-008：新建草稿入缓存（稳定临时 id 为键；未提交即卸载，重挂须能复原）。
+        draftCache.set(id, { mode: "create", type, fields: { name: label, credentialRef: "" }, key: "", baseRevision: typeof model.revision === "number" ? model.revision : undefined });
       };
 
       const entryIsPersisted = (m, entry) => userEntriesOf(m).some((e) => e.id === entry.id);
@@ -980,6 +1100,8 @@ globalThis.window?.__ModuleLoader__?.load({
             if (!result.ok) throw new Error(result.message || "宿主拒绝该请求");
           }
           const name = (entry.name || "").trim() || entry.type;
+          draftCache.delete(entry.id); // SET-008：成功提交 → 清该条目草稿记录
+          selfCommitPending = true; // SET-008：存活的其他草稿记录 baseRevision 自对齐
           setModel((m) => {
             const keys = { ...m.keys };
             delete keys[entry.id];
@@ -1000,6 +1122,7 @@ globalThis.window?.__ModuleLoader__?.load({
       const cancelEditor = () => {
         if (model.editorBusy) return;
         const entry = model.draft.entries.find((e) => e.id === model.editingId);
+        if (model.editingId) draftCache.delete(model.editingId); // SET-008：显式取消 → 清该条目草稿记录
         const trigger = restoreFocus.current;
         setModel((m) => {
           const keys = { ...m.keys };
@@ -1242,7 +1365,11 @@ globalThis.window?.__ModuleLoader__?.load({
             id: "sc-timeout-input", className: "sc-input", type: "number", min: "1", step: "1", inputMode: "numeric",
             "data-role": "field", "data-field": "timeoutMs", disabled: locked,
             value: model.draft.timeoutText,
-            onChange: (ev) => { if (!lockRef.current) setModel((m) => ({ ...m, sectionError: null, draft: { ...m.draft, timeoutText: ev.target.value } })); },
+            onChange: (ev) => {
+              if (lockRef.current) return;
+              setModel((m) => ({ ...m, sectionError: null, draft: { ...m.draft, timeoutText: ev.target.value } }));
+              syncGlobalCache(model, ev.target.value); // SET-008：超时草稿入缓存
+            },
             onBlur: timeoutCommit,
             onKeyDown: (ev) => { if (ev.key === "Enter") { ev.preventDefault?.(); timeoutCommit(); } },
           }),
@@ -1256,6 +1383,9 @@ globalThis.window?.__ModuleLoader__?.load({
         editor,
       ));
     }
+
+    // 内联纯函数面（merge/validate/toOps + SET-008 缓存纯函数 draftCacheApply），测试经此访问。
+    SettingsPanel.contract = contract;
 
     /** bundle 页配置组件（第二参，plugins.bundle.config）。只用 useState / useEffect / useRef。 */
     function BundleConfig(props) {

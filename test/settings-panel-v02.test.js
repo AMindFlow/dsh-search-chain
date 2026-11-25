@@ -1025,6 +1025,125 @@ test("SET-006(#51) 取消钮可用矩阵：校验失败 / 上次提交错误 / �
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
+// 第 8 组 · SET-008（#51）跨分区草稿保全：缓存纯逻辑（读/写/冲突判定）+ 会话内刷新免疫（O-8 允许新增）
+// 说明：「卸载 → 重挂」（同模块实例二次初始 load）在本替身内不可达——组件 React 经 factory
+// require 永久绑定首个 hook-React 实例，换外层 hook 渲染会破坏 hook 索引。故缓存读/写/冲突
+// 判定按 lead 建议以纯函数面（Component.contract.draftCacheApply）单测；后台快照刷新免疫走
+// 可达的真实组件路径（离散提交成功读回）。
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+let pureSeq = 0;
+/** 取内联纯函数面（不渲染、零 RPC；每次新模块实例，contract 为冻结纯函数对象）。 */
+async function pureContract() {
+  const view = await loadSection(`pure-${++pureSeq}`);
+  return view.rec.Component.contract;
+}
+/** 草稿基形（draftFrom 输出同形）。 */
+function baseDraft(entries, timeoutText = "25000") {
+  return { entries, useOfficial: true, timeoutText };
+}
+/** 投影基形（revision 唯一被 draftCacheApply 读取的投影字段）。 */
+function projOf(revision) {
+  return { revision, base: {}, user: {} };
+}
+
+test("SET-008(#51) 纯逻辑·版本一致：回填字段/key/超时并给出自动重开 editingId，零冲突，不清记录", async () => {
+  const C = await pureContract();
+  const cache = new Map();
+  const ent = { id: "exa-b", type: "exa", name: "Exa 备用", enabled: true, credentialRef: "SEARCH_CHAIN_CREDENTIAL_exa_b_old" };
+  // 记录 fields 恒为编辑器当前值（syncEntryCache 语义）：未触碰 ref 时即投影值的副本。
+  cache.set("exa-b", { mode: "edit", type: "exa", fields: { name: "Exa 草稿", credentialRef: "SEARCH_CHAIN_CREDENTIAL_exa_b_old" }, key: SYNTH_KEY, baseRevision: 3 });
+  cache.set(C.draftCacheGlobalKey, { timeoutText: "7777", baseRevision: 3 });
+  const out = C.draftCacheApply(cache, projOf(3), baseDraft([ent]));
+  assert.equal(out.conflicts.length, 0, "版本一致零冲突");
+  assert.equal(out.editingId, "exa-b", "自动重开在编条目");
+  assert.equal(out.keys["exa-b"], SYNTH_KEY, "key 缓冲复原");
+  const re = out.draft.entries.find((e) => e.id === "exa-b");
+  assert.equal(re.name, "Exa 草稿", "名称回填");
+  assert.equal(re.credentialRef, "SEARCH_CHAIN_CREDENTIAL_exa_b_old", "credentialRef 按草稿当前值回填");
+  // 无 ref 条目（fixture exa-b 同形）：草稿空 ref 回填空，不臆造
+  const noRef = { id: "bing-c", type: "bing", name: "Bing", enabled: true, credentialRef: undefined };
+  const cacheNR = new Map();
+  cacheNR.set("bing-c", { mode: "edit", type: "bing", fields: { name: "Bing 改", credentialRef: "" }, key: "", baseRevision: 3 });
+  const outNR = C.draftCacheApply(cacheNR, projOf(3), baseDraft([noRef]));
+  assert.equal(outNR.draft.entries.find((e) => e.id === "bing-c").credentialRef, "", "无 ref 条目保持空");
+  assert.equal(out.draft.timeoutText, "7777", "超时草稿回填");
+  assert.equal(out.draft.entries.length, 1, "条目数不变");
+  assert.ok(cache.has("exa-b") && cache.has(C.draftCacheGlobalKey), "成功回填不清记录");
+});
+
+test("SET-008(#51) 纯逻辑·版本冲突：草稿仍回填（可再提交/取消）+ conflicts(kind=version)；新建记录撞现存 id 同按版本冲突且不入列", async () => {
+  const C = await pureContract();
+  const cache = new Map();
+  const ent = { id: "exa-b", type: "exa", name: "Exa 备用", enabled: true, credentialRef: "r1" };
+  cache.set("exa-b", { mode: "edit", type: "exa", fields: { name: "Exa 冲突", credentialRef: "" }, key: "", baseRevision: 3 });
+  cache.set(C.draftCacheGlobalKey, { timeoutText: "999", baseRevision: 3 });
+  const out = C.draftCacheApply(cache, projOf(4), baseDraft([ent]));
+  assert.equal(out.conflicts.length, 2, "条目+全局各一条版本冲突");
+  assert.ok(out.conflicts.every((c) => c.kind === "version"), "kind 均为 version");
+  assert.equal(out.editingId, "exa-b", "冲突仍自动重开（草稿可见、可再提交或取消）");
+  assert.equal(out.draft.entries.find((e) => e.id === "exa-b").name, "Exa 冲突", "冲突仍回填字段");
+  assert.equal(out.draft.timeoutText, "999", "冲突仍回填超时");
+  assert.ok(cache.has("exa-b"), "冲突不清记录（丢弃/重放由用户显式决定）");
+  // 新建记录撞现存 id
+  const cache2 = new Map();
+  cache2.set("tavily-a", { mode: "create", type: "tavily", fields: { name: "新条目", credentialRef: "" }, key: "", baseRevision: 3 });
+  const existing = { id: "tavily-a", type: "tavily", name: "Tavily 主用", enabled: true, credentialRef: "r2" };
+  const out2 = C.draftCacheApply(cache2, projOf(4), baseDraft([existing]));
+  assert.equal(out2.conflicts.length, 1, "撞 id 一条冲突");
+  assert.equal(out2.conflicts[0].kind, "version");
+  assert.equal(out2.draft.entries.length, 1, "撞 id 不重复入列");
+  assert.equal(out2.editingId, null, "撞 id 不自动重开");
+});
+
+test("SET-008(#51) 纯逻辑·外部删除：conflicts(kind=deleted) 且记录自缓存移除（带因显式丢弃）；空缓存/无 revision 跳过校验", async () => {
+  const C = await pureContract();
+  const cache = new Map();
+  cache.set("exa-b", { mode: "edit", type: "exa", fields: { name: "Exa 删除", credentialRef: "" }, key: "", baseRevision: 3 });
+  const out = C.draftCacheApply(cache, projOf(4), baseDraft([]));
+  assert.equal(out.conflicts.length, 1, "外部删除一条冲突");
+  assert.equal(out.conflicts[0].kind, "deleted");
+  assert.match(out.conflicts[0].text, /已被外部删除/, "删除提示说明条目已被外部删除");
+  assert.equal(cache.size, 0, "被删记录已移出缓存");
+  assert.equal(C.draftCacheApply(cache, projOf(4), baseDraft([])), null, "空缓存跳过校验");
+  const cache2 = new Map();
+  cache2.set("exa-b", { mode: "edit", type: "exa", fields: { name: "x", credentialRef: "" }, key: "", baseRevision: 3 });
+  assert.equal(C.draftCacheApply(cache2, { base: {}, user: {} }, baseDraft([])), null, "投影无 revision 跳过校验（面板只读）");
+});
+
+test("SET-008(#51) 纯逻辑·新建复原：create 记录重新入列+自动重开+key 复原，版本一致零冲突", async () => {
+  const C = await pureContract();
+  const cache = new Map();
+  cache.set("search_chain_tmp1", { mode: "create", type: "openai", fields: { name: "GPT 草稿", credentialRef: "" }, key: SYNTH_KEY, baseRevision: 3 });
+  const out = C.draftCacheApply(cache, projOf(3), baseDraft([{ id: "exa-b", type: "exa", name: "x", enabled: true, credentialRef: "r" }]));
+  assert.equal(out.conflicts.length, 0, "新建复原零冲突");
+  assert.equal(out.editingId, "search_chain_tmp1", "新建草稿自动重开");
+  const re = out.draft.entries.find((e) => e.id === "search_chain_tmp1");
+  assert.ok(re, "新建条目重新入列");
+  assert.equal(re.name, "GPT 草稿", "名称复原");
+  assert.equal(re.enabled, true, "enabled 复原为 true");
+  assert.equal(re.credentialRef, "", "credentialRef 复原为空");
+  assert.equal(out.keys["search_chain_tmp1"], SYNTH_KEY, "新建条目 key 复原");
+  assert.equal(out.draft.entries.length, 2, "入列后条目数 +1");
+});
+
+test("SET-008(#51) 后台快照刷新免疫：离散提交成功读回不清缓存、不覆盖在编字段与在编超时草稿、不关闭在编编辑器、不致假冲突", async () => {
+  const state = makeSettingsState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("refresh-immune");
+    let t = await editEntry(view, tree, "exa-b", { name: "Exa 在编" });
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "timeoutMs" }), "onChange", { target: { value: "7777" } }));
+    // 离散提交（官方开关）→ 成功读回刷新（keepStatus=true 路径）
+    t = await act(view, () => fire(one(t, ROLE.officialToggle), "onChange", { target: { checked: false, value: false } }));
+    assert.equal(fetchStub.mutates().length, 1, "前置：离散提交产生一次 mutate");
+    assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "Exa 在编", "在编字段不得被刷新覆盖");
+    assert.equal(one(t, ROLE.field, { field: "timeoutMs" }).props.value, "7777", "在编超时草稿不得被刷新覆盖");
+    assert.equal(byRole(t, ROLE.editor).length, 1, "刷新不得关闭在编编辑器");
+    assert.equal(byRole(t, ROLE.saveError).length, 0, "自身离散提交不得造成假版本冲突");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
 // 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
 // ────────────────────────────────────────────────────────────────────────────────────────
 
