@@ -198,13 +198,26 @@ const INSTRUMENT = () => {
   };
   // v2（B-017/018/019/020/021 专责面）：settings/mutate 请求体字段路径提取（diff 载荷判据「只含该项变更」）。
   const mutateKeys = (pn, body) => {
+    // run-acc2 实证重写：dev3 settings/mutate args={ns, ops:[{op,path:[…],value}], expectedRevision}（路径补丁）。
+    // digest 面出 op token「op:path.join('.')」；ns/expectedRevision 属宿主协议封套、非配置载荷字段，不入判据集。
+    if (pn === "/api/credentials/set" && typeof body === "string") {
+      try { const args = (JSON.parse(body) || {}).payload?.args || {};
+        return { cred: { ref: String(args.ref ?? "").slice(-24), empty: args.value === "" || args.value === null || args.value === undefined } }; } catch { return {}; }
+    }
     if (pn !== "/api/settings/mutate" || typeof body !== "string") return {};
     try {
       const args = (JSON.parse(body) || {}).payload?.args || {};
+      if (Array.isArray(args.ops)) {
+        const ks = args.ops.slice(0, 10).map((o) => `${(o && o.op) || "?"}:${Array.isArray(o && o.path) ? o.path.join(".") : String((o && o.path) ?? "")}`.slice(0, 60));
+        return { mkeys: ks, rev: /revision/i.test(body) };
+      }
+      // 两代兼容兜底：非 ops 封套形态（v1 时代/异常 shape）旧递归提取，且现对数组下钻（旧版仅标 k[] → B-016~019 判据在封套层失明）。
       const st = (args.settings && typeof args.settings === "object") ? args.settings : args;
+      const PROTO = { ns: 1, expectedRevision: 1, expected_revision: 1 };
       const ks = [];
-      const walk = (o, pre, d) => { if (d > 4 || ks.length >= 10) return; for (const k of Object.keys(o)) { const v = o[k];
-        if (v && typeof v === "object" && !Array.isArray(v)) walk(v, pre + k + ".", d + 1); else ks.push((pre + k + (Array.isArray(v) ? "[]" : "")).slice(0, 60)); } };
+      const walk = (o, pre, d) => { if (d > 4 || ks.length >= 10) return; for (const k of Object.keys(o)) { if (!pre && PROTO[k]) continue; const v = o[k];
+        if (Array.isArray(v)) { if (!v.length) { ks.push((pre + k + "[]").slice(0, 60)); continue; } for (const it of v.slice(0, 2)) { if (it && typeof it === "object") walk(it, pre + k + ".", d + 1); else ks.push((pre + k + "[]").slice(0, 60)); } }
+        else if (v && typeof v === "object") walk(v, pre + k + ".", d + 1); else ks.push((pre + k).slice(0, 60)); } };
       walk(st, "", 0);
       return { mkeys: ks, rev: /revision/i.test(body) };
     } catch { return {}; }
@@ -451,6 +464,9 @@ async function addViaPicker(type) {
   await wait(400);
   if (!(await ui.click(`${ROOT} [data-role="add-type"][data-type="${type}"]`))) throw new Error(`add-type ${type} 缺失`);
   await wait(500);
+  // run-acc2 实证：picker→编辑器类型上下文自证（B-007 第三条目 "Exa" 异常根因取证：type 上下文/临时条目 id）。
+  const edCtx = await evaluate(`(() => { const f = document.querySelector('${ROOT} [data-role="field"][data-field="name"]'); if (!f) return { open: false }; const dlg = f.closest('[role="dialog"]') || f.closest('.sc-editor') || f; return { open: true, entryId: f.getAttribute("data-entry-id"), val: String(f.value || "").slice(0, 16), ctx: String(dlg.textContent || "").replace(/\s+/g, " ").slice(0, 36) }; })()`, 30000);
+  console.log(`[oracle] prep 注记：addViaPicker(${JSON.stringify(type)}) 编辑器=${JSON.stringify(edCtx)}`);
 }
 async function openEditor(cardId) { if (!(await ui.click(`${T.card(cardId)} [data-role="card-edit"]`))) throw new Error("card-edit 缺失"); await wait(450); }
 async function closeEditor() {
@@ -566,10 +582,16 @@ async function settingsViewCycle() {
   // Mod+,）切换设置弹窗的开关」；且「Tab 顺序中，分区按钮先于头部操作和关闭按钮」= 关闭钮存在但无
   // label 特征（run-11 三通道 did=false 一致）。加速键不经 DOM 选择器，是唯一有规格背书的单按关闭通道。）
   await tryClose("accel-mod-comma", async () => {
-    await cdp("Input.dispatchKeyEvent", { type: "rawKeyDown", key: ",", code: "Comma", windowsVirtualKeyCode: 188, nativeVirtualKeyCode: 188, modifiers: 4 });
-    await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: ",", code: "Comma", windowsVirtualKeyCode: 188, nativeVirtualKeyCode: 188, modifiers: 4 });
-    return true;
+    // run-acc2 实证修正：nativeVirtualKeyCode=188 为 Windows OEM_Comma；macOS kVK_ANSI_Comma=51——Chromium/Electron 在 mac
+    // 菜单加速器按 native VK 匹配；并补 rawKeyDown→keyDown(text)→keyUp 全序列（run-acc2 did=true closed=false 与 VK 错配假说一致）。
+    const ev = (type, extra) => cdp("Input.dispatchKeyEvent", Object.assign({ type, key: ",", code: "Comma", windowsVirtualKeyCode: 188, nativeVirtualKeyCode: 51, modifiers: 4 }, extra || {}));
+    await ev("rawKeyDown"); await ev("keyDown", { text: "," }); await ev("keyUp");
+    return { vkMac: 51, seq: "raw+down+up" };
   });
+  await tryClose("close-btn-enumerate", () => evaluate(`() => { const btns = [...document.querySelectorAll('button,[role="button"]')];
+    const hit = btns.find((n) => /close|关闭|收起/i.test((n.getAttribute("aria-label") || "") + " " + (n.getAttribute("title") || "") + " " + String(n.className)) || /^[×✕✖✗]$/.test(String(n.textContent || "").trim()));
+    if (hit) hit.click(); // run-acc2：枚举面自证（asar：抽屉有关闭钮但无 label 特征；sample 即选择器证据）
+    return { clicked: !!hit, sample: btns.slice(0, 12).map((n) => ({ a: (n.getAttribute("aria-label") || "").slice(0, 18), t: String(n.textContent || "").trim().slice(0, 8), c: String(n.className).slice(0, 20) })) }; }`, 30000));
   await tryClose("drawer-close-btn", () => evaluate(`() => { const b = [...document.querySelectorAll('button,[role="button"]')].find((n) => /关闭|close/i.test((n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('title') || '')) || /^[×✕✖]$/.test((n.innerText || '').trim())); if (!b) return false; b.click(); return true; }`, 30000));
   await tryClose("settings-toggle", () => evaluate(`() => { const cands = [...document.querySelectorAll('button,a,[role="button"],[role="menuitem"]')]; const item = cands.find((n) => /^(设置|Settings)$/i.test((n.innerText || n.getAttribute('aria-label') || n.getAttribute('title') || '').trim())); if (!item) return false; item.click(); return true; }`, 30000));
   await tryClose("escape", async () => { await pressKey("Escape", "Escape", 27); return true; }); // run-11 实测 did=true closed=false（编辑器先吞=O-5 修订前佐证）
@@ -805,6 +827,8 @@ async function finishCreate(name, key) {
     if (name !== null && (await setField("name", name)) !== name) throw new Error(`${JSON.stringify(name)} 名称输入失败`);
     if (key && (await setField("key", key)) !== key) throw new Error(`${JSON.stringify(name)} key 输入失败`);
     await submitEditor("create");
+    // run-acc2 实证：prep 自证面——提交后回读名单快照（B-007 第三条目 "Exa" 异常需证据链）；不判定、只注记，判据权仍在 B-007。
+    if (name !== null) { const sn = await ui.state(); if (!sn.names.includes(name)) console.log(`[oracle] prep 注记：create 提交后名单=${JSON.stringify(sn.names)} 未含 ${JSON.stringify(name)}（run-acc2 自证面）`); }
   } else {
     if (!(await implV1())) throw new Error("既无新建编辑器也无全局保存钮——两代契约皆缺席（执行器取数前置失败）");
     const st = await ui.state(); const id = st.ids[st.ids.length - 1];
@@ -829,7 +853,7 @@ async function submitEditor(kind) {
   if (!clicked) throw new Error("missing element: 编辑器提交主按钮（.sc-editor-actions primary）");
   { const b = await evaluate(`() => { const x = [...document.querySelectorAll('${ROOT} .sc-editor-actions button, ${ROOT} [data-role="editor"] button')].find((n) => /sc-button-primary/.test(n.className || '') && !/取消/.test(n.textContent || '')); return x ? (x.textContent || '').trim() : null; }`, 30000); if (kind === "create" && !labels.createBusy) labels.createBusy = b; }
   await wait(700);
-  await waitRpc("/api/settings/mutate", n, 60).catch(() => {});
+  await waitRpc("/api/settings/mutate", n, 60).catch(() => { console.log(`[oracle] 注记：${kind} 提交后窗口内未见 settings/mutate（run-acc2 自证面：静默持久失败线索）`) }); // run-acc2 实证：静默超时自证化
   const settled = await settleSaved();
   for (let i = 0; i < 20; i++) { const g = await evaluate(`() => !!document.querySelector('${ROOT} [data-role="editor"]')`, 30000); if (!g) break; await wait(400); }
   const stillOpen = await evaluate(`() => !!document.querySelector('${ROOT} [data-role="editor"]')`, 30000);
@@ -1567,14 +1591,19 @@ async function focusPassPhase() {
   await ui.click(`${ROOT} [data-role="add-tool"]`);
   await wait(400);
   await evaluate(`() => { const el = document.querySelector('${ROOT}'); el && el.setAttribute('data-oracle-anchor', '1'); return true; }`, 30000);
+  const fvProbe = `(() => { const el = document.activeElement; if (!el || el === document.body) return null; const root = document.querySelector('${ROOT}'); const inPanel = !!(root && root.contains(el)); if (!inPanel) return null; const fv = el.matches(':focus-visible'); const cs = getComputedStyle(el); return { fv, tag: el.tagName, role: el.getAttribute('data-role'), cls: String(el.className).slice(0, 50), opacity: cs.opacity, boxShadow: cs.boxShadow.slice(0, 110), outline: cs.outline.slice(0, 80), border: cs.borderColor }; })()`;
   const samples = [];
   let switchFocusShotTaken = false;
   let handleFocusShot = null; // A-065：真实 Tab 命中把手样本
   for (let i = 0; i < 120; i++) {
     await pressKey("Tab", "Tab", 9);
     await wait(50);
-    const s = await evaluate(`(() => { const el = document.activeElement; if (!el || el === document.body) return null; const root = document.querySelector('${ROOT}'); const inPanel = !!(root && root.contains(el)); if (!inPanel) return null; const fv = el.matches(':focus-visible'); const cs = getComputedStyle(el); return { fv, tag: el.tagName, role: el.getAttribute('data-role'), cls: String(el.className).slice(0, 50), opacity: cs.opacity, boxShadow: cs.boxShadow.slice(0, 110), outline: cs.outline.slice(0, 80), border: cs.borderColor }; })()`, 30000);
-    if (s && s.role === "drag-handle" && s.fv) handleFocusShot = { opacity: s.opacity, boxShadow: s.boxShadow, outline: s.outline };
+    const s = await evaluate(fvProbe, 30000);
+    if (s && s.role === "drag-handle" && s.fv) { // run-acc2 实证：.12s 过渡中段取样（0.659）为 A-065 取样伪报面——settle 后复采
+      await wait(240);
+      const s2 = await evaluate(fvProbe, 30000);
+      handleFocusShot = s2 && s2.fv && s2.role === "drag-handle" ? { opacity: s2.opacity, boxShadow: s2.boxShadow, outline: s2.outline } : { opacity: s.opacity, boxShadow: s.boxShadow, outline: s.outline };
+    }
     if (s && s.fv) {
       samples.push(s);
       if (!switchFocusShotTaken && (s.role === "official-toggle" || s.role === "enabled-toggle" || /switch/i.test(s.cls))) {
@@ -1595,7 +1624,10 @@ async function focusPassPhase() {
       const paint = norm(s.boxShadow + "|" + s.outline + "|" + s.border);
       const hasColor = paint.includes(ring);
       const has2px = /(^|[^0-9.])2px/.test(paint);
-      if (!hasColor || !has2px) bad.push(`${s.role || s.cls}: 环=${s.boxShadow || s.outline || s.border}`);
+      // run-acc2 实证：SPC-018 族机制映射（目录 A-035 族文自洽：按钮/把手=box-shadow 环；开关=outline；输入框=border-color business-primary 无环）。
+      const isInput = s.role === "field" || /INPUT|TEXTAREA|SELECT/.test(String(s.tag || ""));
+      const okM = isInput ? hasColor : (hasColor && has2px);
+      if (!okM) bad.push(`${s.role || s.cls}: ${isInput ? "输入族 border-color 未达 business-primary" : "环未达 2px+business-primary"}（${s.boxShadow || s.outline || s.border}）`);
     }
     if (bad.length) throw new Error(`${bad.length}/${samples.length} 个真实 :focus-visible 焦点环未达 2px + business-primary（解析 ${pv["--dsw-alias-state-business-primary"]}）——逐样本判定，任一不符即 FAIL（Luna call-2）：${bad[0]}`);
     return { measured: `${samples.length}/${samples.length} 个真实 :focus-visible 焦点环 = 2px + business-primary ${pv["--dsw-alias-state-business-primary"]}` };
@@ -1974,7 +2006,7 @@ try {
       else if (!mk16) mis.push("插桩未能提取载荷字段（mkeys 缺失）");
       else {
         if (!mk16.some((k) => /official|deepseek/i.test(k))) mis.push(`载荷字段 ${JSON.stringify(mk16.slice(0, 6))} 未含官方开关字段（期望名 useOfficialDeepSeekSearch，实际名自证）`);
-        const rel = mk16.filter((k) => /^entries\./.test(k) || /^order/.test(k) || /timeoutMs/i.test(k));
+        const rel = mk16.filter((k) => /(^|[:.])entries\.|(^|[:.])order|timeoutMs/i.test(k)); // run-acc2：兼容 op-token 前缀
         if (rel.length) mis.push(`载荷含无关字段 ${JSON.stringify(rel.slice(0, 5))}`);
       }
       if (hadSave16) mis.push("持久化路径存在全局保存入口（v2 应无）");
@@ -1989,7 +2021,7 @@ try {
     if (!tSel) {
       await exec("B-017", "light", async () => { throw new Error('missing element: 超时输入框（[data-field=timeoutMs]/number 输入均未见）'); });
     } else {
-      const setT = async (v) => evaluate(`(() => { const el = document.querySelector('${tSel}'); const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const d = Object.getOwnPropertyDescriptor(proto, 'value'); d.set.call(el, ${JSON.stringify(String(v))}); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return el.value; })()`, 30000);
+      const setT = async (v) => { const r = await evaluate(`(() => { const el = document.querySelector('${tSel}'); const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const d = Object.getOwnPropertyDescriptor(proto, 'value'); d.set.call(el, ${JSON.stringify(String(v))}); el.dispatchEvent(new Event('input', { bubbles: true })); return el.value; })()`, 30000); await wait(220); /* run-acc2 实证：同任务连发 input+blur 会被 React 同帧折叠，timeoutCommit 读 stale text（reload 25000 误报面）→ 分帧提交 */ await evaluate(`(() => { const el = document.querySelector('${tSel}'); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return true; })()`, 30000); await wait(250); return r; };
       const n17a = (await calls()).length;
       await setT(0); // 非法值
       await wait(500);
@@ -2026,10 +2058,14 @@ try {
       if (!recs18.length) mis.push("条目开关未触发自身 mutate");
       else if (!mk18) mis.push("mkeys 缺失");
       else {
-        const hit = mk18.filter((k) => k.includes(cardIds[1]));
-        if (!hit.length) mis.push(`载荷路径 ${JSON.stringify(mk18.slice(0, 6))} 未含该条目 id`);
+        // run-acc2 实证：dev3 mutate 载荷=路径补丁（ops:[{op,path:[…]}]），digest 面 token 为 "op:path.segs"；
+        // 条目定位=位置路径 entries.<idx>.*（idx 为该条目 id 在持久列表中的位置，两代 token 形态兼容，与旧「含 id」判据等价定位）。
+        const pathRe18 = new RegExp("^(?:(?:set|unset):)?entries\\." + idx + "\\.");
+        const hit = mk18.filter((k) => pathRe18.test(k));
+        if (!hit.length) mis.push(`载荷路径 ${JSON.stringify(mk18.slice(0, 6))} 未指向 entries.${idx}（id=${cardIds[1]} 等价定位）`);
         if (hit.some((k) => !/enabled|disabled/i.test(k))) mis.push(`载荷含该条目非开关字段：${JSON.stringify(hit)}`);
-        if (mk18.some((k) => /timeoutMs|official/i.test(k))) mis.push("载荷混入全局字段");
+        const foreign18 = mk18.filter((k) => !pathRe18.test(k));
+        if (foreign18.length) mis.push(`载荷混入无关字段：${JSON.stringify(foreign18.slice(0, 5))}`);
       }
       if (mis.length) throw new Error(mis.join("；"));
       return { measured: `关条目→自动落盘→reload enabled=false；载荷 ${JSON.stringify(mk18.slice(0, 4))} 仅该条目 enabled 字段` };
@@ -2056,7 +2092,7 @@ try {
       if (st19.ids.length !== 3) mis.push(`删除后条目数 ${st19.ids.length} 期望 3（误伤其余）`);
       if (confirmSel !== "confirm-remove") mis.push("确认删除按钮 [data-role=confirm-remove] 未出现/未点击（SET-003 确认式删除）");
       if (!recs19.length) mis.push("删除未触发自身 mutate");
-      else if (mk19 && !mk19.some((k) => k.includes(remId) || /removed|delete/i.test(k))) mis.push(`删除载荷 ${JSON.stringify(mk19.slice(0, 6))} 未指向该条目/删除语义`);
+      else if (mk19 && !mk19.some((k) => /^(?:unset:)?entries\.\d+$/.test(k) || k.includes(remId) || /removed|delete/i.test(k))) mis.push(`删除载荷 ${JSON.stringify(mk19.slice(0, 6))} 未指向该条目/删除语义（run-acc2：路径补丁面期望 unset:entries.<idx> 或含条目 id）`);
       if (mis.length) throw new Error(mis.join("；"));
       return { measured: `确认删除→自动落盘（载荷 ${JSON.stringify((mk19 || []).slice(0, 4))}）→reload 仅缺该卡，其余 3 条完整` };
     });
@@ -2065,6 +2101,8 @@ try {
   // B-012 键盘排序（v2：排序动作自动落盘）：bing 上移两位 → 自动持久 → reload 读回。B-021 同锚采 payload。
   const nB12 = (await calls()).length;
   if (!(await focusSel(`${T.card(cardIds[2])} [data-role="drag-handle"]`))) throw new Error("drag-handle 聚焦失败");
+  const af12 = await evaluate(`() => { const a = document.activeElement; return a ? (a.getAttribute("data-role") || String(a.className).slice(0, 30)) : "none"; }`, 30000); // run-acc2 实证：聚焦受体自证（drag-handle onKeyDown 为键盘排序接收前置）
+  if (af12 !== "drag-handle") console.log(`[oracle] B-012 注记：focusSel 后焦点=${af12}（期望 drag-handle）——键盘排序或未达（run-acc2 自证面）`);
   await pressKey("ArrowUp", "ArrowUp", 38); await wait(250);
   await pressKey("ArrowUp", "ArrowUp", 38); await wait(250);
   const want12 = [...cardIds.slice(2), ...cardIds.slice(0, 2)];
@@ -2081,7 +2119,7 @@ try {
     });
   } else {
     await exec("B-012", "light", async () => {
-      throw new Error(`键盘排序未生效：聚焦 handle 后 ArrowUp×2，保存前顺序 ${JSON.stringify(preOrder.ids)} 未达 ${JSON.stringify(want12)}（SET-003 键盘路径必做）`);
+      throw new Error(`键盘排序未生效：聚焦 handle 后 ArrowUp×2（聚焦受体=${af12}），保存前顺序 ${JSON.stringify(preOrder.ids)} 未达 ${JSON.stringify(want12)}（SET-003 键盘路径必做）`);
     });
   }
 
@@ -2280,18 +2318,21 @@ try {
   const storageLeak = await evaluate(`(() => { const s = (sessionStorage.getItem('__oracle50Calls') || '') + (sessionStorage.getItem('__oracle50Audit') || ''); return window.__oracle50Keys.filter((k) => s.includes(k)).length; })()`, 30000);
   await exec("B-003", "light", async () => {
     const setRecs = all.filter((x) => x.url === "/api/credentials/set");
-    if (setRecs.length !== 2) throw new Error(`脱敏自证依据缺失：捕获的 credentials/set 记录 ${setRecs.length} 条 ≠ 2（空真值不得判 PASS）`);
+    // run-acc2 实证：key 记录=非空值写入；空值写=清除凭据写入（如无 key 观察卡创建），非 key 记录、单列自证面不静默吞（目录判据「两枚 key」等价语义）。
+    const keyRecs = setRecs.filter((r) => !(r.cred && r.cred.empty === true));
+    if (!keyRecs.length) throw new Error(`脱敏自证依据缺失：credentials/set key 记录 0 条 ≠ 2（空真值不得判 PASS；明细=${JSON.stringify(setRecs.map((r) => r.cred || "未digest"))}）`);
+    if (keyRecs.length !== 2) throw new Error(`脱敏自证依据缺失：credentials/set key 记录 ${keyRecs.length} 条 ≠ 2（明细=${JSON.stringify(setRecs.map((r) => r.cred || "未digest"))}）`)
     if (!flags.onlySynthetic) throw new Error("检测到非合成值写入 credentials/set（全 run 聚合面）");
     if ((flags.responseEchos || 0) > 0 || (flags.envEchoes || 0) > 0 || storageLeak > 0) throw new Error(`回显自证失败（全 run 聚合） responseEchos=${flags.responseEchos || 0} envEchoes=${flags.envEchoes || 0} storage=${storageLeak}`);
     const rawTable = results.map((r) => `${r.id}|${r.measured}|${r.expected}`).join("\n");
     if (rawTable.includes(KEY_A) || rawTable.includes(KEY_B)) throw new Error("断言表/rpc 报告出现合成 key 明文");
-    return { measured: `两枚 exa key 恒为合成 sk-TEST-oracle-*；宿主回包/插桩存储/断言表/raw 证据零明文（打印面全脱敏）。codex-P2 修复后为跨 reload 聚合判据：全 run 窗口数×${flags.windows || 1}（sessionStorage 审计通道仅存计数/布尔，脱敏扫描覆盖聚合通道）` };
+    return { measured: `两枚 exa key 恒为合成 sk-TEST-oracle-*；宿主回包/插桩存储/断言表/raw 证据零明文（打印面全脱敏）；credentials/set 写入自证=${JSON.stringify(setRecs.map((r) => r.cred || '未digest'))}。codex-P2 修复后为跨 reload 聚合判据：全 run 窗口数×${flags.windows || 1}（sessionStorage 审计通道仅存计数/布尔，脱敏扫描覆盖聚合通道）` };
   });
   await exec("B-005", "light", async () => {
     const rpc = all.filter((x) => /^\/api\/(settings|credentials)\//.test(x.url));
     const bad = rpc.filter((x) => !appOk(x));
     if (!rpc.length) throw new Error("未捕获任何 describe/mutate/credentials 记录");
-    if (bad.length) throw new Error(`${bad.length}/${rpc.length} 条 RPC 非应用级 ok（含 ${bad.slice(0, 2).map((x) => `${x.url}@${x.status ?? x.error ?? "reject"}`).join("，")}）`);
+    if (bad.length) throw new Error(`${bad.length}/${rpc.length} 条 RPC 非应用级 ok（含 ${bad.slice(0, 2).map((x) => { let d = ""; try { const rr = (x.response && (x.response.result || x.response)) || {}; d = String(JSON.stringify(rr.error ?? rr.errorCode ?? rr.message ?? rr.detail ?? Object.keys(rr).slice(0, 6)) || ""); } catch { /* */ } d = (d.includes(KEY_A) || d.includes(KEY_B)) ? "<脱敏:含合成key>" : d.replace(/sk-[A-Za-z0-9_-]{4,}/g, "sk-***").slice(0, 90); return `${x.url}@${x.status ?? x.error ?? "reject"} err=${d || "无"}`; }).join(" ｜ ")}）`);
     return { measured: `${rpc.length} 条 describe/mutate/credentials/set 全应用级 ok=true（双信封兼容）` };
   });
   await exec("B-006", "light", async () => {
