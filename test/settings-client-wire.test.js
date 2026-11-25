@@ -691,8 +691,18 @@ test("内置插件页编辑面（v0.1）：cordis.patch.yml 行声明 entries �
   const badRes = std.validate({ entries: "not-a-list" });
   assert.ok(badRes.issues && badRes.issues.length > 0, "entries 类型注记缺失：非数组须出 issues（内置页写入的类型闸）");
   if (typeof host.module.Config.toJSON === "function") {
+    // refs-only（#43 审阅轮收紧，回收此前的 OR 放宽）：{uid,refs} 序列化是唯一合法形态——
+    // 宿主 plainSchema=new z(schema.toJSON()) 只消费 refs 重建面，JSON Schema 字面投影在宿主
+    // 侧无从装载（旧形态必红）；entries 的类型注记 = 根节点（refs[uid]）dict.entries 指向的
+    // refs 节点 type=array。
     const proj = host.module.Config.toJSON();
-    assert.equal(proj?.properties?.entries?.type, "array", "JSON Schema 投影的 entries 类型注记须为 array（Config.listConfigs 投影可读面，host-plugin.md Config 节）");
+    assert.ok(
+      proj !== null && typeof proj === "object" && "uid" in proj && "refs" in proj && typeof proj.refs === "object",
+      "toJSON() 必须为 schemastery refs 序列化（{uid, refs}）；JSON Schema 投影形态不再合法。" +
+        `实际顶层键：${JSON.stringify(Object.keys(proj ?? {}))}`,
+    );
+    const entriesNode = proj.refs?.[proj.refs?.[proj.uid]?.dict?.entries];
+    assert.equal(entriesNode?.type, "array", "序列化投影的 entries 类型注记须为 array（Config.listConfigs 投影可读面，host-plugin.md Config 节）");
   }
 });
 
@@ -703,6 +713,8 @@ test("内置插件页编辑面（v0.1）：cordis.patch.yml 行声明 entries �
 test("纯增量守卫：src/index.js 的 web provider 装配面不动", async () => {
   const host = await import("../src/index.js");
   assert.equal(typeof host.apply, "function");
-  assert.equal(typeof host.Config, "object");
+  // #43 迁移注记：schemastery Schema 节点是可调函数（Schema.prototype 链自 Function.prototype），
+  // 「Config 行 schema 在场」的语义面对 object/function 两形态均成立；手写对象面同样通过。
+  assert.ok(host.Config && (typeof host.Config === "object" || typeof host.Config === "function"));
   assert.deepEqual(host.inject, ["web", "configEditor", "credentials", "agents"]);
 });

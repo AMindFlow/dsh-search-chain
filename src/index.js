@@ -2,7 +2,8 @@
 // 只注册一个 WebSearchProvider（id=search-chain）；卸载时反注册并释放链资源。
 // 生产装配（WP6）：搜索链由 search.js 的 createSearchChain 接线（适配器见 src/backends/*，传输见 transport.js）；
 // 设置面板（WP12）不在本文件内实现。
-import { CONFIG_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID } from "./constants.js";
+import { createRequire } from "node:module";
+import { CONFIG_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID, TOOL_TYPES } from "./constants.js";
 import { ConfigError, readConfig } from "./config.js";
 import { createLazyHostOfficial } from "./official.js";
 import { createSearchChain } from "./search.js";
@@ -14,6 +15,10 @@ import { exaBackend } from "./backends/exa.js";
 import { createGeminiBackend } from "./backends/gemini.js";
 import { openaiBackend } from "./backends/openai.js";
 import { tavilyBackend } from "./backends/tavily.js";
+
+// schemastery 经 require 取构建（与契约 C2 探针同一副本）：Config 原型须 === 包内 resolve 副本的 Schema.prototype。
+// ESM `import z` 与 CJS require 是两份独立模块实例（两个 Schema.prototype），混用即跨副本分叉。
+const z = createRequire(import.meta.url)("@deepseek-ai/schemastery");
 
 export { PROVIDER_ID };
 
@@ -53,82 +58,72 @@ export function liveOwnConfig(ctx) {
 }
 
 /**
- * 行配置声明。
+ * 行配置声明（#43：真实 @deepseek-ai/schemastery@3.19.x 节点，形状对齐官方 dsh-web-search-deepseek@0.2.2-rc.5）。
  *
- * 实机缺陷（0.2.2-rc.5，wp0-verify 首挂）：激活 search-chain 时失败，报
- *   `runtime.Config["~standard"].validate is not a function`。
- * 宿主 resolveConfig 原文（asar 实证）：
- *   if (!runtime.Config) return config;
- *   const result = runtime.Config["~standard"].validate(config);
- *   if ("then" in result) throw new TypeError("Async config validation is not supported");
- *   if (result.issues) throw new ValidationError(result.issues);
- *   else return result.value
- * 即宿主要求 Config 实现 Standard Schema 字面（`~standard.validate`，同步）。宿主自家插件使用的
- * @deepseek-ai/schemastery（zod 形状）在注册表版本（3.x）与 bundle 版本（0.2.x）间不对齐，且跨副本
- * volatile 标记不确定，因此这里零依赖手写 Standard Schema 字面。
+ * 缺陷（#43 隔离 Host 实证）：旧手写 Config 无 meta。宿主 settings.describe 在 runtime.Config 原对象上
+ * 直调 volatileForm，读 schema.meta.volatile 即 TypeError → gateway/internal，设置面打不开。宿主读取位
+ * （0.2.2-rc.5 app.asar schema.js 实证）要求：根与每个 dict 子节点携带 meta 对象；可编辑字段
+ * meta.volatile===true；toJSON 为 schemastery refs 序列化（{uid, refs}，宿主 new z(toJSON()) 重建）。
+ * 契约钉在 test/config-schemastery-contract.test.js。
  *
- * 分界：validate 只做形状钉存（plain object、已知键的类型与正整数），不深校验 entries 每项；
- * 深校验归 config.js normalizeConfig。validate 纯检查，原样返回 { value }（含未知键），缺省字段不补值。
- * 同步：绝不返回 thenable。
+ * 形状：根 z.object 且 required（拒 null 与数组根）；entries / timeoutMs / useOfficialDeepSeekSearch 为
+ * 字段级 .volatile()（宿主每查询现读）；entries 项内子字段不再嵌 volatile，只标 role（credentialRef）。
+ * 未知键：schemastery object resolver 非 strict（merge），接受并透传——严格拒绝即「保存永败」死锁（P2-2 定案）。
+ * 缺省：schema 面不补默认值（默认归 normalizeConfig，FB-003/SET-005 分界不变）。
  *
- * 未知键【接受】（宿主语义）：宿主 configEditor 的 Config 面按 z.object 语义剥离 extras；若此处严格拒绝
- * 未知键，则保存结果（含他插件键或旧版残留键）必被宿主 validate 拒绝，形成「保存永败」死锁。
- * 未知键的丢弃发生在读路径（normalizeConfig），写路径保留 raw 未知键（writeConfig）。
- *
- * toJSON() 仅保留 JSON Schema 投影，供 WP12 设置面板做投影（volatileForm / schema.toJSON()）。
- * 投影与 validate 一致：additionalProperties 为 true（未知键不作为设置面错误）。
- * 宿主表单与 role 标记需要 schemastery 面；WP12 决策是否精确 pin @deepseek-ai/schemastery@3.19.0 并核对
- * 宿主实际解析版本。本 Config 本身不提供宿主表单标记。
+ * 分界：本 schema 为同步 Standard Schema 写闸（宿主 resolveConfig：validate 不得返回 thenable），只做
+ * 形状、类型、值域与 enum。深校验（代理形态、重复 id 等）归 config.js normalizeConfig，读路径与 writeConfig
+ * 写前规范化共用。重复 id 不在 schema 面表达：schemastery 3.19 无 refine，而 transform 会把 entries 节点
+ * 类型改为 transform，破坏宿主设置面的 array 类型注记；由 normalizeConfig 认定，文案含重复的 id。
  */
-const CONFIG_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: true,
-  properties: {
-    entries: { type: "array", description: "有序搜索条目（CFG-004）" },
-    useOfficialDeepSeekSearch: { type: "boolean", default: true, description: "SET-005 官方 DeepSeek 搜索开关" },
-    timeoutMs: { type: "integer", minimum: 1, default: 25000, description: "FB-003 总预算（毫秒）" },
-  },
-};
+const ENTRY = z
+  .object({
+    id: z.string().required(),
+    type: z.union(TOOL_TYPES.map((t) => z.const(t))).required(),
+    name: z.string(),
+    enabled: z.boolean(),
+    credentialRef: z.string().role("credential-ref"),
+    proxy: z.union([z.string(), z.object({ pac: z.string() })]),
+  })
+  .required();
 
-function isPlainConfigObject(v) {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-}
+export const Config = z
+  .object({
+    entries: z.array(ENTRY).volatile(),
+    useOfficialDeepSeekSearch: z.boolean().volatile(),
+    timeoutMs: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).volatile(),
+  })
+  .required();
 
-export const Config = {
-  "~standard": {
-    version: 1,
-    vendor: "dsh-search-chain",
-    validate(value) {
-      if (!isPlainConfigObject(value)) {
-        return { issues: [{ message: "配置必须是对象" }] };
-      }
-      const issues = [];
-      if (value.entries !== undefined) {
-        if (!Array.isArray(value.entries)) {
-          issues.push({ message: "entries 必须是数组", path: ["entries"] });
-        } else {
-          value.entries.forEach((entry, i) => {
-            if (!isPlainConfigObject(entry)) issues.push({ message: "entries 每项必须是对象", path: ["entries", i] });
-          });
+/**
+ * 缺省不补值（SET-005/FB-003 分界：默认归 normalizeConfig）。schemastery 对 volatile 字段恒以 createVolatile
+ * 包裹（含 undefined），且 entries 节点自带 default []；输入缺键时 validate 结果会凭空出现键。
+ * 此处只保留输入中已存在的键，缺键不进入 value。仅改 validate 的输出对象，schema 节点本身不变。
+ * 实现为节点上的不可枚举自有 ~standard（toJSON 的 refs 序列化不受影响）。
+ */
+const CONFIG_OWN_KEYS = ["entries", "useOfficialDeepSeekSearch", "timeoutMs"];
+const baseStandard = Config["~standard"];
+Object.defineProperty(Config, "~standard", {
+  configurable: true,
+  enumerable: false,
+  value: Object.freeze({
+    version: baseStandard.version,
+    vendor: baseStandard.vendor,
+    validate(input) {
+      const result = baseStandard.validate(input);
+      if (result.issues) return result;
+      for (const key of CONFIG_OWN_KEYS) {
+        if (!(key in input)) delete result.value[key];
+        // schemastery 对非 required 字段放行 null（视为缺省）；旧手写面拒绝 null。写闸保持拒绝，
+        // 否则 null 落盘后读路径 normalizeConfig 必拒（CONFIG_INVALID），形成保存成功即读不出的状态。
+        else if (input[key] === null) {
+          return { issues: [{ message: `${key} 不得为 null（缺省请省略该键）`, path: [key] }] };
         }
       }
-      if (value.useOfficialDeepSeekSearch !== undefined && typeof value.useOfficialDeepSeekSearch !== "boolean") {
-        issues.push({ message: "useOfficialDeepSeekSearch 必须是布尔值", path: ["useOfficialDeepSeekSearch"] });
-      }
-      if (
-        value.timeoutMs !== undefined &&
-        !(Number.isSafeInteger(value.timeoutMs) && value.timeoutMs > 0)
-      ) {
-        issues.push({ message: "timeoutMs 必须是正整数毫秒", path: ["timeoutMs"] });
-      }
-      if (issues.length > 0) return { issues };
-      return { value };
+      return result;
     },
-  },
-  toJSON() {
-    return CONFIG_JSON_SCHEMA;
-  },
-};
+  }),
+});
 
 function webError(code, message) {
   const err = new Error(message);
