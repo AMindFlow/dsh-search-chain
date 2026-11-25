@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Issue #48 隔离 DSH profile 的设置面板与 D-2C 写入边界实机验收。
 // exit 0=PASS；1=验收断言失败；2=SKIP/未验证（环境、CDP 或隔离自证不可用）。
+// 覆盖：隔离设置面交互、凭据先于 mutate、ref 语法/匹配、RPC 回包应用级 ok 校验。
 // 只使用 Node 原生 WebSocket + CDP；不会触发供应商请求。PASS 时只打印脱敏后的请求/响应形状。
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
@@ -185,6 +186,24 @@ try {
   const audit = await evaluate(`() => {
     const calls = window.__verify48Calls || [];
     const parse = (x) => { try { return JSON.parse(x.body || '{}'); } catch { return {}; } };
+    const redact = (value) => String(value ?? '').replaceAll(${JSON.stringify(KEY)}, '[redacted]')
+      .replaceAll('synthetic-not-a-secret', '[redacted]')
+      .replace(/sk-[A-Za-z0-9_-]{4,}/gi, '[redacted]').slice(0, 240);
+    const inspectRpc = (response) => {
+      if (!response || typeof response !== 'object') return { ok: false, message: '宿主回包为空' };
+      if (response.result && typeof response.result === 'object' && 'ok' in response.result) {
+        if (response.result.ok === true) return { ok: true };
+        const error = response.result.error || response.error;
+        const rawCode = typeof error?.code === 'string' ? redact(error.code) : '';
+        const code = /^[A-Za-z0-9_.:-]{1,80}$/.test(rawCode) ? rawCode : undefined;
+        return { ok: false, ...(code ? { code } : {}), message: redact(error?.message || '宿主拒绝该请求') };
+      }
+      if (response.ok === true) return { ok: true };
+      const error = response.error;
+      const rawCode = typeof error?.code === 'string' ? redact(error.code) : '';
+      const code = /^[A-Za-z0-9_.:-]{1,80}$/.test(rawCode) ? rawCode : undefined;
+      return { ok: false, ...(code ? { code } : {}), message: redact(error?.message || '宿主拒绝该请求') };
+    };
     const set = calls.find(x => x.url === '/api/credentials/set');
     const mutate = calls.find(x => x.url === '/api/settings/mutate');
     const sb = parse(set), mb = parse(mutate);
@@ -193,9 +212,11 @@ try {
     const sequence = calls.indexOf(set) < calls.indexOf(mutate);
     const ref = args.ref;
     const refOp = ops.find(op => op.op === 'set' && op.path?.[0] === 'entries' && op.value?.credentialRef === ref);
+    const rpcChecks = calls.filter(x => /^\\/api\\/(settings|credentials)\\//.test(x.url)).map(x => ({ path: x.url, ...inspectRpc(x.response) }));
+    const applicationOk = rpcChecks.every(x => x.ok);
     return {
       sequence, refValid: typeof ref === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(ref),
-      keyTransferred: args.value === ${JSON.stringify(KEY)}, settingsUsesRef: !!refOp,
+      keyTransferred: args.value === ${JSON.stringify(KEY)}, settingsUsesRef: !!refOp, applicationOk, rpcChecks,
       set: { path: set.url, requestKeys: Object.keys(sb).sort(), method: sb.method, argsKeys: Object.keys(args).sort(),
         response: { status: set.status, bodyKeys: Object.keys(set.response || {}).sort(), resultKeys: Object.keys(set.response?.result || {}).sort() } },
       mutate: { path: mutate.url, method: mb.method, responseStatus: mutate.status },
@@ -203,13 +224,16 @@ try {
       errorCount: calls.filter(x => x.error || (x.status && x.status >= 400)).length,
     };
   }`);
-  if (!audit.sequence || !audit.refValid || !audit.keyTransferred || !audit.settingsUsesRef || audit.forbiddenExternal || audit.errorCount) {
+  if (!audit.sequence || !audit.refValid || !audit.keyTransferred || !audit.settingsUsesRef || !audit.applicationOk || audit.forbiddenExternal || audit.errorCount) {
     fail(`D-2C/RPC 断言失败（仅元数据）：${JSON.stringify(audit)}`);
   }
   console.log(`[verify-ui-48] credentials/set 脱敏形状：${JSON.stringify({ ...audit.set, syntheticKeyTransferred: audit.keyTransferred, refGrammarValid: audit.refValid, settingsReferenceMatch: audit.settingsUsesRef })}`);
   console.log(`[verify-ui-48] settings/mutate：${JSON.stringify(audit.mutate)}`);
+  console.log(`[verify-ui-48] RPC 应用级 ok：${JSON.stringify({ ok: audit.applicationOk, checked: audit.rpcChecks.length })}`);
   console.log("[verify-ui-48] key 为合成 sk-TEST 值；未记录或输出明文。未观察到供应商请求。");
-  finish(0, "PASS", "隔离设置面可交互；credentials/set 先于 settings/mutate，ref 符合语法且配置引用匹配。已验证本次宿主回包形状（仅输出 key 列表）。");
+  finish(0, "PASS", "隔离设置面可交互；credentials/set 先于 settings/mutate，ref 符合语法且配置引用匹配；所有捕获的 RPC 回包均通过应用级 ok 校验。");
 } catch (error) {
-  fail(`验收期间异常：${String(error?.message || error).replaceAll(KEY, "[synthetic-key-redacted]")}`);
+  const message = String(error?.message || error).replaceAll(KEY, "[synthetic-key-redacted]")
+    .replaceAll("synthetic-not-a-secret", "[redacted]").replace(/sk-[A-Za-z0-9_-]{4,}/gi, "[redacted]");
+  fail(`验收期间异常：${message}`);
 }
