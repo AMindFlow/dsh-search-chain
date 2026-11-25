@@ -302,6 +302,18 @@ if (!formPresent) {
   );
 }
 
+// 6c′) [C10] 反例钉：配置区不得落进 slot 错误边界（组件渲染崩溃 = FAIL，真机曾实证 host.call 版崩于此）
+const slotError = await evalInPage(`async () => {
+  const detail = document.querySelector('[data-plugin-detail="${PKG}"]');
+  if (!detail || !detail.querySelector("[data-slot-error]")) return null;
+  const host = detail.querySelector("section[data-plugin-config]") ?? detail;
+  return (host.innerText ?? "").slice(0, 300);
+}`);
+if (slotError !== null) {
+  await snapshot("slot-error");
+  fail(`配置区落进 data-slot-error 错误边界（[C10] 反例钉：组件渲染抛错）；区域内文本：${slotError.replace(/\s+/g, " ")}`);
+}
+
 // 6d) 改三字段 → 保存
 const save = await evalInPage(`async () => {
   const root = document.querySelector('[data-plugin-detail="${PKG}"] [data-bundle-config]');
