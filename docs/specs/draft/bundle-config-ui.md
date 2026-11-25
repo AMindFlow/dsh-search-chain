@@ -1,6 +1,6 @@
 # bundle 页配置入口（v0.1 配置 UI）
 
-本规格定义插件在 DSH 内置「设置 → 插件」bundle 详情页上的配置表单：注册面、表单范围、组件自管读写通道（**同源 settings RPC**：读 `settings/describe` 投影、写 `settings/mutate` ops）、组件内联 merge/validate/toOps 纯函数与合并写语义、凭据边界，以及实机 DOM 验收（`scripts/verify-ui-46.mjs`）。设置区指示器与数据面板行为仍归 [settings-ui.md](settings-ui.md)（SET 编号保留）；配置规范化与凭据解析仍归 [config-network.md](config-network.md)（CFG 编号保留），本规格只定义其上的 UI 契约。
+本规格定义插件在 DSH 内置「插件」页（侧栏「插件」→ bundle 卡片 → 详情页）上的配置表单：注册面、表单范围、组件自管读写通道（**同源 settings RPC**：读 `settings/describe` 投影、写 `settings/mutate` ops，带 `expectedRevision`）、组件内联 merge/validate/toOps 纯函数与合并写语义、凭据边界，以及实机 DOM 验收（`scripts/verify-ui-46.mjs`）。设置区指示器与数据面板行为仍归 [settings-ui.md](settings-ui.md)（SET 编号保留）；配置规范化与凭据解析仍归 [config-network.md](config-network.md)（CFG 编号保留），本规格只定义其上的 UI 契约。
 
 > **通道迁移史（BCF-001 冲突史，2026-11-25 真机两轮探针定案）**：v0.1 初版裁决曾选 `host.call` → 本包宿主半 `config.get/config.put`（`src/config-bridge.js`）。真机证伪：静态 client factory 的 ctx **无 host 服务**——`inject: ["slots","host"]` 使包不激活（`pending (waiting for service: host)`），只声明 slots 时读 `ctx.host` 抛 `cannot get property "host" without inject`。用户实证同源 `POST /api/settings/describe` / `settings/mutate`（client-request envelope）读写 search-chain config 可行 → 通道终选同源 settings RPC，宿主半 `src/config-bridge.js` **退役**（不新建）；「对比钉」承担原宿主半的语义（BCF-003/004/005）。
 
