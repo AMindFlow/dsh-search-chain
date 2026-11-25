@@ -676,7 +676,7 @@
 
 ## SPC-025 添加展开类型列表（内嵌 picker）
 
-- **要求** 形态定性：**内嵌操作列表**，不是下拉浮层——保留内嵌展开，不改 portal。容器 `.sc-picker` 吃模块铬层（SPC-019）但子项间距钉 `gap: 8px`（8 项竖排取紧凑档，类推 `.addModes`；与 `.addCard` 节块 14px 的偏离在此登记）。类型项 `.sc-picker-item` 保留双行卡行：`display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px 16px; border: 0; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; text-align: start; cursor: pointer;`；hover 必须 `var(--dsw-alias-interactive-bg-solid)`（**废止 bg-layer-2**——亮色白上无反馈；白底上铺半透明 `interactive-bg-hover` 会透灰变脏，实底 token 零叠加副作用为裁定钉死）；focus 环按 SPC-018；title `.sc-picker-title` 必须 `font-size: 14px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-primary);`；billing `.sc-picker-billing` 必须 `font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary);`（**废止 14px label-secondary**——与标题同大倒挂）。
+- **要求** 形态定性：**内嵌操作列表**，不是下拉浮层——保留内嵌展开，不改 portal。容器 `.sc-picker` 吃模块铬层（SPC-019）但子项间距钉 `gap: 8px`（8 项竖排取紧凑档，类推 `.addModes`；与 `.addCard` 节块 14px 的偏离在此登记）。类型项 `.sc-picker-item` 保留双行卡行：`display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px 16px; border: 0; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; text-align: start; cursor: pointer;`；hover 必须 `var(--dsw-alias-interactive-bg-hover-solid)`（**废止 bg-layer-2**——亮色白上无反馈；白底上铺半透明 `interactive-bg-hover` 会透灰变脏，实底 token 零叠加副作用为裁定钉死）〔勘误·lead 2026-11-25：本条钉死值原文 token 名笔误 `interactive-bg-solid`，实证更正为 `interactive-bg-hover-solid`——`design-platform.css` 仅此后者（2 处定义，前者 0 处）；HH 裁定语义（实底 hover、废止 bg-layer-2）不变，§4 token 表与 A-045 即此名〕；focus 环按 SPC-018；title `.sc-picker-title` 必须 `font-size: 14px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-primary);`；billing `.sc-picker-billing` 必须 `font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary);`（**废止 14px label-secondary**——与标题同大倒挂）。
 - **钉死值**
 
   ```css
@@ -697,7 +697,7 @@
     cursor: pointer;
   }
   @media (hover: hover) {
-    .sc-picker-item:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-solid); }
+    .sc-picker-item:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-solid); }
   }
   .sc-picker-title { font-size: 14px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-primary); }
   .sc-picker-billing { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
@@ -968,7 +968,7 @@ div.root (relative; inline-flex)
 | `.sc-switch*-disabled` .55 | .5 | 直接适用（编译原语实证） | SPC-011/012 |
 | `.sc-add-button` 70px/1.5px l2/14px 圆角/secondary 字/bg-layer-1 hover | 44px/1px dashed l3/radius-lg/primary 字/interactive-bg-hover | 直接适用（5 处漂移全收口） | SPC-024 |
 | `.sc-picker/.sc-dialog` bg-layer-2 白底/14px/24px | 模块铬层（module-platform、lg、14/16、gap14；picker gap8） | 直接适用（容器）+类推延伸（picker 项） | SPC-019/025 |
-| `.sc-picker-item` radius10 / hover bg-layer-2（白上无反馈） | radius-md / hover interactive-bg-solid | 类推延伸（外 lg 内 md 嵌套律；白卡上实底 hover） | SPC-025 |
+| `.sc-picker-item` radius10 / hover bg-layer-2（白上无反馈） | radius-md / hover interactive-bg-hover-solid | 类推延伸（外 lg 内 md 嵌套律；白卡上实底 hover） | SPC-025 |
 | `.sc-picker-title` 无字号 / billing 14px 硬编码 | 14/22/600 / 12/18 tertiary | 类推延伸（billing 锚 advancedHint；title 600 沿用我方，官方字重未获取） | SPC-025 |
 | `.sc-field` grid gap8 margin8 | flex column gap6 margin0 | 直接适用 | SPC-020 |
 | `.sc-editor-title` 仅 margin | 14/22/500 primary | 直接适用 | SPC-020 |
