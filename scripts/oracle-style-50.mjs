@@ -1466,18 +1466,23 @@ async function a047(theme = "light") {
   }
   const n = (await calls()).length;
   await addViaPicker("exa");
+  // run-acc5 实证修复：picker 打开的编辑器带种子名「Exa」——直接提交=真条目落库（B-007 持久面 "Exa" 幽灵的真源），且探针从未测过目录声明的「空名」面。置空名（native setter+input）才是该断言的合法取数。
+  await evaluate(`(() => { const el = document.querySelector('${ROOT} [data-role="field"][data-field="name"]'); if (!el) return false; const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ""); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`, 30000);
   const submitClicked = await evaluate(`() => { const b = [...document.querySelectorAll('${ROOT} [data-role="editor"] button')].find((x) => /sc-button-primary/.test(x.className || '') && !/取消/.test(x.textContent || '')); if (!b) return false; b.click(); return true; }`, 30000);
   if (!submitClicked) { await closeEditor(); throw new Error("missing element: 新建编辑器提交钮（错误面探测前置）"); }
   await wait(700);
   const seen = (await calls()).slice(n).filter((x) => x.url === "/api/settings/mutate").length;
+  { const recsP = (await calls()).slice(n).filter((x) => x.url === "/api/settings/mutate"); console.log(`[oracle] A-047 探针取证（run-acc5 自证面：空名提交窗）：mutate×${recsP.length} 载荷=${JSON.stringify((recsP.length ? recsP[recsP.length - 1].mkeys : []).slice(0, 6))}`); } // lead 指定铁证面：写名 mutate 与后续清理动作全留底
   const errSel = `${ROOT} [data-role="save-error"][data-state="error"]`;
   const exists = await evaluate(`() => !!document.querySelector('${errSel}')`, 30000);
   if (!exists) {
     if (seen > 0) {
       // 校验放行：清理误落库空名卡（cleanup，不落断言数据）
       const sN = await ui.state();
-      const ghost = sN.ids.find((id, i) => !String(sN.names[i] || "").trim() || String(sN.names[i] || "").trim() === sN.types[i]);
+      // run-acc5 实证修复：旧判据 names===types(label 文本) 会先命中 idx2 的 Bing 卡（prep 保留种子 label 名「Bing RSS」）——清理误删 bing = B-007 持久面缺 bing 的完整链条。幽灵卡必为尾部新追加探针卡：尾位+名空/label 双条件。
+      const ghost = sN.ids.find((id, i) => i === sN.ids.length - 1 && (!String(sN.names[i] || "").trim() || String(sN.names[i] || "").trim() === sN.types[i]));
       if (ghost) {
+        console.log(`[oracle] A-047 清理命中 ghost=${ghost} name=${JSON.stringify(sN.names[sN.ids.indexOf(ghost)])}（run-acc5 尾位硬化）`);
         const nC = (await calls()).length;
         if (await ui.click(`${T.card(ghost)} [data-role="card-remove"]`)) { await wait(300); await ui.click(`${ROOT} [data-role="confirm-remove"]`); }
         await waitForAutoSave(nC);
