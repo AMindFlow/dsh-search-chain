@@ -89,7 +89,36 @@ writeFileSync(join(PROFILE, "package.json"), JSON.stringify({
   dependencies: { [PKG]: `link:${REPO_ROOT}` },
 }, null, 2) + "\n");
 writeFileSync(join(PROFILE, "cordis.yml"), "[]\n");
-writeFileSync(join(PROFILE, "cordis.patch.yml"), "[]\n");
+// [C9] welcome 闸过闸配方：假 provider（apiKeyEnv 指向假环境变量名，值由下方 env 注入；baseURL 指死端口，零外呼）
+// + 默认模型行 + preset 行。零真实凭据、零落盘 key。
+const FAKE_ENV_NAME = "DSH_UI46_FAKE_KEY";
+const FAKE_ENV_VALUE = "ui46-fake-not-a-secret";
+writeFileSync(join(PROFILE, "cordis.patch.yml"), `- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      ui46fake:
+        displayName: ui46fake
+        apiKeyEnv: ${FAKE_ENV_NAME}
+        api: openai-responses
+        baseURL: http://127.0.0.1:9/v1
+        models:
+          - id: fake/model
+            name: Fake
+            contextWindow: 8000
+            maxTokens: 1000
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: ui46fake
+    model: fake/model
+    reasoningEffort: high
+- id: agent-preset-registry
+  name: "@deepseek-ai/dsh-agent-preset-registry"
+  config:
+    default: standard
+    selectedDefault: standard
+`);
 
 let child = null;
 function cleanup() {
@@ -140,7 +169,7 @@ delete GUI_ENV.ELECTRON_RUN_AS_NODE;
 child = spawn(
   ELECTRON,
   [`--remote-debugging-port=${PORT}`, `--user-data-dir=${CHROME_DATA}`],
-  { env: { ...GUI_ENV, DSH_HOME }, stdio: ["ignore", "pipe", "pipe"] },
+  { env: { ...GUI_ENV, DSH_HOME, [FAKE_ENV_NAME]: FAKE_ENV_VALUE }, stdio: ["ignore", "pipe", "pipe"] },
 );
 let log = "";
 child.stdout.on("data", (d) => { log += d; });
@@ -261,7 +290,9 @@ if (!shell.ok) {
 const panel = await evalInPage(`async () => {
   const q = (s) => document.querySelector(s);
   if (q("[data-plugin-panel]")) return "already";
-  for (const b of Array.from(document.querySelectorAll("nav button"))) {
+  const navs = Array.from(document.querySelectorAll("nav button"));
+  navs.sort((a, b) => (/插件|Plugins/.test(b.innerText || "") ? 1 : 0) - (/插件|Plugins/.test(a.innerText || "") ? 1 : 0));
+  for (const b of navs) {
     b.click();
     await new Promise((r) => setTimeout(r, 500));
     if (q("[data-plugin-panel]")) return "opened";
@@ -314,6 +345,22 @@ if (slotError !== null) {
   fail(`配置区落进 data-slot-error 错误边界（[C10] 反例钉：组件渲染抛错）；区域内文本：${slotError.replace(/\s+/g, " ")}`);
 }
 
+// 6c″a) 证据截图：表单在场（就绪前）
+await snapshot("form-present");
+// 6c″) 等待表单就绪（describe 投影回填前保存禁用，见组件 phase）：保存钮可用即 ready，否则 FAIL 带诊断
+const ready = await until("表单就绪", 60_000, () =>
+  evalInPage(`async () => { const b = document.querySelector('[data-plugin-detail="${PKG}"] [data-bundle-config] [data-config-action="save"]'); return !!b && !b.disabled; }`, 10_000).catch(() => false),
+);
+if (!ready.ok) {
+  await snapshot("not-ready");
+  const st = await evalInPage(`async () => (document.querySelector('[data-plugin-detail="${PKG}"] [data-bundle-config]')?.innerText ?? "").slice(0, 300)`).catch(() => "");
+  fail(`配置表单未就绪（投影读取未回填，保存钮仍禁用）；表单文本：${st.replace(/\s+/g, " ")}`);
+}
+
+// 6d0) 诊断采集：包一层 fetch，记录页内 /api/settings/* 的回包（失败时入失败信息，不改变判定）
+await evalInPage(`() => { window.__ui46 = []; window.__ui46err = []; const oce = console.error; console.error = (...x) => { window.__ui46err.push(String(x[0]).slice(0, 300)); oce.apply(console, x); }; window.addEventListener('error', (e) => window.__ui46err.push('ERR ' + String(e.message).slice(0, 300))); const of = window.fetch.bind(window);
+  window.fetch = async (...args) => { const r = await of(...args); try { const u = String(args[0]); if (u.includes("/api/settings/")) { r.clone().text().then((t) => window.__ui46.push({ url: u, status: r.status, body: t.slice(0, 700) })); } } catch {} return r; };
+  return true; }`);
 // 6d) 改三字段 → 保存
 const save = await evalInPage(`async () => {
   const root = document.querySelector('[data-plugin-detail="${PKG}"] [data-bundle-config]');
@@ -344,13 +391,13 @@ const save = await evalInPage(`async () => {
     if (err) return JSON.stringify({ saved: false, error: (err.textContent || "").slice(0, 300) });
     await new Promise((r) => setTimeout(r, 250));
   }
-  return JSON.stringify({ saved: false, error: "save-timeout（60×250ms 无状态）" });
+  return JSON.stringify({ saved: false, error: "save-timeout（60×250ms 无 saved/error 锚点）", form: (root.innerText || "").slice(0, 400), net: window.__ui46, errs: window.__ui46err || [] });
 }`);
 let saveRes = null;
 try { saveRes = JSON.parse(save); } catch { saveRes = { saved: false, error: String(save) }; }
 if (!saveRes.saved) {
   await snapshot("save");
-  fail(`保存未成功（${saveRes.error ?? saveRes}）——写闸/宿主写入/状态锚点（BCF-002/005）见截图`);
+  fail(`保存未成功（${saveRes.error ?? saveRes}）；表单文本：${(saveRes.form ?? "").replace(/\s+/g, " ")}；页内 settings 回包：${JSON.stringify(saveRes.net ?? []).slice(0, 1500)}；控制台错误：${JSON.stringify(saveRes.errs ?? []).slice(0, 800)}——写闸/宿主写入/状态锚点（BCF-002/005）见截图`);
 }
 
 // 6e) 关页（面包屑返回）→ 重开 → 读回三字段
