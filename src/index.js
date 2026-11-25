@@ -91,7 +91,7 @@ export const Config = z
   .object({
     entries: z.array(ENTRY).volatile(),
     useOfficialDeepSeekSearch: z.boolean().volatile(),
-    timeoutMs: z.number().step(1).min(1).volatile(),
+    timeoutMs: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).volatile(),
   })
   .required();
 
