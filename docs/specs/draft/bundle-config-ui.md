@@ -16,7 +16,7 @@
 - **[C8] 同源 settings RPC**（app.asar zod schema 原文 + 用户实证可行）：页内 `fetch(location.origin + '/api/settings/<method>', {method:'POST', body: JSON.stringify({type:'client-request', rpcId, method:'settings/<method>', payload:{args}})})`。
   - `settings/describe` result：`{writable, hasDocument, namespaces: [{ns, autoGenerate, base, user, secrets, applies}]}`。本包读投影 = `namespaces` 中 `ns === 'search-chain'` 项的 `base`/`user` 层；**secrets 被宿主脱敏**（既有明文 apiKey 不经 describe 出宿主）。
   - `settings/mutate(ns: string, ops: Array<{op:'set', path: string[], value}|{op:'unset', path: string[]})` result = 写入后该 ns 的脱敏视图。ops 是**路径补丁**，不触及的路径（含 apiKey 行）宿主原样保留。
-  - `args` 的具体传形（按位数组或具名对象）未在 zod 面实证 → 测试与脚本**不赌传形**，只钉 `type/method/rpcId` 与 payload 含 ns、ops（形状合法）。
+  - `args` 传形实证（dev 实测两轮）：`settings/describe` 的 zod 描述符**无参**——`args:{ns}` 被宿主拒 `unexpected "ns"`，`args:{}` 是唯一合法形状；`settings/mutate` 的 `args:{ns, ops}` 实测被宿主接受。envelope 钉：describe 恰 `args:{}`，ns 校验位在**回包 `namespaces` 投影**（`ns:'search-chain'` 项在场）；mutate 钉 payload 含 ns 与合法 ops。
 - **[C9] welcome 闸过闸配方（真机两轮探针）**：隔离 profile 注入假 provider（`apiKeyEnv` 指向假环境变量、`baseURL` 指死端口）+ `agent-default-model` 行 + `agent-preset-registry` 行 → 过闸后主 shell 可用；零真实外呼、零真实凭据。
 - **[C10] slot 错误边界**：注册组件在宿主渲染中抛错时，槽容器呈 `data-slot-error`（真机实证：旧 host.call 版组件因读 `ctx.host` 崩溃 → 详情页出现 `data-slot-error`）。验收以「配置区无 `data-slot-error`」为反例钉。
 
@@ -34,7 +34,7 @@
 
 ## BCF-003 读取通道 = settings/describe 投影
 
-- **要求** 组件挂载读取必须走同源 `POST settings/describe`（[C8]）：请求 envelope 恰含 `type:'client-request'`、`method:'settings/describe'`、字符串 `rpcId`，payload 含命名空间 `search-chain`（args 传形不钉，[C8]）。读投影 = ns 项的 `base`/`user` 层合成后经**内联 validate** 规范化；规范化缺省补全与写闸语义必须与 `src/config.js` 的 `normalizeConfig` 全等（防漂移钉 BCF-004）。describe 非 ok、无 search-chain 投影或网络异常时：渲染不得抛，必须显示 `[data-config-status="error"]`/`[data-config-error]` 可读错误，**不得静默展示缺省空表单**（会把空草稿误当生效配置诱导覆盖）。
+- **要求** 组件挂载读取必须走同源 `POST settings/describe`（[C8]）：请求 envelope 恰含 `type:'client-request'`、`method:'settings/describe'`、字符串 `rpcId`，**`args` 恰空 `{}`**（宿主描述符无参，[C8]）；ns 校验位在回包投影 = ns 项的 `base`/`user` 层合成后经**内联 validate** 规范化；规范化缺省补全与写闸语义必须与 `src/config.js` 的 `normalizeConfig` 全等（防漂移钉 BCF-004）。describe 非 ok、无 search-chain 投影或网络异常时：渲染不得抛，必须显示 `[data-config-status="error"]`/`[data-config-error]` 可读错误，**不得静默展示缺省空表单**（会把空草稿误当生效配置诱导覆盖）。
 - **来源** [Issue #46](https://github.com/AMindFlow/dsh-search-chain/issues/46)；[C8]（用户实测同源 RPC 可行）；#43 describe 面。
 - **验收** fake fetch 返回 `{ok:true, result:{writable, hasDocument, namespaces:[{ns:'search-chain', base, user:{timeoutMs:9999, entries:[{id:'e1',…}]}}]}}` → 树含 `9999`/`e1` 名；envelope 钉如上。fake fetch 返回 `{ok:false}` 或抛网络错 → 不抛、error 锚点在场、无 `[data-config-status="saved"]`。`test/client-bundle-config.test.js` 第 2 组。
 
@@ -70,7 +70,7 @@
 
 ## 设计决定
 
-- **通道终选与 config-bridge 退役**：读=页内 `fetch POST settings/describe` 的本包投影；写=`settings/mutate` ops；merge/validate/toOps 内联进 client（`Component.contract` 静态纯函数面，测试经注册产物取用；宿主只调 `Component(props)`，静态不影响渲染）。`src/config-bridge.js` 与 `host.call('config.get'/'config.put')` 命名作废（BCF-001 冲突史见文件头引言）。`args` 传形不赌（[C8]）：envelope 只钉 `type/method/rpcId` + payload 含 ns/ops——这正是 host.call 时代「赌未实证方法面」的教训固化。
+- **通道终选与 config-bridge 退役**：读=页内 `fetch POST settings/describe` 的本包投影；写=`settings/mutate` ops；merge/validate/toOps 内联进 client（`Component.contract` 静态纯函数面，测试经注册产物取用；宿主只调 `Component(props)`，静态不影响渲染）。`src/config-bridge.js` 与 `host.call('config.get'/'config.put')` 命名作废（BCF-001 冲突史见文件头引言）。`args` 传形已两轮实证（[C8]：describe 无参恰 `args:{}`，mutate `args:{ns,ops}`）：envelope 钉 `type/method/rpcId`，describe 另钉 args 恰空（ns 位在回包投影），mutate 钉 payload 含 ns/ops——「不赌未实证方法面」的教训固化为实证钉。
 - **注入面恰集（真机定案）**：factory 产物 `inject` 恰 `["slots"]`；`dsh.client.inject` 恰 `[]`（[M4] 装载包列表语义不变）。`["slots","host"]` = 永不激活（[C3]）。测试 ctx 的 `host` getter 抛 `cannot get property "host" without inject` 同形措辞，读即红。
 - **对比钉**：漂移面 = 内联 validate vs 宿主 `normalizeConfig`。测试内 `runNormalize(raw)`：`normalizeConfig` 正常返回 → `{ok:true, config}`；抛 `ConfigError(CONFIG_INVALID)` → `{ok:false, code:'CONFIG_INVALID'}`；与 `validate(raw)` 的结构化输出 deep-equal。非法判定与规范化输出任何分叉即红。宿主侧 `settings/mutate` 触发的 ns 校验（#43 Config zod + resolveConfig）保持不动，由 guard 钉（`src/index.js` provider 面）+ 既有 #43 测试面兜底。
 - **toOps 权威 reducer（测试侧定义）**：`set` 沿 path 下钻（对象键或数组数值下标，中间缺位补建），`unset` 对象删键、数组数值段 splice；逐 op 依次作用于 `structuredClone(current)`。dev 若选别的 op 表达（如整 entries 数组单 set），只要应用结果 ≡ raw' 即绿——语义钉不绑实现形状。

@@ -342,7 +342,11 @@ function installFetch(handler) {
   };
 }
 
-/** envelope 公共钉（BCF-003/005）：不赌 args 传形（[C8]），payload 序列化面含 ns/ops。 */
+/**
+ * envelope 公共钉（BCF-003/005）。describe：宿主 zod 描述符**无参**（dev 实测 `args:{ns}` 被拒
+ * `unexpected "ns"`，`args:{}` 唯一合法，[C8]）→ ns 校验位在回包投影面（namespaces/search-chain）。
+ * mutate：`args:{ns,ops}` 实测被宿主接受 → payload 序列化面须含 ns。
+ */
 function pinEnvelope(call, method) {
   const b = call.body;
   assert.ok(b && typeof b === "object", `${method}：POST body 须为 client-request envelope JSON`);
@@ -350,7 +354,15 @@ function pinEnvelope(call, method) {
   assert.equal(b.method, method, `${method}：envelope.method 钉 ${method}`);
   assert.equal(typeof b.rpcId, "string", `${method}：rpcId 须为字符串`);
   assert.ok(b.payload !== undefined, `${method}：payload 面须在`);
-  assert.ok(JSON.stringify(b.payload).includes(SECTION_ID), `${method}：payload 必须指向 ${SECTION_ID} 命名空间`);
+  if (method === "settings/describe") {
+    assert.deepEqual(
+      b.payload.args ?? b.payload,
+      {},
+      `settings/describe：宿主描述符无参——args 恰空 {}（实测 args:{ns} 被拒 unexpected "ns"，[C8] 实证）`,
+    );
+  } else {
+    assert.ok(JSON.stringify(b.payload).includes(SECTION_ID), `${method}：payload 必须指向 ${SECTION_ID} 命名空间`);
+  }
 }
 
 function deepFindOps(payload) {
@@ -479,7 +491,9 @@ test("#46 读取通道与渲染（form=undefined-safe）：describe envelope 含
   assert.ok(tree !== null && tree !== undefined, "假 react 在场时页面视图须产出节点树（v0.1 表单入口）");
   const described = fetchStub.calls.filter((c) => /settings\/describe/.test(c.url));
   assert.ok(described.length >= 1, `挂载必须经同源 fetch 调 settings/describe（[C8] 读通道终选）；实收 fetch：${JSON.stringify(fetchStub.calls.map((c) => c.url))}`);
-  pinEnvelope(described[0], "settings/describe");
+  pinEnvelope(described[0], "settings/describe"); // args 恰空：ns 位在回包投影面
+  const view = describeEnvelope(LOADED_USER).result.namespaces.find((n) => n.ns === SECTION_ID);
+  assert.ok(view && view.user.timeoutMs === 9999, "回包投影前提：namespaces 含 ns=search-chain 项（ns 校验位点=回包面，非请求 envelope）");
   const marks = {
     "timeoutMs 数值输入": findByAttr(tree, "data-config-field", "timeoutMs"),
     "官方搜索开关": findByAttr(tree, "data-config-field", "useOfficialDeepSeekSearch"),
