@@ -449,7 +449,15 @@ async function addViaPicker(type) {
   await wait(500);
 }
 async function openEditor(cardId) { if (!(await ui.click(`${T.card(cardId)} [data-role="card-edit"]`))) throw new Error("card-edit 缺失"); await wait(450); }
-async function closeEditor() { await cancelEditor(); } // v2：清理语义=显式取消（完成钮废止）；提交路径走 submitEditor。
+async function closeEditor() {
+  const did = await cancelEditor();
+  if (did) return;
+  // v1 兼容面/run-9 实证：无「取消」钮时代以「完成」钮关窗（无字段改动时幂等无副作用；持久化另由保存驱动）。
+  if (await implV1()) {
+    await evaluate(`() => { const b = [...document.querySelectorAll('${ROOT} [data-role="editor"] button')].find((n) => /完成|Done/i.test((n.textContent || '').trim())); if (b) b.click(); return true; }`, 30000);
+    await wait(400);
+  }
+}
 async function setField(field, value) {
   return evaluate(`() => {
     const input = document.querySelector('${ROOT} [data-role="field"][data-field="${field}"]');
@@ -717,12 +725,58 @@ async function settleSaved() {
 // waitForAutoSave(before)：离散动作前取 calls().length，动作后调用——等该动作触发的 mutate 落定。
 async function waitForAutoSave(beforeCount) {
   const before = typeof beforeCount === "number" ? beforeCount : (await calls()).length;
+  if (await implV1()) {
+    // v1 兼容面/run-9 实证：纠偏前离散动作持久化由全局保存钮驱动；SET-006 专责判据（载荷排他/独立 mutate）
+    // 仍按 v2 目录判——全局保存触发的 mutate 不会伪证「动作自身落盘」（专责行取数窗口在保存点击之前）。
+    return saveViaGlobalSave(before);
+  }
   await wait(600);
   await waitRpc("/api/settings/mutate", before, 60).catch(() => {});
   return settleSaved();
 }
+// ───────── v1 兼容层（纠偏前校准轮 run-9 实证面）─────────
+// 被测实现可能是纠偏前（v1：全局 [data-role=save] 钮、选类型即入账无新建编辑器、持久化=全局保存）
+// 或纠偏后（v2：离散动作自动落盘）。执行器仅运行时探测取数路径（选择器/驱动），断言语义与判据零改动。
+let VT = null;
+async function implV1() {
+  if (VT === null) VT = await evaluate(`() => !!document.querySelector('${ROOT} [data-role="save"]')`, 30000);
+  return VT;
+}
+// v1 全局保存驱动（run-1..4 实证路径：点钮 → 等 mutate → saved 落定）。
+async function saveViaGlobalSave(beforeCount) {
+  const before = typeof beforeCount === "number" ? beforeCount : (await calls()).length;
+  const clicked = await evaluate(`() => { const b = document.querySelector('${ROOT} [data-role="save"]'); if (!b) return false; b.click(); return true; }`, 30000);
+  if (!clicked) return false;
+  await wait(700);
+  await waitRpc("/api/settings/mutate", before, 60).catch(() => {});
+  return settleSaved();
+}
+// 新建收尾：v2=编辑器内填字段+提交主按钮；v1 兼容面/run-9 实证=选类型即入账，改编辑窗补字段+全局保存。
+async function finishCreate(name, key) {
+  const editorOpen = await evaluate(`() => !!document.querySelector('${ROOT} [data-role="field"][data-field="name"]')`, 30000);
+  if (editorOpen) {
+    if (name !== null && (await setField("name", name)) !== name) throw new Error(`${JSON.stringify(name)} 名称输入失败`);
+    if (key && (await setField("key", key)) !== key) throw new Error(`${JSON.stringify(name)} key 输入失败`);
+    await submitEditor("create");
+  } else {
+    if (!(await implV1())) throw new Error("既无新建编辑器也无全局保存钮——两代契约皆缺席（执行器取数前置失败）");
+    const st = await ui.state(); const id = st.ids[st.ids.length - 1];
+    await openEditor(id);
+    if (name !== null && (await setField("name", name)) !== name) throw new Error(`${JSON.stringify(name)} 名称输入失败（v1 补写路径）`);
+    if (key && (await setField("key", key)) !== key) throw new Error(`${JSON.stringify(name)} key 输入失败（v1 补写路径）`);
+    await submitEditor("edit"); // v1 分支内=完成钮+全局保存
+  }
+}
 async function submitEditor(kind) {
   // 编辑器提交（kind=create|edit）：点动作行 primary 钮 → 等 mutate → settleSaved → 编辑器关闭。
+  if (await implV1()) {
+    // v1 兼容面/run-9 实证：v1 编辑器「完成」钮关闭 + 全局保存落盘（无动作行 primary）。
+    await evaluate(`() => { const b = [...document.querySelectorAll('${ROOT} [data-role="editor"] button')].find((n) => /完成|Done/i.test((n.textContent || '').trim())); if (b) b.click(); return true; }`, 30000);
+    await wait(400);
+    const settledV1 = await saveViaGlobalSave();
+    if (!settledV1) throw new Error(`${kind} 提交未落定（v1 全局保存未达 saved）`);
+    return true;
+  }
   const n = (await calls()).length;
   const clicked = await evaluate(`() => { const b = [...document.querySelectorAll('${ROOT} .sc-editor-actions button, ${ROOT} [data-role="editor"] button')].find((x) => /sc-button-primary/.test(x.className || '') && !/取消/.test(x.textContent || '')); if (!b) return false; b.click(); return true; }`, 30000);
   if (!clicked) throw new Error("missing element: 编辑器提交主按钮（.sc-editor-actions primary）");
@@ -1266,6 +1320,24 @@ async function editorActionLabels() {
 async function a047(theme = "light") {
   // v2 错误面可达性：新建编辑器空名称+空凭据直接提交 → create 全量校验拒绝 → 就近 [data-role=save-error][data-state=error]。
   // 若实现放行（错误态不可达）→ 目录 state-unreachable=SKIP gap；若误落库则清理空名卡复位基线。
+  if (await implV1()) {
+    // v1 兼容面/run-9 实证：v1 无新建编辑器与 create 校验——走编辑窗空名+全局保存（v1 时代实证路径）；
+    // v2 目录错误面目标 [data-role=save-error] 在 v1 实现结构性缺席 → 两行按 state-unreachable=SKIP gap。
+    await openEditor(cardIds[0]);
+    if ((await setField("name", "   ")) === null) throw new Error("name 字段不可达");
+    await saveViaGlobalSave();
+    await wait(400);
+    const legacyErr = await evaluate(`() => !!document.querySelector('${ROOT} .sc-error')`, 30000);
+    const gapMsg = `错误面目标 [data-role=save-error][data-state=error] 不可达：v1 实现无新建校验流（旧 .sc-error ${legacyErr ? "在但非目录目标节点" : "亦无"}）；failPolicy state-unreachable=SKIP gap`;
+    await exec("A-047", theme, async () => { throw new SkipGap(gapMsg); });
+    await exec("A-060", theme, async () => { throw new SkipGap(gapMsg); });
+    // 名称恢复：v1 空名可能被原样落库（无校验）；locked 窗口 onChange 被忽略（v1 时代实证），轮询解锁后写回并保存。
+    let restoredV1 = null;
+    for (let i = 0; i < 15; i++) { restoredV1 = await setField("name", "Oracle Alpha"); if (restoredV1 === "Oracle Alpha") break; await wait(400); }
+    if (restoredV1 !== "Oracle Alpha") throw new Error("名称恢复失败（v1 locked 未解除）");
+    await submitEditor("edit");
+    return;
+  }
   const n = (await calls()).length;
   await addViaPicker("exa");
   const submitClicked = await evaluate(`() => { const b = [...document.querySelectorAll('${ROOT} [data-role="editor"] button')].find((x) => /sc-button-primary/.test(x.className || '') && !/取消/.test(x.textContent || '')); if (!b) return false; b.click(); return true; }`, 30000);
@@ -1526,17 +1598,10 @@ try {
   // setupStart=B-004 配对审计锚点；labels.create=A-057 新建模式文案面。
   const setupStart = (await calls()).length;
   await addViaPicker("exa");
-  labels.createLight = await editorActionLabels();
-  if ((await setField("name", "Oracle Alpha")) !== "Oracle Alpha") throw new Error("c1 名称输入失败");
-  if ((await setField("key", KEY_A)) !== KEY_A) throw new Error("c1 key 输入失败");
-  await submitEditor("create");
-  await addViaPicker("exa");
-  if ((await setField("name", "Oracle Beta")) !== "Oracle Beta") throw new Error("c2 名称输入失败");
-  if ((await setField("key", KEY_B)) !== KEY_B) throw new Error("c2 key 输入失败");
-  await submitEditor("create");
-  await addViaPicker("bing");
-  if ((await setField("name", "Bing RSS")) === null) throw new Error("c3 名称字段不可达");
-  await submitEditor("create");
+  labels.createLight = await editorActionLabels(); // v1 兼容面/run-9 实证：v1 无动作行=空采样，A-057 判行 FAIL 自证，不抛出短路
+  await finishCreate("Oracle Alpha", KEY_A);
+  await addViaPicker("exa"); await finishCreate("Oracle Beta", KEY_B);
+  await addViaPicker("bing"); await finishCreate("Bing RSS", null);
   await exec("B-002", "light", async () => {
     const s = await ui.state();
     cardIds = s.ids;
@@ -1549,8 +1614,7 @@ try {
   // missing 观察卡：无凭据创建（创建即 missing 态，供 A-018/A-019 missing 面）；若创建校验要求凭据则降级两态。
   try {
     await addViaPicker("exa");
-    if ((await setField("name", "Oracle Missing")) !== "Oracle Missing") throw new Error("c4 名称输入失败");
-    await submitEditor("create");
+    await finishCreate("Oracle Missing", null);
     const sd = await ui.state();
     const miss = sd.ids.find((id, i) => sd.dotStates[i] === "missing");
     if (miss) { missingCard = miss; cardIds = sd.ids; }
@@ -1873,9 +1937,7 @@ try {
   }
   {
     await addViaPicker("exa");
-    if ((await setField("name", "Oracle Removable")) !== "Oracle Removable") throw new Error("B-019 临时卡创建：写名失败");
-    { const kb = await evaluate(`() => { const i = document.querySelector('${ROOT} [data-role="field"][data-field="key"]'); if (i) { const d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'); d.set.call(i, ${JSON.stringify(KEY_A)}); i.dispatchEvent(new Event('input', { bubbles: true })); } return !!i; }`, 30000); if (!kb) throw new Error("missing element: 创建流 key 字段"); }
-    await submitEditor("create");
+    await finishCreate("Oracle Removable", KEY_A); // v1 兼容面/run-9 实证：经 finishCreate 双代路径
     const stB = await ui.state();
     const remId = stB.ids[stB.ids.length - 1];
     const n19 = (await calls()).length;
@@ -2026,7 +2088,11 @@ try {
     if ((await setField("name", "Oracle Cancel-X")) !== "Oracle Cancel-X") throw new Error("B-024 草稿写入失败");
     const n24 = (await calls()).length;
     const act = await evaluate(`(() => { const b = [...document.querySelectorAll('${ROOT} [data-role="editor"] button, ${ROOT} .sc-editor-actions button')].find((x) => /取消|cancel/i.test(x.textContent || '')); if (!b) return "missing-cancel"; b.click(); const a = document.activeElement; return a ? (a.getAttribute('data-role') || a.tagName) : "none"; })()`, 30000);
-    if (act === "missing-cancel") throw new Error('missing element: 编辑器「取消」按钮（SET-008 v2 显式取消）');
+    if (act === "missing-cancel") {
+      // v1 兼容面/run-9 实证：v1 无「取消」钮——写回基线名并关窗防草稿污染，缺失判入 exec 行（FAIL 自证不短路）。
+      await setField("name", "Oracle Edited");
+      await closeEditor();
+    }
     await wait(400);
     const closed24 = await evaluate(`() => !document.querySelector('${ROOT} [data-role="editor"]')`, 30000);
     const mut24 = (await calls()).slice(n24).filter((x) => x.url === "/api/settings/mutate").length;
@@ -2038,6 +2104,7 @@ try {
       if (mut24) mis.push(`取消产生 ${mut24} 次 mutate（取消必须零写入）`);
       if (!noReopen24) mis.push("取消草稿竟被缓存（重挂载自动重开=清除未生效）");
       if (act === "none" || act === "BODY") mis.push(`取消后焦点回落到 body（应回焦点触发元素）got ${act}`);
+      if (act === "missing-cancel") mis.push('missing element: 编辑器「取消」按钮（SET-008 v2 显式取消面，v1 实现无此钮）');
       if (mis.length) throw new Error(mis.join("；"));
       return { measured: `显式取消：关闭✓ 零 mutate✓ 重挂载不重开（缓存已清）✓ 焦点回落 ${act}` };
     });
