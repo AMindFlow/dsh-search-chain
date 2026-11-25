@@ -1529,10 +1529,14 @@ try {
     if (opacity === null) throw new SkipGap("native drag unreachable in Electron（键盘排序 B-012 已必测覆盖）");
     const after = await ui.state();
     if (JSON.stringify(after.ids) !== JSON.stringify(before.ids)) {
-      await saveAndSettle();
+      // codex 第三轮 P2（定性有效）：持久化闭环断言补全——保存必须判落定；真实 reload 后 ID 序列必须 === drop 后即时序列
+      // （SET-003「保存读回」本意含持久化比较，与 B-012 键盘路径断言形态对齐；「drop 改序→未落库→reload 回弹」不得判 PASS）。
+      const saved = await saveAndSettle();
+      if (!saved) throw new Error(`拖拽重排成功（即时序 ${JSON.stringify(after.ids)}）但保存未落定（save-status 未达 saved）——持久化闭环失败`);
       await reloadAndReopen();
       const fin = await ui.state();
-      return { measured: `原生拖拽可达且顺序变化：观察序 ${JSON.stringify(fin.ids)} 保存读回一致` };
+      if (JSON.stringify(fin.ids) !== JSON.stringify(after.ids)) throw new Error(`落库不一致：drop 后即时序 ${JSON.stringify(after.ids)} ≠ reload 读回序 ${JSON.stringify(fin.ids)}（保存失败/未落库/回弹原序）`);
+      return { measured: `原生拖拽可达且顺序变化：drop 后即时序 ${JSON.stringify(after.ids)} 保存落定→reload 读回 ${JSON.stringify(fin.ids)} 一致（持久化闭环，B-012 同形态）` };
     }
     // Luna call-2：拖拽路径可达（data-dragging 实证）却未产生期望重排 → 行为断言 FAIL，不得判 PASS；仅不可达才 SKIP。
     throw new Error(`原生拖拽可达（拦截事件实证）但释放后顺序未变：${JSON.stringify(after.names)}——SET-003 拖拽重排行为未达成（可达即判，不得 PASS）`);
