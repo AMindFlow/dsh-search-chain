@@ -521,18 +521,50 @@ async function navClick(text) {
   return evaluate(`() => { const items = [...document.querySelectorAll('button,a,[role="button"],[role="tab"],[role="menuitem"],li,[class*="navRow"],[class*="nav"] div')]; const it = items.find((n) => (n.innerText || n.getAttribute('aria-label') || '').trim() === ${JSON.stringify(text)}); if (it) { it.click(); return true; } return false; }`, 30000);
 }
 // v2/SET-008：设置抽屉分区切换（离开我方面板=unmount；回来=重挂载）。
-async function leaveSection() {
-  const gone = await evaluate(`() => { const ours = /^(网页搜索链|Web\\s*Search\\s*Chain)$/i; const items = [...document.querySelectorAll('button,a,[role="button"],[role="tab"],[role="menuitem"],li')].filter((n) => n.children.length <= 1 && (n.innerText || '').trim() && n.getBoundingClientRect().width > 0);
+// ───────── O-1 挂载语义探针 + B-022..026 载体收敛（run-10 实证）─────────
+// run-10 崩溃位取证：官方 shell 分区切换时我方面板保持挂载（未 unmount）——O-1 定案。
+// 前置守卫禁 throw（全量无短路纪律）；三观测（DOM 在场性/display 遮挡/React 活值回环）正式入 measured。
+// B-022..026 载体收敛为「设置视图关闭-重开」（必卸载路径，run-10 实证选路）；B-022 expected「section
+// switch」/B-026 property「section remount」字面词面经 lead 提交 Luna call-7 微修订，语义核
+// （卸载-重挂载后草稿保全/冲突告警/零写入）不变——执行器不改目录语义，仅换已证可达的载体路径。
+async function mountProbe() {
+  return evaluate(`() => { const r = document.querySelector('${ROOT}'); let hidden = null;
+    if (r) { let n = r; for (let i = 0; i < 6 && n; i++, n = n.parentElement) { const cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden') { hidden = cs.display + '/' + cs.visibility; break; } } }
+    const ni = document.querySelector('${ROOT} [data-role="field"][data-field="name"]');
+    return { present: !!r, hidden, editor: !!(ni && ni.offsetParent), nameVal: ni ? String(ni.value).slice(0, 24) : null }; }`, 30000);
+}
+async function sectionSwitchProbe() {
+  // 载体候选 A：分区切换三观测（O-1 正式取证面，非抛出）。
+  const pre = await mountProbe();
+  const clicked = await evaluate(`() => { const ours = /^(网页搜索链|Web\s*Search\s*Chain)$/i; const items = [...document.querySelectorAll('button,[role="tab"],[role="menuitem"],a,li')];
     const other = items.find((n) => !ours.test((n.innerText || '').trim()) && (n.innerText || '').trim().length <= 24);
     if (!other) return false; (other.closest('button,[role="tab"],[role="menuitem"],li') || other).click(); return true; }`, 30000);
-  if (!gone) throw new Error("missing element: 设置抽屉其他分区导航行（分区切换前置）");
-  for (let i = 0; i < 20; i++) { if (!(await evaluate(`() => !!document.querySelector('${ROOT}')`, 30000))) return true; await wait(300); }
-  throw new Error("分区切换后我方面板未 unmount（SET-008 重挂载前提不成立）");
+  await wait(800);
+  const during = await mountProbe();
+  let back = false;
+  for (let i = 0; i < 3 && !back; i++) { back = await navClick("网页搜索链"); if (!back) await wait(600); }
+  await wait(700);
+  const post = await mountProbe();
+  return { navClicked: clicked, pre, duringPresent: during.present, post, unmounted: !during.present };
 }
-async function backToSection() {
-  if (!(await navClick("网页搜索链"))) { await wait(1200); if (!(await navClick("网页搜索链"))) throw new Error("设置抽屉导航无「网页搜索链」分区（返回失败）"); }
-  for (let i = 0; i < 40; i++) { if (await evaluate(`() => !!document.querySelector('${ROOT} [data-role="card"]')`, 30000)) { await wait(400); return true; } await wait(300); }
-  throw new Error("返回分区后面板未重新挂载");
+async function settingsViewCycle() {
+  // 载体 B（run-10 实证主载体）：关闭设置视图→重开（必卸载路径）。关闭选择器运行时探测，非抛出。
+  const attempts = [];
+  let closed = false;
+  const tryClose = async (label, fn) => {
+    if (closed) return;
+    try { const did = await fn(); await wait(500); closed = !(await mountProbe()).present; attempts.push({ label, did, closed }); }
+    catch (e) { attempts.push({ label, err: String((e && e.message) || e).slice(0, 60) }); }
+  };
+  await tryClose("drawer-close-btn", () => evaluate(`() => { const b = [...document.querySelectorAll('button,[role="button"]')].find((n) => /关闭|close/i.test((n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('title') || '')) || /^[×✕✖]$/.test((n.innerText || '').trim())); if (!b) return false; b.click(); return true; }`, 30000));
+  await tryClose("settings-toggle", () => evaluate(`() => { const cands = [...document.querySelectorAll('button,a,[role="button"],[role="menuitem"]')]; const item = cands.find((n) => /^(设置|Settings)$/i.test((n.innerText || n.getAttribute('aria-label') || n.getAttribute('title') || '').trim())); if (!item) return false; item.click(); return true; }`, 30000));
+  await tryClose("escape", async () => { await pressKey("Escape", "Escape", 27); return true; });
+  if (!closed) return { closed: false, attempts, post: await mountProbe() };
+  await wait(600);
+  await openSettings();
+  for (let i = 0; i < 30; i++) { if ((await mountProbe()).present) break; await wait(400); }
+  await wait(600);
+  return { closed: true, attempts, post: await mountProbe() };
 }
 async function smallestContainerShot(needle, fileName) {
   const box = await evaluate(`(() => {
@@ -745,6 +777,7 @@ async function implV1() {
 // v1 全局保存驱动（run-1..4 实证路径：点钮 → 等 mutate → saved 落定）。
 async function saveViaGlobalSave(beforeCount) {
   const before = typeof beforeCount === "number" ? beforeCount : (await calls()).length;
+  await wait(350); // v1 兼容面/run-10 实证：离散动作后先让 React 态提交再点全局保存（v1 时代 saveAndSettle 同律；run-10 B-011 伪报=此竞态）
   const clicked = await evaluate(`() => { const b = document.querySelector('${ROOT} [data-role="save"]'); if (!b) return false; b.click(); return true; }`, 30000);
   if (!clicked) return false;
   await wait(700);
@@ -2026,7 +2059,7 @@ try {
   await exec("B-020", "light", async () => {
     const before = await ui.state();
     const n20 = (await calls()).length;
-    const opacity = await nativeDragAttempt(before.ids[1]);
+    const opacity = await nativeDragAttempt(before.ids[Math.min(2, before.ids.length - 1)]); // 执行器稳健性/run-10：B-013 已拖过首卡，换尾卡提高改序可达性（语义不变）
     if (opacity === null) throw new SkipGap("native drag unreachable in Electron（排序持久化行为面已由 B-012/B-013 覆盖）");
     const after = await ui.state();
     if (JSON.stringify(after.ids) === JSON.stringify(before.ids)) throw new SkipGap("本次拖拽未产生顺序变化，载荷排他面不可判（行为面已由 B-013 覆盖）");
@@ -2049,8 +2082,9 @@ try {
       await evaluate(`(() => { const el = document.querySelector('${tSel2}'); const pd = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'); pd.set.call(el, '7777'); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`, 30000); // 不 blur
     }
     const n22 = (await calls()).length;
-    await leaveSection();
-    await backToSection();
+    // O-1 正式取证（分区切换三观测，非抛出）+ 主载体=设置视图关闭-重开（run-10 实证必卸载路径）。
+    const o1 = await sectionSwitchProbe();
+    const cyc22 = await settingsViewCycle();
     if (tSel2) {
       tDraft1 = await evaluate(`(() => { const el = document.querySelector('${tSel2}'); return el ? el.value : null; })()`, 30000);
       tSaved = await evaluate(`(() => { const s = JSON.parse(sessionStorage.getItem('__oracle50Calls') || '[]'); const m = s.filter((x) => x.url === '/api/settings/mutate'); return m.length ? JSON.stringify(m[m.length - 1].mkeys || []) : ''; })()`, 30000);
@@ -2060,7 +2094,9 @@ try {
     if (ed22) { await submitEditor("edit"); await reloadAndReopen(); }
     const st22 = await ui.state();
     await exec("B-022", "light", async () => {
+      if (!cyc22.closed) throw new SkipGap(`载体不可达：设置视图未能关闭 ${JSON.stringify(cyc22.attempts).slice(0, 140)}；O-1 实证=分区切换 unmounted=${o1.unmounted}，不满足卸载-重挂载前提（载体词面 awaiting Luna call-7 微修订）`);
       const mis = [];
+      if (o1.unmounted) mis.push(`异常：分区切换竟卸载了面板（与 run-10 实证相反，复核 O-1）got ${JSON.stringify(o1)}`);
       if (!ed22) mis.push("重挂载后编辑器未自动重开（SET-008：匹配条目的编辑窗应自动恢复）");
       else {
         if (ed22.name !== "Oracle Draft γ") mis.push(`草稿名未回填 got ${JSON.stringify(ed22.name)}`);
@@ -2070,7 +2106,7 @@ try {
       const idx22 = st22.ids.indexOf(cardIds[1]);
       if (ed22 && (st22.names[idx22] !== "Oracle Draft γ" || st22.dotStates[idx22] !== "ready")) mis.push(`key buffer 直提后读回 name=${st22.names[idx22]} 徽标=${st22.dotStates[idx22]}（期望草稿名持久且凭据完好）`);
       if (mis.length) throw new Error(mis.join("；"));
-      return { measured: `分区往返后编辑器自动重开：草稿名回填、key buffer 非空且直提成功（${JSON.stringify(st22.names[idx22])} 持久，徽标 ready）；timeout 草稿=${tSel2 ? "存活/合法落盘" : "无输入框(见 B-017 missing)"}` };
+      return { measured: `载体=设置视图关闭-重开（run-10 实证）后编辑器自动重开：草稿名回填、key buffer 非空且直提成功（${JSON.stringify(st22.names[idx22])} 持久，徽标 ready）；timeout 草稿=${tSel2 ? "存活/合法落盘" : "无输入框(见 B-017 missing)"}；O-1 取证：分区切换 duringPresent=${o1.duringPresent} name 回环 ${JSON.stringify(o1.pre.nameVal)}→${JSON.stringify(o1.post.nameVal)}（未卸载=官方 shell 挂载语义）` };
     });
     await exec("B-023", "light", async () => {
       const leak = await evaluate(`(() => { const needles = ${JSON.stringify([KEY_A, KEY_B, "synthetic-not-a-secret"])}; const hits = [];
@@ -2096,13 +2132,14 @@ try {
     await wait(400);
     const closed24 = await evaluate(`() => !document.querySelector('${ROOT} [data-role="editor"]')`, 30000);
     const mut24 = (await calls()).slice(n24).filter((x) => x.url === "/api/settings/mutate").length;
-    await leaveSection(); await backToSection();
-    const noReopen24 = await evaluate(`() => !document.querySelector('${ROOT} [data-role="editor"]')`, 30000);
+    const cyc24 = await settingsViewCycle(); // 载体=设置视图重开/run-10 实证（分区切换=O-1 未卸载，不构成重挂载）
+    const noReopen24 = cyc24.closed ? await evaluate(`() => !document.querySelector('${ROOT} [data-role="editor"]')`, 30000) : null;
     await exec("B-024", "light", async () => {
       const mis = [];
       if (!closed24) mis.push("取消后编辑器未关闭");
       if (mut24) mis.push(`取消产生 ${mut24} 次 mutate（取消必须零写入）`);
-      if (!noReopen24) mis.push("取消草稿竟被缓存（重挂载自动重开=清除未生效）");
+      if (noReopen24 === null) mis.push(`载体不可达（设置视图未能关闭 ${JSON.stringify(cyc24.attempts).slice(0, 80)}）：重挂载不恢复子项不可判（O-1：分区切换=未卸载；载体词面 awaiting Luna call-7）`);
+      else if (!noReopen24) mis.push("取消草稿竟被缓存（重挂载自动重开=清除未生效）");
       if (act === "none" || act === "BODY") mis.push(`取消后焦点回落到 body（应回焦点触发元素）got ${act}`);
       if (act === "missing-cancel") mis.push('missing element: 编辑器「取消」按钮（SET-008 v2 显式取消面，v1 实现无此钮）');
       if (mis.length) throw new Error(mis.join("；"));
@@ -2119,13 +2156,14 @@ try {
     const closed25 = await evaluate(`() => !document.querySelector('${ROOT} [data-role="editor"]')`, 30000);
     const mut25 = (await calls()).slice(n25).filter((x) => x.url === "/api/settings/mutate").length;
     const focus25 = await evaluate(`() => { const a = document.activeElement; return a ? (a.getAttribute('data-role') || a.tagName) : "none"; }`, 30000);
-    await leaveSection(); await backToSection();
-    const noReopen25 = await evaluate(`() => !document.querySelector('${ROOT} [data-role="editor"]')`, 30000);
+    const cyc25 = await settingsViewCycle(); // 载体=设置视图重开/run-10 实证
+    const noReopen25 = cyc25.closed ? await evaluate(`() => !document.querySelector('${ROOT} [data-role="editor"]')`, 30000) : null;
     await exec("B-025", "light", async () => {
       const mis = [];
       if (!closed25) mis.push("Escape 后编辑器未关闭");
       if (mut25) mis.push(`Escape 产生 ${mut25} 次 mutate（应零写入）`);
-      if (!noReopen25) mis.push("Escape 草稿未清除（重挂载重开）");
+      if (noReopen25 === null) mis.push(`载体不可达（设置视图未能关闭 ${JSON.stringify(cyc25.attempts).slice(0, 80)}）：重挂载不恢复子项不可判（O-1：分区切换=未卸载）`);
+      else if (!noReopen25) mis.push("Escape 草稿未清除（重挂载重开）");
       if (mis.length) throw new Error(mis.join("；"));
       return { measured: `Escape：关闭✓ 零 mutate✓ 缓存清除✓ 焦点回落 ${focus25}（O-5：回焦点触发器）` };
     });
@@ -2147,7 +2185,11 @@ try {
       await exec("B-026", "light", async () => { throw new SkipGap(`冲突注入端不可行（宿主 describe/mutate 非执行器可写：${JSON.stringify(inj).slice(0, 120)}）；草稿+乐观并发 UI 面记 gap`); });
     } else {
       const n26 = (await calls()).length;
-      await leaveSection(); await backToSection();
+      const cyc26 = await settingsViewCycle(); // 载体=设置视图重开/run-10 实证（B-026 property「section remount」词面 awaiting Luna call-7；卸载-重挂载语义核不变）
+      if (!cyc26.closed) {
+        await cancelEditor().catch(() => {});
+        await exec("B-026", "light", async () => { throw new SkipGap(`载体不可达：设置视图未能关闭 ${JSON.stringify(cyc26.attempts).slice(0, 100)}；卸载-重挂载冲突前提无法构造（O-1 实证：分区切换=未卸载）`); });
+      } else {
       const ed26 = await evaluate(`(() => { const e = document.querySelector('${ROOT} [data-role="editor"]'); const al = document.querySelector('${ROOT} [role="alert"]'); const nm = document.querySelector('${T.card(cardIds[1])} [data-role="card-name"]'); return { open: !!e, draft: e ? (e.querySelector('[data-field="name"]') || {}).value : null, alert: al ? (al.textContent || '').trim().slice(0, 80) : null, savedName: nm ? nm.textContent.trim() : null }; })()`, 30000);
       const mut26 = (await calls()).slice(n26).filter((x) => x.url === "/api/settings/mutate").length;
       await cancelEditor().catch(() => {});
@@ -2157,8 +2199,9 @@ try {
         if (!ed26.alert) mis.push("未见冲突告警（[role=alert] 缺席；期望提示服务端已更新而非静默）");
         if (mut26) mis.push(`返回即自动以陈旧草稿覆盖服务端（${mut26} 次 mutate；冲突应提示不得静默覆盖）`);
         if (mis.length) throw new Error(mis.join("；"));
-        return { measured: `注入 rev=${inj.rev}→往返：草稿存活（${JSON.stringify(ed26.draft)}）+ 冲突告警「${ed26.alert}」+ 零自动覆盖写；持久名仍「${ed26.savedName}」` };
+        return { measured: `注入 rev=${inj.rev}→载体（设置视图关闭-重开）：草稿存活（${JSON.stringify(ed26.draft)}）+ 冲突告警「${ed26.alert}」+ 零自动覆盖写；持久名仍「${ed26.savedName}」` };
       });
+      }
     }
   }
 
