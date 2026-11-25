@@ -121,7 +121,8 @@ if (!page) skipAll("CDP 未返回 page target。");
 ws = new WebSocket(page.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = () => reject(new Error("CDP WebSocket 连接失败")); });
 let seq = 0; const pending = new Map();
-ws.onmessage = (ev) => { const msg = JSON.parse(ev.data); if (!msg.id || !pending.has(msg.id)) return; const p = pending.get(msg.id); pending.delete(msg.id); msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg.result); };
+const cdpEvents = []; // CDP 事件泵（Input.dragIntercepted 依赖；lead 修复项 14）
+ws.onmessage = (ev) => { const msg = JSON.parse(ev.data); if (msg.method) { if (msg.method === "Input.dragIntercepted") cdpEvents.push(msg.params); return; } if (!msg.id || !pending.has(msg.id)) return; const p = pending.get(msg.id); pending.delete(msg.id); msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg.result); };
 function cdp(method, params = {}) { const id = ++seq; return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params })); }); }
 async function evaluate(fn, timeout = 120000) {
   // 兼容三种调用形态：真实函数（toString 包裹）、`() => ...` 箭头串（包裹调用）、`(() => {...})()` 自执行 IIFE 串（原样传递）。
@@ -166,9 +167,15 @@ const INSTRUMENT = () => {
   // Luna call-3 归属判据：仅对非 /api/ 请求在包装器调用点即时判栈（不落栈原文，只存布尔 hf/pf）。
   const attrib = (path) => {
     if (path.indexOf("/api/") === 0) return {};
-    let hf = false; let pf = false;
-    try { const st = String(new Error().stack || ""); pf = /search-chain|client-entry/i.test(st); hf = /app\.asar|dsh-desktop/i.test(st); } catch { /* 归属不明按违例，不豁免 */ }
-    return { hf, pf };
+    let hf = false; let pf = false; let frames = null;
+    // Luna call-4（REJECT 维持字面判据）指定的脱敏采集：每帧 scheme://hostname+前两段路径，禁 query/栈全文——FAIL 行自证审计面。
+    try {
+      const st = String(new Error().stack || ""); pf = /search-chain|client-entry/i.test(st); hf = /app\.asar|dsh-desktop/i.test(st);
+      const urls = st.match(/[a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^\s()]+/g) || []; const out = [];
+      for (const u of urls) { try { const x = new URL(u); out.push(x.protocol + "//" + (x.hostname || x.host.replace(/:.*/, "")) + "/" + x.pathname.split("/").filter(Boolean).slice(0, 2).join("/")); } catch { /* ignore */ } if (out.length >= 6) break; }
+      frames = [...new Set(out)].slice(0, 6);
+    } catch { /* */ }
+    return { hf, pf, frames };
   };
   if (!window.__oracle50Patched) {
     window.__oracle50Patched = true;
@@ -287,6 +294,15 @@ async function checkProps(target, props, pseudo) {
     } else if (p.wantFn) {
       ok = p.wantFn(actual, measured);
       if (!ok) mis.push(`${p.prop} got ${actual}，期望 ${p.wantLabel}`);
+    } else if (p.blockifyEqv) {
+      // lead 修复项 1：钉死 inline-* 的元素身为 flex/grid 父项的 flex item，Chromium computed 必然块级化。
+      // 等价条件（全部满足）：computed=p.blockifyEqv ∧ 计算父容器 display 为 flex/grid 系 ∧ 规则文本含 specified display:inline-*。
+      const pd = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(target)}); const pe = el && el.parentElement; return pe ? getComputedStyle(pe).display : ""; })()`, 30000);
+      const rules = await cssRules();
+      const specHit = (rules.rules || []).some((r) => r.sel.includes(p.ruleHint) && norm(r.text).includes(norm(`display:${p.want}`)));
+      ok = eqCss(actual, p.blockifyEqv) && /flex|grid/.test(pd) && specHit;
+      if (ok) measured[p.prop] = `${actual}(specified ${p.want} 规则文本实证；父 display=${pd} 块级化=等价)`;
+      else mis.push(`display got ${actual} 期望 ${p.want}（块级化等价需：父 flex/grid[实测 ${pd || "?"}] ∧规则文本 specified ${p.want}[实测 ${specHit}]）`);
     } else {
       ok = eqCss(actual, p.want);
       if (!ok) mis.push(`${p.prop} got ${actual} 期望 ${p.want}`);
@@ -523,21 +539,45 @@ async function tryHover(sel) {
   await wait(350);
   return evaluate(`() => { const el = document.querySelector(${JSON.stringify(sel)}); return !!el && el.matches(':hover'); }`, 30000);
 }
+// 原生拖拽（lead 修复项 14）：Input.setInterceptDrags(true) 拦截渲染进程发起的 HTML5 拖拽，
+// 再以 Input.dispatchDragEvent 完成 dragEnter/dragOver/drop——Electron 下唯一原生链路（dev 实证 data-dragging 可达）。
+// 返回拖动态 opacity 字符串；拦截未发生=不可达返回 null（A-052/B-013 按目录记 SKIP gap）。
 async function nativeDragAttempt(cardId) {
-  const box = await evaluate(`(() => { const el = document.querySelector('${T.card(cardId)} [data-role="drag-handle"]'); if (!el) return null; el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`, 30000);
-  if (!box) throw new Error("missing element: drag-handle");
-  await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y });
-  await cdp("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1 });
-  let dragging = null;
-  for (let i = 1; i <= 14 && dragging === null; i++) {
-    await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: Math.max(2, box.y - i * 7), button: "left" });
-    dragging = await evaluate(`() => { const el = document.querySelector('${ROOT} [data-role="card"][data-dragging]'); return el ? getComputedStyle(el).opacity : null; }`, 30000);
-    await wait(60);
+  const geo = await evaluate(`(() => { const h = document.querySelector('${T.card(cardId)} [data-role="drag-handle"]'); const nx = document.querySelector('${ROOT} [data-role="card"]:nth-of-type(2)') && [...document.querySelectorAll('${ROOT} [data-role="card"]')][1]; if (!h || !nx) return null; h.scrollIntoView({ block: 'center' }); const r = h.getBoundingClientRect(); const n = nx.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, tx: n.x + n.width / 2, ty: n.y + n.height * 0.75 }; })()`, 30000);
+  if (!geo) throw new Error("missing element: drag-handle/second card");
+  cdpEvents.length = 0;
+  await cdp("Input.setInterceptDrags", { enabled: true });
+  try {
+    await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: geo.x, y: geo.y });
+    await cdp("Input.dispatchMouseEvent", { type: "mousePressed", x: geo.x, y: geo.y, button: "left", clickCount: 1 });
+    for (let i = 1; i <= 12; i++) {
+      await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: geo.x, y: geo.y - i * 8, button: "left" });
+      await wait(50);
+      if (cdpEvents.length) break;
+    }
+    if (!cdpEvents.length) {
+      await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x: geo.x, y: geo.y - 96, button: "left" });
+      return null; // 渲染进程未发起原生拖拽 = 不可达
+    }
+    const data = cdpEvents[0].data;
+    await cdp("Input.dispatchDragEvent", { type: "dragEnter", x: geo.tx, y: geo.ty, data });
+    let dragging = null;
+    for (let i = 0; i < 10 && dragging === null; i++) {
+      await cdp("Input.dispatchDragEvent", { type: "dragOver", x: geo.tx, y: geo.ty - i * 2, data });
+      dragging = await evaluate(`() => { const el = document.querySelector('${ROOT} [data-role="card"][data-dragging]'); return el ? getComputedStyle(el).opacity : null; }`, 30000);
+      await wait(60);
+    }
+    await cdp("Input.dispatchDragEvent", { type: "dragOver", x: geo.tx, y: geo.ty, data });
+    await cdp("Input.dispatchDragEvent", { type: "drop", x: geo.tx, y: geo.ty, data });
+    await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x: geo.tx, y: geo.ty, button: "left" });
+    await cdp("Input.dispatchDragEvent", { type: "dragEnd", x: geo.tx, y: geo.ty, data }).catch(() => {});
+    await wait(450);
+    return dragging === null ? "none" : dragging; // "none"=拖拽链路可达但未观测 data-dragging（可达即判，非不可达）
+  } finally {
+    await cdp("Input.setInterceptDrags", { enabled: false }).catch(() => {});
   }
-  await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: Math.max(2, box.y - 96), button: "left" });
-  await wait(500);
-  return dragging;
 }
+async function mouseNeutral() { await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 }).catch(() => {}); await wait(150); } // 采样前脱 hover（lead 修复项 11）
 const saveSamples = []; // {theme, text, width}（A-032 「width follows label content」采样面）
 async function captureSaveSample(theme, tag) {
   const s = await ui.state();
@@ -546,11 +586,18 @@ async function captureSaveSample(theme, tag) {
   const prev = saveSamples[saveSamples.length - 1];
   if (!prev || prev.text !== e.text || prev.theme !== theme || prev.tag !== tag) saveSamples.push(e);
 }
-async function captureDisabledFamilies(theme = "light") {
+async function captureDisabledFamilies(theme = "light", openEditor = false) {
   // 单次点击保存 + 轮询 locked 窗口（不重复点击，避免多轮 mutate 污染 B-004 序列审计）。
+  // lead 修复项 7：input .6 档只在编辑器打开态存在——openEditor 时先开编辑器再保存，locked 窗口三档采齐后由调用方关闭。
   await captureSaveSample(theme, "pre-save");
+  if (openEditor) {
+    await ui.click(`${T.card(cardIds[0])} [data-role="card-edit"]`);
+    await wait(400);
+    const ok = await evaluate(`() => !!document.querySelector('${ROOT} [data-role="field"][data-field="name"]')`, 30000);
+    if (!ok) throw new Error("编辑器不可开启：locked 态 input 档不可采（执行器前置状态失败）");
+  }
   const clicked = await evaluate(`() => { const el = document.querySelector('${ROOT} [data-role="save"]'); if (!el || el.disabled) return false; el.click(); return true; }`, 30000);
-  if (!clicked) return null;
+  if (!clicked) { if (openEditor) await closeEditor(); return null; }
   for (let i = 0; i < 150; i++) {
     const fam = await evaluate(`(() => {
       const get = (sel) => { const el = document.querySelector(sel); if (!el) return null; const cs = getComputedStyle(el); return { opacity: cs.opacity, cursor: cs.cursor }; };
@@ -559,7 +606,7 @@ async function captureDisabledFamilies(theme = "light") {
         action: get('${ROOT} [data-role="add-tool"]'),
         input: get('${ROOT} [data-role="field"][data-field="name"]'),
         track: get('${ROOT} .sc-switch-input:disabled + .sc-switch-track'),
-        switchLabel: get('${ROOT} .sc-switch:has(.sc-switch-input:disabled)'),
+        switchLabel: get('${ROOT} .sc-switch:has(.sc-switch-input:disabled) .sc-switch-label'),
       };
     })()`, 30000);
     if (fam.button && fam.button.cursor !== "pointer") { await captureSaveSample(theme, "pending"); return fam; }
@@ -569,7 +616,7 @@ async function captureDisabledFamilies(theme = "light") {
   if (late) {
     const fam = await evaluate(`(() => {
       const get = (sel) => { const el = document.querySelector(sel); if (!el) return null; const cs = getComputedStyle(el); return { opacity: cs.opacity, cursor: cs.cursor }; };
-      return { button: get('${ROOT} [data-role="save"]'), action: get('${ROOT} [data-role="add-tool"]'), input: get('${ROOT} [data-role="field"][data-field="name"]'), track: get('${ROOT} .sc-switch-input:disabled + .sc-switch-track'), switchLabel: get('${ROOT} .sc-switch:has(.sc-switch-input:disabled)') };
+      return { button: get('${ROOT} [data-role="save"]'), action: get('${ROOT} [data-role="add-tool"]'), input: get('${ROOT} [data-role="field"][data-field="name"]'), track: get('${ROOT} .sc-switch-input:disabled + .sc-switch-track'), switchLabel: get('${ROOT} .sc-switch:has(.sc-switch-input:disabled) .sc-switch-label') };
     })()`, 30000);
     if (fam.button) { await captureSaveSample(theme, "pending"); return fam; }
   }
@@ -615,7 +662,9 @@ async function settleSaved() {
       await wait(600);
       continue;
     }
-    if (String(s.saveText || "").includes("已保存")) return true;
+    // dev 实现以 [data-role=save-status][data-state=saved] 表达落定（按钮文案静态「保存」）；两路任一即落定（run-2 A-032 根因）。
+    const saved = await evaluate(`() => String((document.querySelector('${ROOT} [data-role="save"]')?.textContent) || '').includes('已保存') || !!document.querySelector('${ROOT} [data-role="save-status"][data-state="saved"]')`, 30000);
+    if (saved) return true;
     await wait(1000);
   }
   return false;
@@ -683,15 +732,26 @@ async function styleSweep(theme) {
     { prop: "display", want: "flex" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "10px" }, { prop: "minWidth", want: "0px" },
   ]) }));
   await exec("A-011", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-card-info`, [
-    { prop: "display", want: "inline-flex" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "6px" }, { prop: "minWidth", want: "0px" },
+    { prop: "display", want: "inline-flex", blockifyEqv: "flex", ruleHint: ".sc-card-info" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "6px" }, { prop: "minWidth", want: "0px" },
   ]) }));
-  await exec("A-012", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-card-actions`, [
-    { prop: "display", want: "inline-flex" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "4px" }, { prop: "marginLeft", want: "auto" },
-  ]) }));
+  await exec("A-012", theme, async () => {
+    // lead 修复项 2：margin-left:auto 的 computed 是布局后 px——specified 走规则文本断言，几何走「动作组右缘≈卡内容右缘」。
+    const measured = await checkProps(`${ROOT} .sc-card-actions`, [
+      { prop: "display", want: "inline-flex", blockifyEqv: "flex", ruleHint: ".sc-card-actions" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "4px" },
+    ]);
+    const rules = await cssRules();
+    const specHit = (rules.rules || []).some((r) => r.sel.includes(".sc-card-actions") && norm(r.text).includes(norm("margin-left:auto")));
+    if (!specHit) throw new Error(`.sc-card-actions 规则文本未见 specified margin-left:auto；computed 面=${measured}`);
+    const geo = await rects({ actions: `${ROOT} .sc-card-actions`, card: `${ROOT} [data-role="card"]` });
+    if (!geo.actions || !geo.card) throw new Error("missing element: .sc-card-actions/.sc-card");
+    const delta = Math.abs(geo.actions.right - (geo.card.right - geo.card.padRight));
+    if (delta > 1) throw new Error(`动作组右缘 ${geo.actions.right} 未钉至卡片内容右缘（差 ${delta.toFixed(2)}px，auto 边距未生效）`);
+    return { measured: `${measured} marginLeft=auto(规则文本 specified) 动作组右缘差 ${delta.toFixed(2)}px` };
+  });
   await exec("A-013", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-card-name`, [
+    { prop: "overflowWrap", want: "anywhere", noteOnly: true }, // lead 修复项 3：先入账 overflowWrap，wordBreak 备选判定才可读到
     { prop: "fontSize", want: "14px" }, { prop: "lineHeight", want: "22px" }, { prop: "fontWeight", want: "500" },
     { prop: "wordBreak", wantFn: (a, m) => eqCss(a, "anywhere") || eqCss(m.overflowWrap, "anywhere"), wantLabel: "anywhere（word-break 或 overflow-wrap）" },
-    { prop: "overflowWrap", want: "anywhere", noteOnly: true },
   ]) }));
   await exec("A-014", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-card-name`, [
     { prop: "color", wantProbe: "--dsw-alias-label-primary", also: theme === "light" ? "rgb(15, 17, 21)" : "rgb(249, 250, 251)" },
@@ -761,11 +821,18 @@ async function styleSweep(theme) {
     ], "::after");
     return { measured: `unchecked{${off}} checked{${on}}` };
   });
-  await exec("A-026", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-switch`, [
-    { prop: "display", want: "inline-flex" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "8px" },
-    { prop: "color", wantProbe: "--dsw-alias-label-secondary", also: theme === "light" ? "rgb(97, 102, 107)" : "rgb(207, 211, 214)" },
-    { prop: "cursor", want: "pointer" }, { prop: "whiteSpace", want: "nowrap" },
-  ]) }));
+  await exec("A-026", theme, async () => {
+    // lead 修复项 5：首个 .sc-switch 属官方行（SPC-013 label-primary 是其正确值）；SPC-012 断言限定卡片开关上下文。
+    const geo = await checkProps(`${ROOT} [data-role="card"] .sc-switch`, [
+      { prop: "display", want: "inline-flex", blockifyEqv: "flex", ruleHint: ".sc-switch" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "8px" },
+      { prop: "color", wantProbe: "--dsw-alias-label-secondary", also: theme === "light" ? "rgb(97, 102, 107)" : "rgb(207, 211, 214)" },
+      { prop: "cursor", want: "pointer" }, { prop: "whiteSpace", want: "nowrap" },
+    ]);
+    const lab = await checkProps(`${ROOT} [data-role="card"] .sc-switch .sc-switch-label`, [
+      { prop: "fontSize", want: "14px" }, { prop: "lineHeight", want: "22px" },
+    ]);
+    return { measured: `${geo} ${lab}` };
+  });
   await exec("A-027", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-official-row`, [
     { prop: "display", want: "flex" }, { prop: "flexDirection", want: "column" }, { prop: "alignItems", want: "flex-start" },
     { prop: "gap", want: "8px" }, { prop: "backgroundColor", want: "rgba(0, 0, 0, 0)" }, { prop: "borderTopWidth", want: "0px" },
@@ -774,8 +841,10 @@ async function styleSweep(theme) {
   await wait(250);
   await exec("A-028", theme, async () => {
     const radius = (await probeRadius(["--dsw-radius-md"]))["--dsw-radius-md"];
-    return { measured: await checkProps(`${ROOT} .sc-button`, [
-      { prop: "boxSizing", want: "border-box" }, { prop: "display", want: "inline-flex" },
+    // lead 修复项 6：标准档实例按上下文选——保存钮（.sc-button 标准 36px 档；添加工具 44px/卡内 28px compact 各归其位）。
+    await mouseNeutral();
+    return { measured: await checkProps(`${ROOT} [data-role="save"].sc-button`, [
+      { prop: "boxSizing", want: "border-box" }, { prop: "display", want: "inline-flex", blockifyEqv: "flex", ruleHint: ".sc-button" },
       { prop: "alignItems", want: "center" }, { prop: "justifyContent", want: "center" }, { prop: "gap", want: "4px" },
       { prop: "height", want: "36px" }, { prop: "paddingLeft", want: "14px" }, { prop: "borderTopWidth", want: "0px" },
       { prop: "borderTopLeftRadius", want: radius }, { prop: "fontSize", want: "14px" }, { prop: "lineHeight", want: "22px" },
@@ -783,15 +852,18 @@ async function styleSweep(theme) {
   });
   await exec("A-029", theme, async () => {
     // Luna call-2 修正：hover 底色属于 A-029 同一断言，汇总判——hover 不可达整条 SKIP，不符合整条 FAIL，不再单列目录外行。
-    const measured = await checkProps(`${ROOT} .sc-button-primary`, [
+    // lead 修复项 6/11：primary 档实例=保存钮（[data-role=save]）；基色采样前先脱 hover。
+    await mouseNeutral();
+    const measured = await checkProps(`${ROOT} [data-role="save"].sc-button-primary`, [
       { prop: "backgroundColor", wantProbe: "--dsw-alias-button-primary-fill", also: theme === "light" ? "rgb(15, 17, 21)" : "rgb(249, 250, 251)" },
       { prop: "color", wantProbe: "--dsw-alias-label-primary-foreground", also: theme === "light" ? "rgb(255, 255, 255)" : "rgb(15, 17, 21)" },
     ]);
     const pv = await probe(["--dsw-alias-button-primary-hover"]);
     const expected = theme === "light" ? "rgb(67, 69, 74)" : "rgb(235, 238, 242)";
-    const hovered = await tryHover(`${ROOT} .sc-button-primary`);
+    const hovered = await tryHover(`${ROOT} [data-role="save"].sc-button-primary`);
     if (!hovered) throw new SkipGap(`底/字色实测 ${measured}；hover 底态不可达（CDP hover flaky，目录 failPolicy state-unreachable=SKIP；hover 并入 A-029 整条）`);
-    const bg = (await computed(`${ROOT} .sc-button-primary`, ["backgroundColor"])).backgroundColor;
+    const bg = (await computed(`${ROOT} [data-role="save"].sc-button-primary`, ["backgroundColor"])).backgroundColor;
+    await mouseNeutral();
     if (norm(bg) !== norm(expected)) throw new Error(`hover 底 got ${bg} 期望 button-primary-hover ${expected}（解析 ${pv["--dsw-alias-button-primary-hover"]}）`);
     return { measured: `${measured} hover 底=${bg}` };
   });
@@ -858,23 +930,19 @@ async function dotsPhase(theme, viaTavilyDraft) {
     const s2 = await ui.state();
     tav = s2.ids[s2.ids.length - 1];
   }
-  const mSrc = missingCard ?? tav;
-  if (mSrc) {
-    await evaluate(`(() => { const el = document.querySelector('${T.toggle(mSrc)}'); if (el && el.checked) el.click(); return true; })()`, 30000);
-    await wait(280);
-    offCard = mSrc;
-  }
+  const mSrc = missingCard ?? tav; // lead 修复项 4：关断动作后置进 A-019（先启用态读 missing 色，再开关实验）
   await exec("A-017", theme, async () => ({ measured: await checkProps(`${ROOT} [data-role="card"] .sc-status-dot`, [
-    { prop: "boxSizing", want: "border-box" }, { prop: "display", want: "inline-block" },
+    { prop: "boxSizing", want: "border-box" }, { prop: "display", want: "inline-block", blockifyEqv: "block", ruleHint: ".sc-status-dot" },
     { prop: "flexGrow", want: "0" }, { prop: "flexShrink", want: "0" },
     { prop: "width", want: "8px" }, { prop: "height", want: "8px" }, { prop: "borderTopLeftRadius", want: "50%" },
   ]) }));
   await exec("A-018", theme, async () => ({ measured: await checkProps(`${ROOT} [data-role="card"] .sc-status`, [
-    { prop: "display", want: "inline-flex" }, { prop: "flexGrow", want: "0" }, { prop: "flexShrink", want: "0" },
+    { prop: "display", want: "inline-flex", blockifyEqv: "flex", ruleHint: ".sc-status" }, { prop: "flexGrow", want: "0" }, { prop: "flexShrink", want: "0" },
     { prop: "alignItems", want: "center" }, { prop: "gap", want: "6px" }, { prop: "fontSize", want: "13px" },
     { prop: "lineHeight", want: "20px" }, { prop: "fontWeight", want: "400" }, { prop: "whiteSpace", want: "nowrap" },
   ]) }));
   await exec("A-019", theme, async () => {
+    // lead 修复项 4：三色在「启用态」样本上读——missing 色必须在开关实验之前采（关断后再读只会读到 disabled）。
     const parts = []; const mis = [];
     if (readyCard) {
       try { parts.push(`ready{${await checkProps(`${T.card(readyCard)} .sc-status-dot[data-state="ready"]`, [{ prop: "backgroundColor", wantProbe: "--dsw-alias-state-success-primary", also: theme === "light" ? "rgb(34, 197, 94)" : "rgb(34, 197, 94)" }])}}`); }
@@ -884,10 +952,21 @@ async function dotsPhase(theme, viaTavilyDraft) {
       try { parts.push(`missing{${await checkProps(`${T.card(mSrc)} .sc-status-dot[data-state="missing"]`, [{ prop: "backgroundColor", wantProbe: "--dsw-alias-state-error-primary", also: theme === "light" ? "rgb(236, 19, 19)" : "rgb(242, 90, 90)" }])}}`); }
       catch (e) { mis.push(`missing: ${e.message}`); }
     } else mis.push("missing 态条目不可达");
+    if (mSrc && mis.length === 0) {
+      // 开关实验置后：关断 → 轮询确认 data-state=disabled → 再读 disabled 色。
+      await evaluate(`(() => { const el = document.querySelector('${T.toggle(mSrc)}'); if (el && el.checked) el.click(); return true; })()`, 30000);
+      for (let i = 0; i < 40; i++) {
+        const st = await evaluate(`() => document.querySelector('${T.card(mSrc)} .sc-status-dot')?.getAttribute('data-state') || null`, 30000);
+        if (st === "disabled") break;
+        await wait(80);
+      }
+      offCard = mSrc;
+    }
     if (offCard) {
       try { parts.push(`disabled{${await checkProps(`${T.card(offCard)} .sc-status-dot[data-state="disabled"]`, [{ prop: "backgroundColor", wantProbe: "--dsw-alias-state-idle-primary", also: theme === "light" ? "rgb(212, 212, 212)" : "rgb(84, 85, 87)" }])}}`); }
       catch (e) { mis.push(`disabled: ${e.message}`); }
-    } else mis.push("disabled 态不可达");
+    } else if (mSrc) mis.push("disabled 态不可达（开关关断后 data-state 未迁移）");
+    else mis.push("disabled 态不可达（无缺凭据样本可做开关实验）");
     if (mis.length) throw new Error(mis.join(" | "));
     return { measured: parts.join(" ") };
   });
@@ -931,6 +1010,7 @@ async function pickerPhase(theme, doShot) {
     return { measured: `width=100%(${w.iw}) ${measured}` };
   });
   await exec("A-045", theme, async () => {
+    await mouseNeutral(); // lead 修复项 11：采样基态前先脱 hover（run-2 dark 曾采到 hover 值 53,54,56）
     const mis = []; const parts = [];
     try {
       parts.push(`itemBg{${await checkProps(`${ROOT} [data-role="add-type"]`, [
@@ -948,6 +1028,7 @@ async function pickerPhase(theme, doShot) {
     const hovered = await tryHover(`${ROOT} [data-role="add-type"]`);
     if (!hovered) throw new SkipGap(`hover 态不可达（bg/label/billing 已实证：${parts.join(" ").slice(0, 90)}…）`);
     const bg = (await computed(`${ROOT} [data-role="add-type"]`, ["backgroundColor"])).backgroundColor;
+    await mouseNeutral();
     if (norm(bg) !== norm(expected)) throw new Error(`hover 底 got ${bg} 期望 interactive-bg-hover-solid ${expected}`);
     return { measured: `${parts.join(" ")} hover{${bg}}` };
   });
@@ -963,7 +1044,7 @@ async function editorPhase(theme, doShot) {
       { prop: "boxSizing", want: "border-box" }, { prop: "display", want: "flex" }, { prop: "flexDirection", want: "column" },
       { prop: "gap", want: "14px" }, { prop: "paddingTop", want: "14px" }, { prop: "paddingLeft", want: "16px" },
       { prop: "borderTopLeftRadius", want: radius },
-      { prop: "backgroundColor", wantProbe: "--dsw-alias-module-platform" },
+      { prop: "backgroundColor", wantProbe: "--dsw-alias-bg-module-platform" }, // lead 修复项 8：目录转录丢前缀；实证名 theme 95 处（SPC-019 原文正确）
     ]) };
   });
   await exec("A-038", theme, async () => ({ measured: await checkProps(`${ROOT} [data-role="editor"] .sc-editor-title`, [
@@ -972,18 +1053,22 @@ async function editorPhase(theme, doShot) {
   ]) }));
   await exec("A-039", theme, async () => {
     const radius = (await probeRadius(["--dsw-radius-md"]))["--dsw-radius-md"];
-    const geo = await evaluate(`(() => { const f = document.querySelector('${ROOT} [data-role="field"]'); if (!f) return null; const i = f.querySelector('input, textarea') || f; return { fw: f.getBoundingClientRect().width, iw: i.getBoundingClientRect().width }; })()`, 30000);
-    if (!geo) throw new Error('missing element: [data-role="field"]');
-    const measured = await checkProps(`${ROOT} [data-role="field"] input, ${ROOT} [data-role="field"] textarea`, [
+    // name input 为 autoFocus（实证源码）：基态采样前必须 blur，否则采到 focus 态边框色（accept-1 归因）。
+    await evaluate(`() => { const el = document.activeElement; if (el && el.blur) el.blur(); return true; }`, 30000);
+    await wait(150);
+    // lead 修复项 9：data-role=field 就在 input 自身（实证 DOM），容器子代选择器永不命中——按实际 DOM 直取。
+    const geo = await evaluate(`(() => { const i = document.querySelector('${ROOT} [data-role="field"][data-field="name"]'); if (!i) return null; const p = i.parentElement; if (!p) return null; const cs = getComputedStyle(p); const r = p.getBoundingClientRect(); return { iw: i.getBoundingClientRect().width, cw: r.width - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0) }; })()`, 30000);
+    if (!geo) throw new Error('missing element: [data-role="field"][data-field="name"]');
+    const measured = await checkProps(`${ROOT} [data-role="field"][data-field="name"]`, [
       { prop: "height", want: "32px" }, { prop: "paddingLeft", want: "10px" },
       { prop: "borderTopWidth", want: "0.5px" }, { prop: "borderTopStyle", want: "solid" },
       { prop: "borderTopColor", wantProbe: "--dsw-alias-border-l4" }, { prop: "borderTopLeftRadius", want: radius },
       { prop: "fontSize", want: "14px" }, { prop: "lineHeight", want: "22px" },
     ]);
-    if (Math.abs(geo.iw - geo.fw) > 1) throw new Error(`width 100% 前提不成立 input ${geo.iw} ≠ field ${geo.fw}`);
-    return { measured: `width=100%(${geo.iw}/${geo.fw}) ${measured}` };
+    if (Math.abs(geo.iw - geo.cw) > 1) throw new Error(`width 100% 前提不成立 input ${geo.iw} ≠ 字段容器内容宽 ${geo.cw}`);
+    return { measured: `width=100%(${geo.iw}/${geo.cw}) ${measured}` };
   });
-  await exec("A-040", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-input`, [
+  await exec("A-040", theme, async () => ({ measured: await checkProps(`${ROOT} input.sc-input[placeholder]`, [ // 实证 DOM：name input 无 placeholder（伪元素不渲染），key input 才是真实 placeholder 承载者；select.sc-input 排除
     { prop: "color", wantProbe: "--dsw-alias-label-dimmed", also: theme === "light" ? "rgb(225, 229, 238)" : "rgb(67, 69, 74)" },
   ], "::placeholder") }));
   if (doShot) await shot("editor-open.png", `${ROOT} [data-role="editor"]`);
@@ -995,10 +1080,18 @@ async function a047(theme = "light") {
   if ((await setField("name", "   ")) === null) throw new Error("name 字段不可达");
   await ui.click(`${ROOT} [data-role="save"]`);
   await wait(600);
-  await exec("A-047", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-error`, [
-    { prop: "color", wantProbe: "--dsw-alias-state-error-primary", also: theme === "light" ? "rgb(236, 19, 19)" : "rgb(242, 90, 90)" },
-  ]) }));
-  if ((await setField("name", "Oracle Alpha")) !== "Oracle Alpha") throw new Error("名称恢复失败");
+  await exec("A-047", theme, async () => {
+    // lead 修复项 12：空名保存不触发 .sc-error（实现无空名校验；加校验=行为改动，本包禁止）——按目录 state-unreachable 记 SKIP gap。
+    const exists = await evaluate(`() => !!document.querySelector('${ROOT} .sc-error')`, 30000);
+    if (!exists) throw new SkipGap("错误态需故障注入方可达（空名不触发校验，注入面本包禁止）；failPolicy state-unreachable=SKIP——非实现缺陷，本包已知缺口");
+    return { measured: await checkProps(`${ROOT} .sc-error`, [
+      { prop: "color", wantProbe: "--dsw-alias-state-error-primary", also: theme === "light" ? "rgb(236, 19, 19)" : "rgb(242, 90, 90)" },
+    ]) };
+  });
+  // 名称恢复：locked 窗口内 onChange 被 dev 忽略（实证源码 if (!locked)），轮询解锁后再写。
+  let restored = null;
+  for (let i = 0; i < 15; i++) { restored = await setField("name", "Oracle Alpha"); if (restored === "Oracle Alpha") break; await wait(400); }
+  if (restored !== "Oracle Alpha") throw new Error("名称恢复失败（locked 未解除）");
   await closeEditor();
 }
 
@@ -1198,25 +1291,29 @@ try {
 
   // afterSave：保存（locked 三档采样）+ 序列审计 + 保存状态样式
   const saveStart = (await calls()).length;
-  fam = await captureDisabledFamilies("light");
+  fam = await captureDisabledFamilies("light", true); // lead 修复项 7：编辑器打开态保存，locked 窗 input .6 档可采
   await a034Phase("light", fam);
   await a025Phase("light", fam);
   // 等待本轮 RPC 完成
   await waitRpc("/api/settings/mutate", saveStart, 60).catch(() => {});
   await settleSaved();
+  await closeEditor();
   await captureSaveSample("light", "settled");
   await exec("A-032", "light", async () => {
     const geo = await rects({ save: `${ROOT} [data-role="save"]`, panel: `${ROOT} .sc-panel` });
     if (!geo.save || !geo.panel) throw new Error("missing element: [data-role=save]/.sc-panel");
     const delta = Math.abs(geo.save.right - (geo.panel.right - geo.panel.padRight));
     if (delta > 1) throw new Error(`保存钮右缘 ${geo.save.right} 未对齐面板内容右缘（差 ${delta.toFixed(2)}px）`);
-    const mine = saveSamples.filter((x) => x.theme === "light");
-    const distinct = new Map(mine.map((x) => [x.text, x.width]));
-    if (distinct.size < 2) throw new SkipGap(`width follows label content 采样未达 2 种文案（observed=${[...distinct.keys()].join("/")}）；右缘对齐已实证差 ${delta.toFixed(2)}px`);
-    const widths = [...distinct.values()];
-    const varied = new Set(widths.map((w) => Math.round(w))).size > 1;
-    if (!varied) throw new Error(`文案集 {${[...distinct.keys()].join("/")}} 而宽度不变 ${widths.join("/")} —— 非内容自适应`);
-    return { measured: `右缘差 ${delta.toFixed(2)}px；文案 {${[...distinct.entries()].map(([t, w]) => `${t}=${Math.round(w)}px`).join("，")}} 宽度随内容变化` };
+    // lead 修复项 13：dev 以 save-status 节点表达落定、按钮文案静态——宽度条款换「specified 无固定 width 声明 + 实测宽≈文本渲染宽+padding」双测点。
+    const rules = await cssRules();
+    const fixedW = (rules.rules || []).filter((r) => (r.sel.split(",") || []).some((s) => /^\s*\.sc-(button|save-button)(\s*[:.].*)?$/.test(s.trim()) || /^\s*\.sc-button$/.test(s.trim())) && /(^|;)\s*width\s*:/i.test(`;${r.text}`));
+    if (fixedW.length) throw new Error(`按钮规则出现固定 width 声明：${fixedW.map((r) => `${r.sel}{${r.text.slice(0, 60)}}`).join(" ;; ")}`);
+    const intrinsic = await evaluate(`(() => { const el = document.querySelector('${ROOT} [data-role="save"]'); if (!el) return null; const cs = getComputedStyle(el); const cv = document.createElement('canvas').getContext('2d'); cv.font = cs.fontStyle + " " + cs.fontWeight + " " + cs.fontSize + "/" + cs.lineHeight + " " + cs.fontFamily; const tw = cv.measureText(el.textContent.trim()).width; return { w: el.getBoundingClientRect().width, tw, pad: (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0) }; })()`, 30000);
+    if (!intrinsic) throw new Error('missing element: [data-role="save"]');
+    const expectW = intrinsic.tw + intrinsic.pad;
+    if (Math.abs(intrinsic.w - expectW) > 3) throw new Error(`width 非内容自适应：实测 ${intrinsic.w.toFixed(1)}px 与 文本 ${intrinsic.tw.toFixed(1)}+padding ${intrinsic.pad}=${expectW.toFixed(1)}px 差 >3px（疑似固定/拉伸宽度）`);
+    const texts = [...new Set(saveSamples.filter((x) => x.theme === "light").map((x) => x.text))].join("/");
+    return { measured: `右缘差 ${delta.toFixed(2)}px；规则无固定 width 声明；文本宽 ${intrinsic.tw.toFixed(1)}+padding→实测 ${intrinsic.w.toFixed(1)}px（±3px 内=随文案内容）；文案采样 {${texts}}` };
   });
   await exec("A-048", "light", async () => ({ measured: await checkProps(`${ROOT} [data-role="save-status"]`, [
     { prop: "marginTop", want: "0px" }, { prop: "marginRight", want: "0px" }, { prop: "marginBottom", want: "0px" }, { prop: "marginLeft", want: "0px" },
@@ -1263,10 +1360,10 @@ try {
   // 分区往返后保存态复位：官方开关一次 关→保存→开→保存，制造 [data-state=saved] 采样面（持久化终值 true 不变）。
   await evaluate(`(() => { document.querySelector('${OFFICIAL_TOGGLE}').click(); return true; })()`, 30000);
   await wait(300);
-  const famDark = await captureDisabledFamilies("dark"); // Luna call-2：A-034/A-025 补 dark（保存 locked 三档窗口）
+  const famDark = await captureDisabledFamilies("dark", true); // Luna call-2：A-034/A-025 补 dark；lead 修复项 7：编辑器打开态采 input 档
   await a034Phase("dark", famDark);
   await a025Phase("dark", famDark);
-  { const s0 = (await calls()).length; await waitRpc("/api/settings/mutate", s0, 60).catch(() => {}); await settleSaved(); } // 确保 [data-state=saved] 采样面到达
+  { const s0 = (await calls()).length; await waitRpc("/api/settings/mutate", s0, 60).catch(() => {}); await settleSaved(); await closeEditor(); } // 确保 [data-state=saved] 采样面到达
   await exec("A-048", "dark", async () => ({ measured: await checkProps(`${ROOT} [data-role="save-status"]`, [
     { prop: "marginTop", want: "0px" }, { prop: "marginRight", want: "0px" }, { prop: "marginBottom", want: "0px" }, { prop: "marginLeft", want: "0px" },
     { prop: "fontSize", want: "12px" }, { prop: "lineHeight", want: "18px" },
@@ -1419,7 +1516,7 @@ try {
       return { measured: `原生拖拽可达且顺序变化：观察序 ${JSON.stringify(fin.ids)} 保存读回一致` };
     }
     // Luna call-2：拖拽路径可达（data-dragging 实证）却未产生期望重排 → 行为断言 FAIL，不得判 PASS；仅不可达才 SKIP。
-    throw new Error(`原生拖拽可达（data-dragging 实证）但释放后顺序未变：${JSON.stringify(after.names)}——SET-003 拖拽重排行为未达成（可达即判，不得 PASS）`);
+    throw new Error(`原生拖拽可达（拦截事件实证）但释放后顺序未变：${JSON.stringify(after.names)}——SET-003 拖拽重排行为未达成（可达即判，不得 PASS）`);
   });
 
   // 全程审计：B-003 / B-005 / B-006
@@ -1451,7 +1548,9 @@ try {
     const viol = nonApi.filter((x) => !isExempt(x));
     if (viol.length) {
       const tally = Object.entries(viol.reduce((a, x) => { const k = `${x.method} ${x.url}${x.pf ? "(插件帧)" : x.hf ? "" : "(归属不明)"}`; a[k] = (a[k] || 0) + 1; return a; }, {})).map(([k, v]) => `${k}×${v}`).join("，");
-      throw new Error(`插件面/归属不明非 /api/ 请求 ${viol.length} 条：${tally}`);
+      // Luna call-4 REJECT：宿主/插件共用 dsh-app://app 命名空间，URL 形态判据不安全——维持字面 FAIL 由用户裁决；附脱敏帧审计面。
+      const evFrames = viol.slice(0, 2).map((x) => x.frames).filter(Boolean);
+      throw new Error(`插件面/归属不明非 /api/ 请求 ${viol.length} 条：${tally}${evFrames.length ? `；脱敏栈帧审计面=${JSON.stringify(evFrames)}` : ""}`);
     }
     const exempt = nonApi.filter(isExempt);
     const hostEnvironmentEvidence = Object.entries(exempt.reduce((a, x) => { a[x.url] = (a[x.url] || 0) + 1; return a; }, {})).map(([pathname, count]) => ({ pathname, count }));
