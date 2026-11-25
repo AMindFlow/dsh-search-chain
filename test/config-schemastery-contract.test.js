@@ -32,6 +32,11 @@
 // 本文件为 oracle（红先）：预期红 = meta/宿主读取位面（A 组，现手写无 meta）+ 依赖与副本声明面（C 组，
 // package.json 未声明 schemastery、包内不可 resolve）；B 组行为保持集迁移自既有 index.js Config 测试
 // （dsh-config-schema.test.js P2-2 定案等），语义集不缩水，现实现必须绿。
+//
+// 已知缺口（#43 后续 issue，本 PR 不修——审阅轮定级，仅注记不改断言）：
+//   ① 嵌套 null：entries 子字段等嵌套层的 null 写闸语义未定（本 PR 仅钉根层 null 拒绝，B2）；
+//   ② entries[].apiKey 明文写闸：schema 面不拦明文 key（凭据边界另议，现仅 normalizeConfig 读路径剥离）；
+//   ③ 重复 id 写闸：schema 层 refine 未落，现由 normalizeConfig 读闸兜底（B4 钉的是全链拒绝行为）。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -282,6 +287,24 @@ test("B3 timeoutMs 正整数（schema 面值域）：0/负数/小数/字符串�
     const reason = pipelineRejectReason(mod.Config, cfg.module.normalizeConfig, { timeoutMs: exotic });
     assert.ok(reason, `NaN/Infinity 必须被全链（schema ∪ normalizeConfig）拒绝：${JSON.stringify(exotic)}`);
     assert.ok(reason.text.includes(CONFIG_CODES.INVALID));
+  }
+});
+
+test("B3b timeoutMs 上界：写闸与读闸同不变量——2^53/1e20/1e300 schema 面拒绝；MAX_SAFE 内通过", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  // 读闸（normalizeConfig 的 Number.isSafeInteger 语义，config-contract CFG-002 系已钉）拒绝
+  // 超出 2^53-1 的值；写闸（本 schema）若不设上界，就存在「保存成功 → 每次装载读不出」的
+  // 永久损坏配置——写闸必须与读闸同不变量（#43 审阅轮增量钉）。
+  for (const over of [2 ** 53, 1e20, 1e300]) {
+    const result = hostValidate(mod.Config, { timeoutMs: over });
+    assert.ok(
+      result.issues,
+      `timeoutMs=${over} 超出安全整数上界，写闸必须拒绝（否则保存即读不出，配置永久损坏）`,
+    );
+  }
+  for (const okValue of [Number.MAX_SAFE_INTEGER, 25000]) {
+    assert.ok(!hostValidate(mod.Config, { timeoutMs: okValue }).issues, `timeoutMs=${okValue} 在界内必须通过`);
   }
 });
 
