@@ -288,6 +288,39 @@ globalThis.window?.__ModuleLoader__?.load({
       return ops;
     }
 
+    /**
+     * 二轮修复（B-007/009）：编辑器绑定守卫——候选列表与「最新持久化列表」只允许在绑定条目一行上不同。
+     * 新建：长度 +1、前段逐行相同、新条目恰在末尾；编辑：长度与位置不变、其余行逐行相同。
+     * 任一不符 = 持久快照与编辑器绑定漂移（stale 竞态）→ 拒发（宁可可见报错，不得静默覆盖他条目）。
+     */
+    function singleEntryDiff(user, candidate, boundId) {
+      const list = isPlainObject(user) && Array.isArray(user.entries) ? user.entries : [];
+      if (!Array.isArray(candidate)) return false;
+      const isBound = (e) => isPlainObject(e) && e.id === boundId;
+      if (candidate.filter(isBound).length !== 1) return false; // 绑定条目须在候选中恰出现一次
+      const boundIdx = candidate.findIndex(isBound);
+      const curIdx = list.findIndex(isBound);
+      const sameRow = (a, b) => isPlainObject(a) && isPlainObject(b) && a.id === b.id && a.type === b.type
+        && a.name === b.name
+        && (a.enabled !== false) === (b.enabled !== false)
+        && (a.credentialRef ?? "") === (b.credentialRef ?? "");
+      if (curIdx < 0) {
+        if (candidate.length !== list.length + 1 || boundIdx !== candidate.length - 1) return false;
+        for (let i = 0; i < list.length; i++) if (!sameRow(list[i], candidate[i])) return false;
+        return true;
+      }
+      if (candidate.length !== list.length || boundIdx !== curIdx) return false;
+      for (let i = 0; i < list.length; i++) if (i !== curIdx && !sameRow(list[i], candidate[i])) return false;
+      return true;
+    }
+
+    /** 二轮修复：权威快照乐观更新——把本轮成功 ops 应用到 user 层克隆（与宿主 mutate 同形；随后读回仍为权威）。 */
+    function applyOpsToLayer(layer, ops) {
+      const out = structuredClone(isPlainObject(layer) ? layer : {});
+      for (const op of ops) applyOne(out, op);
+      return out;
+    }
+
     // ─────────────────────── SET-008 跨分区草稿保全：纯函数面（Component.contract） ───────────────────────
     // cache: Map；key = 条目 id（新建条目为稳定临时 id）| 全局键 draftCacheGlobalKey（超时草稿）。
     // 条目记录 = { mode:"edit"|"create", type, fields:{ name, credentialRef }, key, baseRevision }；
@@ -342,7 +375,16 @@ globalThis.window?.__ModuleLoader__?.load({
         conflicts,
       };
     }
-    const contract = Object.freeze({ merge, validate, toOps, draftCacheApply, draftCacheGlobalKey: DRAFT_CACHE_GLOBAL_KEY });
+    const contract = Object.freeze({
+      merge,
+      validate,
+      toOps,
+      draftCacheApply,
+      draftCacheGlobalKey: DRAFT_CACHE_GLOBAL_KEY,
+      // 二轮修复（B-007/009/B-012）：编辑器绑定守卫与权威快照乐观更新（纯函数面，测试直测）。
+      singleEntryDiff,
+      applyOpsToLayer,
+    });
 
     // ───────────────────────────── 组件 ─────────────────────────────
 
@@ -804,6 +846,26 @@ globalThis.window?.__ModuleLoader__?.load({
       const lockRef = React.useRef(false);
       lockRef.current = model.busy || model.editorBusy;
       const locked = model.busy || model.editorBusy;
+      // ─────────────── 二轮修复（B-007/009/B-012）：单写者提交管线 ───────────────
+      // 根因：各离散/条目级提交以渲染闭包 model 构造 ops 与 expectedRevision；上一提交成功后的读回（load）
+      // 未落定时闭包 user/revision 陈旧 → toOps 把「他人已持久化的状态」当「我要提交的差异」以 LWW 覆盖
+      // 他条目（B-007/009 名序错乱、run 间非确定性），重排构建器因成员漂移静默返回 []（B-012 零 mutate），
+      // 删除 unset 落错下标残留幽灵条目（世界分叉 _6）。
+      // (1) latestRef：权威最新持久快照 {user, base, revision}——load() 读回成功同 tick 写入（先于 setModel）；
+      //     所有提交路径的基线只从这里取，绝不取闭包 model 的 user/revision。
+      // (2) readChain：读回按发起顺序 FIFO 入链——describe 回包即使乱序到达，也按发起序写入 latestRef
+      //     （后发起者最后写入=最新视图）；提交构建 ops 前必须 await 链尾（drainReads）。
+      // (3) commitChain：单写者——两提交绝不并发；第 N+1 次提交在第 N 次的读回落进 latestRef 之后才执行
+      //     （读回与下一次提交严格串行，每条离散路径都从最新持久投影起算 next）。
+      const latestRef = React.useRef({ user: null, base: null, revision: undefined });
+      const readChainRef = React.useRef(Promise.resolve());
+      const commitChainRef = React.useRef(Promise.resolve());
+      const drainReads = () => readChainRef.current;
+      const enqueueCommit = (fn) => {
+        const run = commitChainRef.current.then(fn);
+        commitChainRef.current = run.then(() => {}, () => {});
+        return run;
+      };
 
       // 刷新不得静默覆盖在编字段（SET-008 语义）：
       // keepStatus=提交成功后的后台刷新时，正在编辑的条目字段与明文 key 缓冲保留现值。
@@ -811,16 +873,27 @@ globalThis.window?.__ModuleLoader__?.load({
         if (!m.editingId) return draft;
         const prev = m.draft.entries.find((e) => e.id === m.editingId);
         if (!prev) return draft;
+        if (draft.entries.some((e) => e.id === m.editingId)) {
+          return {
+            ...draft,
+            entries: draft.entries.map((e) => (e.id === m.editingId ? { ...e, name: prev.name, credentialRef: prev.credentialRef, enabled: prev.enabled } : e)),
+          };
+        }
+        // 二轮修复（B-012 世界分叉族）：在编条目不在新投影中（未提交新建条目在后继提交读回后）→
+        // 连同在编字段重追加到尾部——页内视图不得丢失在编状态（该条目仍不入持久层，提交时走 create 分支）。
         return {
           ...draft,
-          entries: draft.entries.map((e) => (e.id === m.editingId ? { ...e, name: prev.name, credentialRef: prev.credentialRef, enabled: prev.enabled } : e)),
+          entries: [...draft.entries, { ...prev, name: prev.name, credentialRef: prev.credentialRef, enabled: prev.enabled }],
         };
       };
 
       // ─────────────────────── SET-008：跨分区草稿保全（模块级缓存读写与重挂校验） ───────────────────────
       // 字段/key/超时变更同步进缓存（首改建档，baseRevision=建档时当前宿主修订）；
       // 成功提交/显式取消清对应记录；卸载与后台刷新不清缓存、不覆盖。
-      const cacheBaseRevision = (m) => (typeof m.revision === "number" ? m.revision : undefined);
+      // 二轮修复：优先取权威快照 revision——读回在途时闭包 m.revision 可能陈旧（陈旧 baseRevision 会在重挂校验里制造假版本冲突）。
+      const cacheBaseRevision = (m) => (typeof latestRef.current.revision === "number"
+        ? latestRef.current.revision
+        : (typeof m.revision === "number" ? m.revision : undefined));
       const syncEntryCache = (m, id, entry, keyVal) => {
         if (!entry) return;
         const rec = draftCache.get(id) || {
@@ -844,7 +917,7 @@ globalThis.window?.__ModuleLoader__?.load({
         setModel((m) => ({ ...m, phase: "loading" }));
         let pending;
         try { pending = rpc("describe", {}); } catch (err) { pending = Promise.reject(err); }
-        Promise.resolve(pending).then((res) => {
+        const done = Promise.resolve(pending).then((res) => {
           if (!alive.current) return;
           const got = unwrap(res);
           const proj = got.ok ? projectionOf(got.value) : null;
@@ -856,6 +929,8 @@ globalThis.window?.__ModuleLoader__?.load({
           const effective = { ...proj.base, ...proj.user };
           const check = validate(effective);
           const normalized = check.ok ? check.config : effective;
+          // 二轮修复：权威快照同 tick 写入（先于 setModel）——任何 await 本 done 链尾的路径，读 latestRef 必为最新已读回视图。
+          latestRef.current = { user: proj.user, base: proj.base, revision: proj.revision };
           setModel((m) => {
             let draft = draftFrom(normalized);
             let nextKeys = m.keys;
@@ -904,6 +979,9 @@ globalThis.window?.__ModuleLoader__?.load({
           if (!alive.current) return;
           setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, savedNotice: null, sectionError: { text: `读取配置失败：${String((err && err.message) || err)}`, issues: [] }, editorError: null }));
         });
+        // 二轮修复：读回按发起序 FIFO 入链——回包乱序到达也不破坏「后发起者最后写入 latestRef」。
+        readChainRef.current = readChainRef.current.then(() => done, () => done);
+        return done;
       };
 
       React.useEffect(() => {
@@ -917,35 +995,47 @@ globalThis.window?.__ModuleLoader__?.load({
       // 其他条目或全局字段的未提交草稿一律不得混入（O-4：expectedRevision 互斥提交）。
       const userEntriesOf = (m) => (Array.isArray(m.user.entries) ? m.user.entries : []);
       const baseEntriesOf = (m) => (Array.isArray(m.base.entries) ? m.base.entries : []);
-      const persistedTimeoutOf = (m) => (typeof m.user.timeoutMs === "number" ? m.user.timeoutMs : DEFAULT_TIMEOUT_MS);
       const persistedOfficialOf = (m) => (m.user.useOfficialDeepSeekSearch !== false);
 
       // 离散动作立即落盘：成功=生效确认（重新读取投影）；失败=保留意图（草稿保留目标值）+ 节级顶部可操作错误。
-      const commitDiscrete = async (buildOps, successText) => {
+      // 二轮修复（单写者）：提交整体在 commitChain 队列内执行——(a) 先 await 全部在途读回落进 latestRef；
+      // (b) ops 从权威快照起算（buildOps(snap)，snap=最新持久投影）；(c) expectedRevision 取同一 snap（乐观锁）；
+      // (d) 成功后乐观更新 latestRef 并 await load(true) 读回——队列内下一次提交必然从本轮之后的最新投影起算。
+      const commitDiscrete = (buildOps, successText) => {
         const m0 = model;
-        if (lockRef.current || m0.phase !== "ready" || typeof m0.revision !== "number") return false;
-        let ops = null;
-        try { ops = buildOps(m0); } catch { ops = null; }
-        if (!ops || ops.length === 0) return true; // 意图未变化：无需写
-        setModel((m) => ({ ...m, busy: true, savedNotice: null, sectionError: null }));
-        let response;
-        try {
-          response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: m0.revision });
-        } catch (err) {
+        if (lockRef.current || m0.phase !== "ready" || typeof m0.revision !== "number") return Promise.resolve(false);
+        return enqueueCommit(async () => {
           if (!alive.current) return false;
-          setModel((m) => ({ ...m, busy: false, sectionError: { text: `保存失败：${String((err && err.message) || err)}`, issues: [] } }));
-          return false;
-        }
-        if (!alive.current) return false;
-        const result = unwrap(response);
-        if (!result.ok) {
-          setModel((m) => ({ ...m, busy: false, sectionError: { text: `保存失败：${String(result.message || "宿主拒绝该请求")}`, issues: [] } }));
-          return false;
-        }
-        setModel((m) => ({ ...m, busy: false, savedNotice: { text: successText } }));
-        selfCommitPending = true; // SET-008：自身成功提交 → 读回后把存活草稿记录的 baseRevision 自对齐
-        load(true);
-        return true;
+          await drainReads(); // (a) 无陈旧读回：latestRef 基线新于任何在途 describe
+          if (!alive.current) return false;
+          const snap = latestRef.current;
+          if (!snap || typeof snap.revision !== "number") return false;
+          let ops = null;
+          try { ops = buildOps(snap); } catch { ops = null; }
+          if (!ops || ops.length === 0) return true; // 意图未变化：无需写
+          if (lockRef.current) return false; // 队列排空后复核在途标志（排队期间可能已有新操作先行）
+          setModel((m) => ({ ...m, busy: true, savedNotice: null, sectionError: null }));
+          let response;
+          try {
+            response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: snap.revision });
+          } catch (err) {
+            if (!alive.current) return false;
+            setModel((m) => ({ ...m, busy: false, sectionError: { text: `保存失败：${String((err && err.message) || err)}`, issues: [] } }));
+            return false;
+          }
+          if (!alive.current) return false;
+          const result = unwrap(response);
+          if (!result.ok) {
+            setModel((m) => ({ ...m, busy: false, sectionError: { text: `保存失败：${String(result.message || "宿主拒绝该请求")}`, issues: [] } }));
+            return false;
+          }
+          // (d) 乐观更新权威快照（读回失败时下一提交仍可按 op 后状态起算；读回最终为权威）。
+          try { latestRef.current = { ...snap, user: applyOpsToLayer(snap.user, ops) }; } catch { /* 失败由读回纠正 */ }
+          setModel((m) => ({ ...m, busy: false, savedNotice: { text: successText } }));
+          selfCommitPending = true; // SET-008：自身成功提交 → 读回后把存活草稿记录的 baseRevision 自对齐
+          await load(true); // (d) 单写者：本次读回必须在队列内下一提交构建 ops 前落定
+          return true;
+        });
       };
 
       // 编辑器字段变更：写入草稿、清除该编辑器错误态，并同步模块级缓存（SET-008）。
@@ -971,19 +1061,23 @@ globalThis.window?.__ModuleLoader__?.load({
       };
 
       // 超时输入：失焦/回车 且 值有变化且合法 才提交（仅 timeoutMs 键）；成功后清 __global__ 草稿记录（SET-008）。
-      const timeoutCommit = async () => {
+      // 二轮修复（B-017）：提交值以实时 DOM（ev.currentTarget.value）为准——onChange→state 回写与 blur 同帧时，
+      // 闭包 state 是旧值（会把旧 25000 当「值未变化」静默不写、非法值永不到达校验分支→无 alert）；
+      // 输入框当前值恒为用户实际所输。harness 直调回调无 currentTarget 时回退闭包 state（既有用例语义不变）。
+      const timeoutCommit = (ev) => {
         if (lockRef.current) return;
-        const text = String(model.draft.timeoutText ?? "").trim();
+        const live = ev && ev.currentTarget && typeof ev.currentTarget.value === "string" ? ev.currentTarget.value : null;
+        const text = (live !== null ? live : String(model.draft.timeoutText ?? "")).trim();
         const parsed = Number(text);
         if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+          if (live !== null) syncGlobalCache(model, live); // 非法草稿也入缓存（重挂可复原，不静默丢弃）
           setModel((m) => ({ ...m, sectionError: { text: "超时须为正整数（毫秒）", issues: [] }, savedNotice: null }));
           return;
         }
         setModel((m) => ({ ...m, sectionError: null, draft: { ...m.draft, timeoutText: String(parsed) } }));
-        if (parsed === persistedTimeoutOf(model)) { draftCache.delete(DRAFT_CACHE_GLOBAL_KEY); return; } // 值未变化：不写，草稿与已持久化一致
-        setModel((m) => ({ ...m, savedNotice: null }));
-        const ok = await commitDiscrete(() => [{ op: "set", path: ["timeoutMs"], value: parsed }], "已保存设置。");
-        if (ok) draftCache.delete(DRAFT_CACHE_GLOBAL_KEY);
+        // 「值未变化」判定同样对照最新持久快照（闭包 user 可能陈旧）→ 移入提交链内，ops 为空即不写。
+        const run = commitDiscrete((snap) => (Number(snap.user.timeoutMs) === parsed ? [] : [{ op: "set", path: ["timeoutMs"], value: parsed }]), "已保存设置。");
+        run.then((ok) => { if (ok) draftCache.delete(DRAFT_CACHE_GLOBAL_KEY); }, () => {});
       };
 
       // 卡片启用开关：onChange 即离散提交（仅自身 enabled 键；未提交的新条目无持久化变更）。
@@ -1054,10 +1148,13 @@ globalThis.window?.__ModuleLoader__?.load({
           draft: { ...m.draft, entries: [...m.draft.entries, { id, type, name: label, enabled: true, credentialRef: "" }] },
         }));
         // SET-008：新建草稿入缓存（稳定临时 id 为键；未提交即卸载，重挂须能复原）。
-        draftCache.set(id, { mode: "create", type, fields: { name: label, credentialRef: "" }, key: "", baseRevision: typeof model.revision === "number" ? model.revision : undefined });
+        // 二轮修复：baseRevision 取权威快照（读回在途时闭包 model.revision 陈旧 → 重挂校验假版本冲突）。
+        draftCache.set(id, { mode: "create", type, fields: { name: label, credentialRef: "" }, key: "", baseRevision: typeof latestRef.current.revision === "number" ? latestRef.current.revision : undefined });
       };
 
-      const entryIsPersisted = (m, entry) => userEntriesOf(m).some((e) => e.id === entry.id);
+      // 二轮修复：同时查权威快照——创建提交成功但读回未落定时闭包 user 缺该条目，误判 create 会使重挂校验误报版本冲突。
+      const entryIsPersisted = (m, entry) => userEntriesOf(m).some((e) => e.id === entry.id)
+        || (latestRef.current && userEntriesOf(latestRef.current).some((e) => e.id === entry.id));
 
       // 编辑器提交的候选条目列表：按稳定条目 id 合并该条目全部托管字段，
       // 其余条目取持久化快照值；载荷不含其他条目/全局字段草稿（SET-006）。
@@ -1081,11 +1178,16 @@ globalThis.window?.__ModuleLoader__?.load({
 
       // 条目级提交（新建=创建 / 编辑=更新）：先凭据后配置；成功=该条目整体生效并关闭编辑器；
       // 失败=编辑器原地保留（字段与 key 缓冲不丢）+ 动作行上方 role=alert 错误。
-      const submitEditor = async () => {
+      // 二轮修复（单写者 + 绑定守卫）：提交在 commitChain 队列内执行——先 await 在途读回落进 latestRef，
+      // 再自权威快照 snap 起算：candidate = candidateEntriesFor(snap, entry, credRef)、expectedRevision = snap.revision；
+      // 且必须通过 singleEntryDiff(snap.user, candidate, boundId)——候选与最新持久列表若不在绑定条目一行上
+      // 存在漂移（stale 快照竞态）则拒发（B-007/009：旧代码以陈旧 user 列表为底，toOps 把他条目当「我的差异」LWW 覆盖）。
+      const submitEditor = () => {
         const entry = model.draft.entries.find((e) => e.id === model.editingId);
         if (!entry || lockRef.current) return;
         if (model.phase !== "ready" || typeof model.revision !== "number") return;
-        const keyVal = (typeof model.keys[entry.id] === "string" ? model.keys[entry.id] : "").trim();
+        const boundId = entry.id; // 编辑器绑定：本次提交只允许触及该 id 一行
+        const keyVal = (typeof model.keys[boundId] === "string" ? model.keys[boundId] : "").trim();
         let credRef = (entry.credentialRef ?? "").trim();
         const writesKey = keyVal !== "" && KEYED_TYPES.includes(entry.type);
         // 代码级阻断（与实时 editorBlock 同判据；真实 DOM 中禁用钮不可点，此守卫兜底测试侧直接触发）：
@@ -1095,40 +1197,53 @@ globalThis.window?.__ModuleLoader__?.load({
           return;
         }
         setModel((m) => ({ ...m, editorBusy: true, editorError: null, savedNotice: null, sectionError: null }));
-        try {
-          if (writesKey) {
-            // 新引用总是 POSIX 合法（受控生成）；先写凭据，成功后才允许携带新 ref 落盘。
-            const newRef = credentialRefFor(entry.id);
-            credRef = newRef;
-            const credResponse = await credentialRpc("set", { ref: newRef, value: keyVal });
-            const credResult = unwrap(credResponse);
-            if (!credResult.ok) throw new Error(credResult.message || "凭据服务拒绝写入");
+        enqueueCommit(async () => {
+          try {
+            if (!alive.current) return;
+            await drainReads(); // 写前等待在途读回落进 latestRef（单写者串行）
+            if (!alive.current) return;
+            const snap = latestRef.current;
+            if (!snap || typeof snap.revision !== "number") throw new Error("宿主投影缺少 revision，禁止保存（请重新打开设置）");
+            if (writesKey) {
+              // 新引用总是 POSIX 合法（受控生成）；先写凭据，成功后才允许携带新 ref 落盘。
+              const newRef = credentialRefFor(boundId);
+              credRef = newRef;
+              const credResponse = await credentialRpc("set", { ref: newRef, value: keyVal });
+              const credResult = unwrap(credResponse);
+              if (!credResult.ok) throw new Error(credResult.message || "凭据服务拒绝写入");
+            }
+            const candidate = candidateEntriesFor(snap, entry, credRef);
+            // 绑定守卫：漂移即拒发（可见报错，不得静默覆盖他条目）。
+            if (!singleEntryDiff(snap.user, candidate, boundId)) {
+              throw new Error("提交目标与编辑器绑定条目不一致（持久快照漂移），本次写入已拒绝；请重新保存");
+            }
+            const check = validate({ ...snap.base, ...{ ...snap.user, entries: candidate } });
+            if (!check.ok) throw new Error(`校验未通过：${check.issues.map((i) => i.message).join("；")}`);
+            const ops = toOps({ entries: candidate }, { entries: userEntriesOf(snap) });
+            if (ops.length > 0) {
+              const response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: snap.revision });
+              const result = unwrap(response);
+              if (!result.ok) throw new Error(result.message || "宿主拒绝该请求");
+              try { latestRef.current = { ...snap, user: applyOpsToLayer(snap.user, ops) }; } catch { /* 失败由读回纠正 */ }
+            }
+            const name = (entry.name || "").trim() || entry.type;
+            draftCache.delete(boundId); // SET-008：成功提交 → 清该条目草稿记录
+            selfCommitPending = true; // SET-008：存活的其他草稿记录 baseRevision 自对齐
+            setModel((m) => {
+              const keys = { ...m.keys };
+              delete keys[boundId];
+              return { ...m, editorBusy: false, editingId: null, addOpen: false, keys, editorError: null, savedNotice: { text: `已保存 ${name}。` } };
+            });
+            await load(true); // 单写者：读回必须在队列内下一提交构建 ops 前落定
+          } catch (err) {
+            if (!alive.current) return;
+            let message = String((err && err.message) || err || "保存失败");
+            for (const secret of Object.values(model.keys)) {
+              if (typeof secret === "string" && secret.trim()) message = message.replaceAll(secret.trim(), "[redacted]");
+            }
+            setModel((m) => ({ ...m, editorBusy: false, editorError: { text: `保存失败：${message}`, issues: [] } }));
           }
-          const candidate = candidateEntriesFor(model, entry, credRef);
-          const check = validate({ ...model.base, ...{ ...model.user, entries: candidate } });
-          if (!check.ok) throw new Error(`校验未通过：${check.issues.map((i) => i.message).join("；")}`);
-          const ops = toOps({ entries: candidate }, { entries: userEntriesOf(model) });
-          if (ops.length > 0) {
-            const response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: model.revision });
-            const result = unwrap(response);
-            if (!result.ok) throw new Error(result.message || "宿主拒绝该请求");
-          }
-          const name = (entry.name || "").trim() || entry.type;
-          draftCache.delete(entry.id); // SET-008：成功提交 → 清该条目草稿记录
-          selfCommitPending = true; // SET-008：存活的其他草稿记录 baseRevision 自对齐
-          setModel((m) => {
-            const keys = { ...m.keys };
-            delete keys[entry.id];
-            return { ...m, editorBusy: false, editingId: null, addOpen: false, keys, editorError: null, savedNotice: { text: `已保存 ${name}。` } };
-          });
-          load(true);
-        } catch (err) {
-          let message = String((err && err.message) || err || "保存失败");
-          for (const secret of Object.values(model.keys)) {
-            if (typeof secret === "string" && secret.trim()) message = message.replaceAll(secret.trim(), "[redacted]");
-          }
-          setModel((m) => ({ ...m, editorBusy: false, editorError: { text: `保存失败：${message}`, issues: [] } }));
-        }
+        });
       };
 
       // SET-006/O-5：取消 ≡ 放弃——不写配置；清除该条目字段草稿与明文 key 缓冲；关闭编辑器；焦点回触发控件。
@@ -1288,6 +1403,9 @@ globalThis.window?.__ModuleLoader__?.load({
         );
       });
       const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
+      // 二轮修复（B-017）：超时输入非法态——非空且非正整数 → aria-invalid（与节级 alert 双通道）。
+      const timeoutDraftText = String(model.draft.timeoutText ?? "").trim();
+      const timeoutInvalid = timeoutDraftText !== "" && (!Number.isSafeInteger(Number(timeoutDraftText)) || Number(timeoutDraftText) <= 0);
       // SET-007：节级顶部槽——成功（role=status）与错误/冲突（role=alert）互斥，位于首个卡片之前；面板底部零状态节点。
       const savedNode = model.savedNotice ? React.createElement("p", {
         className: "sc-saved-notice", "data-role": "save-status", "data-state": "saved", role: "status", "aria-live": "polite",
@@ -1381,6 +1499,7 @@ globalThis.window?.__ModuleLoader__?.load({
           React.createElement("input", {
             id: "sc-timeout-input", className: "sc-input", type: "number", min: "1", step: "1", inputMode: "numeric",
             "data-role": "field", "data-field": "timeoutMs", disabled: locked,
+            "aria-invalid": timeoutInvalid || undefined, // 二轮修复（B-017）：非法值输入框自证（与节级 alert 并行）
             value: model.draft.timeoutText,
             onChange: (ev) => {
               if (lockRef.current) return;
@@ -1388,7 +1507,7 @@ globalThis.window?.__ModuleLoader__?.load({
               syncGlobalCache(model, ev.target.value); // SET-008：超时草稿入缓存
             },
             onBlur: timeoutCommit,
-            onKeyDown: (ev) => { if (ev.key === "Enter") { ev.preventDefault?.(); timeoutCommit(); } },
+            onKeyDown: (ev) => { if (ev.key === "Enter") { ev.preventDefault?.(); timeoutCommit(ev); } }, // 二轮修复：回车提交同样取实时 DOM 值
           }),
           React.createElement("p", { className: "sc-official-hint" }, "单个工具请求的最长等待；超过后回退到列表中下一个工具。"),
         ),

@@ -1155,6 +1155,142 @@ test("SET-008(#51) 后台快照刷新免疫：离散提交成功读回不清缓�
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
+// 第 9 组 · 二轮修复（round-2，lead 三缺陷裁定）：stale 快照竞态族
+//   根因（同一族）：各提交路径以渲染闭包 model 构造 ops/expectedRevision；上一提交成功后的读回
+//   （load）未落定时闭包陈旧 → LWW 覆盖他条目 / 重排静默丢弃 / 删除落错下标（世界分叉）。
+//   修复 = 单写者提交管线（commitChain）+ 权威快照（latestRef，读回同 tick 写入）+ FIFO 读回链
+//   （readChain）+ 编辑器绑定守卫（singleEntryDiff 拒发）+ 超时输入实时 DOM 读值。
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+test("二轮(B-007/009) 单写者提交：两次离散提交背靠背交错，各自从最新持久快照起算，expectedRevision 单调递增", async () => {
+  const state = makeSettingsState(); // revision 3；exa-b enabled；official true
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("cw-interleave");
+    const n0 = fetchStub.describes().length;
+    // 同一 act 内背靠背触发两个离散提交（中间无 await/无沉降）：exa-b 停用 + 官方开关关闭。
+    // 旧实现：两者共用同一渲染闭包（user/revision）为底 → 第二提交的 expectedRevision 陈旧、
+    // ops 以未含第一提交结果的旧列表起算（真实宿主 LWW → 互相覆盖；验收器 run-2/3 非确定性即此）。
+    await act(view, () => {
+      fire(one(tree, ROLE.enabled, { entryId: "exa-b" }), "onChange", { target: { checked: false } });
+      fire(one(tree, ROLE.officialToggle), "onChange", { target: { checked: false, value: false } });
+    });
+    const ms = fetchStub.mutates();
+    assert.equal(ms.length, 2, "两个离散提交必须各落盘一次（不得丢写）");
+    assert.deepEqual(ms.map((m) => m.body?.payload?.args?.expectedRevision), [3, 4],
+      "expectedRevision 必须单调递增：第二提交从第一提交的读回快照起算（禁止复用同一陈旧快照做底板）");
+    assert.deepEqual(opsOf(ms[0]), [{ op: "set", path: ["entries", "1", "enabled"], value: false }],
+      "第一提交 payload 只含 exa-b 的 enabled 变更");
+    assert.deepEqual(opsOf(ms[1]), [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: false }],
+      "第二提交 payload 只含官方开关变更（不得把他人已持久化的状态当自己的差异）");
+    assert.equal(state.user.entries[1].enabled, false, "exa-b 停用已持久化");
+    assert.equal(state.user.useOfficialDeepSeekSearch, false, "官方开关关闭已持久化");
+    assert.equal(state.revision, 5, "两次提交各推进一个 revision");
+    assert.equal(fetchStub.describes().length, n0 + 2, "每次提交后恰一次读回（单写者读回串行）");
+  });
+});
+
+test("二轮(B-007/009) 绑定守卫 singleEntryDiff 纯逻辑：候选只允许在绑定行变化；目标漂移/位置错位/他行被改即拒发", async () => {
+  const C = await pureContract();
+  const user = { entries: [
+    { id: "e1", type: "exa", name: "A", enabled: true, credentialRef: "R1" },
+    { id: "e2", type: "exa", name: "B", enabled: true, credentialRef: "" },
+    { id: "e3", type: "bing", name: "C", enabled: false, credentialRef: "" },
+  ] };
+  const row = (id, over = {}) => ({ ...user.entries.find((e) => e.id === id), ...over });
+  const tmp = { id: "tmp", type: "brave", name: "N", enabled: true, credentialRef: "" };
+  // 通过面：
+  assert.equal(C.singleEntryDiff(user, [row("e1"), row("e2", { name: "B2" }), row("e3")], "e2"), true, "编辑：仅绑定行单字段变化放行");
+  assert.equal(C.singleEntryDiff(user, [row("e1"), row("e2", { name: "B2", credentialRef: "R2" }), row("e3")], "e2"), true, "编辑：绑定行 name+ref 同时变化放行");
+  assert.equal(C.singleEntryDiff(user, [row("e1"), row("e2"), row("e3"), tmp], "tmp"), true, "新建：新条目在末尾放行");
+  // 拒发面：
+  assert.equal(C.singleEntryDiff(user, [row("e1"), row("e2", { name: "B2" }), row("e3")], "e1"), false, "拒发：候选被改的行不是绑定条目（提交目标≠编辑器绑定 id）");
+  assert.equal(C.singleEntryDiff(user, [row("e2", { name: "B2" }), row("e1"), row("e3")], "e2"), false, "拒发：绑定行位置错位（排序不得混入条目提交）");
+  assert.equal(C.singleEntryDiff(user, [row("e1"), row("e2", { name: "B2" }), row("e3", { name: "C2" })], "e2"), false, "拒发：其他行不得变化（陈旧 current 覆盖他条目的旧缺陷面）");
+  assert.equal(C.singleEntryDiff(user, [row("e1"), row("e2"), row("e3"), tmp], "e2"), false, "拒发：多出无绑定新条目（幽灵条目）");
+  assert.equal(C.singleEntryDiff(user, [row("e1"), tmp, row("e2"), row("e3")], "tmp"), false, "拒发：新建条目必须位于末尾");
+  assert.equal(C.singleEntryDiff(user, [row("e2", { name: "B2" }), row("e1"), row("e2")], "e2"), false, "拒发：绑定条目必须在候选中恰出现一次");
+  assert.equal(C.singleEntryDiff(user, [row("e1"), row("e3")], "e2"), false, "拒发：绑定条目缺失");
+  // applyOpsToLayer：权威快照乐观更新 ≡ 宿主 reducer（测试侧独立实现 applyOps 对照）。
+  const ops = [
+    { op: "set", path: ["entries", "1", "enabled"], value: false },
+    { op: "set", path: ["entries", "2", "name"], value: "C2" },
+    { op: "unset", path: ["entries", "0"] },
+  ];
+  assert.deepEqual(C.applyOpsToLayer(user, ops), applyOps(user, ops), "applyOpsToLayer 与宿主 applyOps 同语义");
+});
+
+test("二轮(B-017) 同帧 blur 提交：onChange 后同帧 onBlur 取实时 DOM 值提交新值 5000（不得提交陈旧 25000）；非法值同帧：报错+不写+aria-invalid", async () => {
+  const state = makeSettingsState(); // timeoutMs=25000
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("b017-sameframe");
+    // (a) 合法值同帧：onChange(5000) 与 onBlur 之间无重渲染——闭包 state 仍是旧值，
+    //     提交必须取输入框实时 DOM 值（旧实现读闭包 state：25000===25000「值未变化」静默不写）。
+    await act(view, () => {
+      const input = one(tree, ROLE.field, { field: "timeoutMs" });
+      fire(input, "onChange", { target: { value: "5000" }, currentTarget: { value: "5000" } });
+      fire(input, "onBlur", { currentTarget: { value: "5000" } });
+    });
+    const ms = fetchStub.mutates();
+    assert.equal(ms.length, 1, "合法同帧 blur 必须恰提交一次");
+    assert.deepEqual(opsOf(ms[0]), [{ op: "set", path: ["timeoutMs"], value: 5000 }], "提交值必须为实时 DOM 的 5000（不得是陈旧闭包 25000）");
+    assert.equal(state.user.timeoutMs, 5000, "宿主快照已更新为 5000");
+    assert.equal(fetchStub.describes().length, 2, "提交后读回一次（mount + 读回）");
+    // (b) 非法值同帧：onChange(0) 与 onBlur(0) 同帧——旧实现非法分支永不可达（闭包值仍合法）。
+    let t = await act(view, () => {
+      const input = one(tree, ROLE.field, { field: "timeoutMs" });
+      fire(input, "onChange", { target: { value: "0" }, currentTarget: { value: "0" } });
+      fire(input, "onBlur", { currentTarget: { value: "0" } });
+    });
+    assert.equal(fetchStub.mutates().length, 1, "非法值不得写（不得产生第二次 mutate）");
+    assert.equal(state.user.timeoutMs, 5000, "持久超时保持不变");
+    assert.ok(byRole(t, ROLE.saveError).length > 0, "非法值必须出现节级错误（role=alert）");
+    assert.match(textOf(one(t, ROLE.saveError)), /正整数/, "错误文案含「正整数」");
+    assert.equal(one(t, ROLE.field, { field: "timeoutMs" }).props["aria-invalid"], true, "非法值输入框必须带 aria-invalid");
+    // (c) 非法草稿不静默丢弃：随后合法值仍可提交（草稿链路未断）。
+    t = await act(view, () => {
+      const input = one(t, ROLE.field, { field: "timeoutMs" });
+      fire(input, "onChange", { target: { value: "9000" }, currentTarget: { value: "9000" } });
+      fire(input, "onBlur", { currentTarget: { value: "9000" } });
+    });
+    assert.equal(fetchStub.mutates().length, 2, "后续合法值恢复可提交");
+    assert.equal(state.user.timeoutMs, 9000, "9000 已持久化");
+    assert.equal(byRole(t, ROLE.saveError).length, 0, "合法提交后错误清除");
+  });
+});
+
+test("二轮(B-012) 键盘重排×未提交新建草稿并存：重排 op 自最新持久列表起算照常落盘（不得因成员漂移静默丢弃）", async () => {
+  const state = makeSettingsState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("b012-phantom-reorder");
+    // 新建 brave（未提交）：草稿尾部多一条幽灵条目（持久层仍 3 条），编辑器打开。
+    let t = await addType(view, tree, "brave");
+    assert.equal(cardOrder(t).length, 4, "新建条目在草稿尾部（幽灵态）");
+    assert.equal(stateEntries(state).length, 3, "持久层仍 3 条（新建未提交）");
+    const n0 = fetchStub.mutates().length;
+    // 键盘上移 bing-c 两次（2 号位 → 0 号位）。旧实现：闭包 user/草稿成员漂移时 commitReorder
+    // 静默返回 []（零 mutate——run-3 B-012 症状）；新实现：以最新持久列表为底，幽灵条目被过滤。
+    t = await moveWithKey(view, t, "bing-c", "ArrowUp");
+    t = await moveWithKey(view, t, "bing-c", "ArrowUp");
+    const ms = fetchStub.mutates().slice(n0);
+    assert.equal(ms.length, 2, "每次键盘移动必须各自产生一次 mutate（不得静默丢弃）");
+    for (const m of ms) {
+      const paths = opsOf(m).map((o) => o.path.join("."));
+      assert.ok(paths.length > 0 && paths.every((p) => p.startsWith("entries.")), "重排 payload 只含 entries 族（B-021 同判据）");
+    }
+    assert.deepEqual(idsOf(stateEntries(state)), ["bing-c", "tavily-a", "exa-b"], "持久层顺序已重排且幽灵条目未入持久层");
+    const byId = Object.fromEntries(stateEntries(state).map((e) => [e.id, e]));
+    assert.equal(byId["bing-c"].name, "Bing 公开", "条目名恒随自身 id（B-007 名错乱回归面）");
+    assert.equal(byId["tavily-a"].name, "Tavily 主", "tavily-a 名未受重排影响");
+    assert.equal(byId["exa-b"].name, "Exa 备用", "exa-b 名未受重排影响");
+    const order = cardOrder(t);
+    assert.equal(order.length, 4, "页内视图仍 4 条（3 持久 + 1 未提交新建）");
+    assert.deepEqual(order.slice(0, 3), ["bing-c", "tavily-a", "exa-b"], "页内视图顺序与持久投影一致（世界分叉回归面）");
+    assert.ok(order[3].startsWith("search_chain_"), "未提交新建条目仍在尾部（不入持久层）");
+    assert.equal(byRole(t, ROLE.editor).length, 1, "在编新建编辑器不得被重排读回关闭（在编状态不得从页内视图丢失）");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
 // 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
 // ────────────────────────────────────────────────────────────────────────────────────────
 
