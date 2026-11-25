@@ -915,7 +915,7 @@ async function styleSweep(theme) {
     return { measured: await checkProps(`${ROOT} [data-role="card"]`, [
       { prop: "boxSizing", want: "border-box" }, { prop: "position", want: "relative" },
       { prop: "borderTopWidth", want: "0.5px" }, { prop: "borderTopStyle", want: "solid" },
-      { prop: "borderTopLeftRadius", want: radius }, { prop: "paddingTop", want: "12px" }, { prop: "paddingLeft", want: "14px" },
+      { prop: "borderTopLeftRadius", want: radius }, { prop: "paddingTop", want: "12px" }, { prop: "paddingLeft", want: "10px" }, // run-acc8 v3 取数面（5bd84f5 V3-2：卡片左内衬 14→10 把手左靠；目录字面对齐待 Luna）
       { prop: "display", want: "flex" }, { prop: "flexDirection", want: "column" }, { prop: "gap", want: "12px" },
     ]) };
   });
@@ -927,7 +927,7 @@ async function styleSweep(theme) {
     { prop: "display", want: "flex" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "10px" }, { prop: "minWidth", want: "0px" },
   ]) }));
   await exec("A-011", theme, async () => ({ measured: await checkProps(`${ROOT} .sc-card-info`, [
-    { prop: "display", want: "inline-flex", blockifyEqv: "flex", ruleHint: ".sc-card-info" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "6px" }, { prop: "minWidth", want: "0px" },
+    { prop: "display", want: "inline-flex", blockifyEqv: "flex", ruleHint: ".sc-card-info" }, { prop: "alignItems", want: "center" }, { prop: "gap", want: "4px" }, // run-acc8 v3 取数面（5bd84f5 V3-2：info gap 6→4） { prop: "minWidth", want: "0px" },
   ]) }));
   await exec("A-012", theme, async () => {
     // lead 修复项 2：margin-left:auto 的 computed 是布局后 px——specified 走规则文本断言，几何走「动作组右缘≈卡内容右缘」。
@@ -1060,8 +1060,8 @@ async function styleSweep(theme) {
   await exec("A-051", theme, async () => {
     const geo = await rects({ handle: `${ROOT} [data-role="drag-handle"]` });
     if (!geo.handle) throw new Error("missing element: [data-role=drag-handle]");
-    if (Math.abs(geo.handle.w - 28) > 0.01 || Math.abs(geo.handle.h - 28) > 0.01) throw new Error(`geometry got ${geo.handle.w}×${geo.handle.h} 期望 28×28`);
-    return { measured: "28px × 28px" };
+    if (Math.abs(geo.handle.w - 21) > 0.01 || Math.abs(geo.handle.h - 28) > 0.01) throw new Error(`geometry got ${geo.handle.w}×${geo.handle.h} 期望 21×28（v3 V3-2：宽 −25%，纵向触控区不减）`); // run-acc8 v3 取数面：规格数字即判据（5bd84f5），目录字面对齐待 Luna
+    return { measured: "21px × 28px" };
   });
   // ── v2 default 族：全局保存入口缺席 + 卡片骨架信息行 + 把手显隐 ──
   await exec("A-055", theme, async () => {
@@ -1093,7 +1093,7 @@ async function styleSweep(theme) {
   await exec("A-062", theme, async () => {
     const a = await checkProps(`${ROOT} [data-role="card"] .sc-card-info`, [
       { prop: "display", want: "inline-flex", blockifyEqv: "flex", ruleHint: ".sc-card-info" },
-      { prop: "alignItems", want: "center" }, { prop: "gap", want: "6px" },
+      { prop: "alignItems", want: "center" }, { prop: "gap", want: "4px" }, // run-acc8 v3 取数面（5bd84f5 V3-2 同值面）
     ]);
     const b = await checkProps(`${ROOT} [data-role="card"] .sc-drag-handle`, [{ prop: "flexShrink", want: "0" }]);
     return { measured: `${a} ${b}` };
