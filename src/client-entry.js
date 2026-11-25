@@ -376,51 +376,63 @@ globalThis.window?.__ModuleLoader__?.load({
       ["deepseek-search", "DeepSeek Search API", "有结果的成功请求按次计费。"],
       ["deepseek-agentic-search", "DeepSeek Agentic Search", "不另收搜索次数费用，模型用量仍按 token 计费。"],
     ];
+    const PANEL_CSS = `
+      .sc-panel { display: grid; gap: 12px; color: var(--dsw-alias-label-primary, inherit); font-family: inherit; }
+      .sc-title { margin: 4px 0 0; font-size: 24px; line-height: 1.3; font-weight: 700; }
+      .sc-description { margin: 0 0 8px; color: var(--dsw-alias-label-secondary, inherit); font-size: 15px; line-height: 1.6; }
+      .sc-card { box-sizing: border-box; display: flex; width: 100%; min-height: 90px; align-items: center; margin-block: 6px; padding: 20px 24px; border: 0; border-radius: 14px; background: var(--dsw-alias-bg-layer-1, transparent); }
+      .sc-card-row, .sc-card-info, .sc-card-actions { display: flex; align-items: center; }
+      .sc-card-row { justify-content: space-between; gap: 16px; min-width: 0; }
+      .sc-card-info { flex-wrap: wrap; gap: 10px; min-width: 0; }
+      .sc-card-name { color: var(--dsw-alias-label-primary, inherit); font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+      .sc-card-name-placeholder { color: var(--dsw-alias-label-secondary, inherit); }
+      .sc-type-badge { padding: 3px 8px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2, transparent); color: var(--dsw-alias-label-secondary, inherit); font-size: 12px; line-height: 1.4; white-space: nowrap; }
+      .sc-type-duplicate { display: none; }
+      .sc-status { display: inline-flex; align-items: center; gap: 7px; color: var(--dsw-alias-label-secondary, inherit); font-size: 14px; font-weight: 400; white-space: nowrap; }
+      .sc-status-dot { display: inline-block; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; }
+      .sc-card-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+      .sc-button { border: 1px solid var(--dsw-alias-border-l1, currentColor); border-radius: 8px; padding: 8px 14px; color: var(--dsw-alias-label-primary, inherit); background: transparent; cursor: pointer; font: inherit; }
+      .sc-button-secondary:hover { background: var(--dsw-alias-bg-layer-1, transparent); }
+      .sc-button-danger { border: 0; padding: 8px 6px; color: var(--dsw-alias-state-error-primary, inherit); background: transparent; cursor: pointer; font: inherit; }
+      .sc-button-danger:hover { text-decoration: underline; }
+      .sc-drag-handle { border: 0; padding: 8px; color: var(--dsw-alias-label-tertiary, inherit); background: transparent; cursor: grab; font: inherit; }
+      .sc-drag-handle:active { cursor: grabbing; }
+      .sc-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary, inherit); cursor: pointer; white-space: nowrap; }
+      .sc-switch-input { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; }
+      .sc-switch-track { position: relative; display: inline-block; box-sizing: border-box; width: 38px; height: 22px; flex: 0 0 38px; border: 1px solid var(--dsw-alias-border-l1, currentColor); border-radius: 999px; background: var(--dsw-alias-bg-layer-2, transparent); transition: background-color 120ms ease, border-color 120ms ease; }
+      .sc-switch-track::after { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; content: ""; transition: transform 120ms ease; }
+      .sc-switch-input:checked + .sc-switch-track { border-color: var(--dsw-alias-state-success-primary, var(--dsw-alias-brand-primary)); background: var(--dsw-alias-state-success-primary, var(--dsw-alias-brand-primary)); }
+      .sc-switch-input:checked + .sc-switch-track::after { transform: translateX(16px); }
+      .sc-switch-input:focus-visible + .sc-switch-track { outline: 2px solid var(--dsw-alias-brand-primary, currentColor); outline-offset: 2px; }
+      .sc-switch-input:disabled + .sc-switch-track { opacity: .55; }
+      .sc-switch-input:disabled ~ .sc-switch-label { opacity: .55; }
+      .sc-add-button { box-sizing: border-box; width: 100%; min-height: 70px; margin-block: 8px; padding: 18px; border: 1.5px dashed var(--dsw-alias-border-l2, currentColor); border-radius: 14px; color: var(--dsw-alias-label-secondary, inherit); background: transparent; cursor: pointer; font: inherit; text-align: center; }
+      .sc-add-button:hover { background: var(--dsw-alias-bg-layer-1, transparent); }
+      .sc-picker, .sc-dialog { position: relative; z-index: 1; display: grid; gap: 12px; padding: 24px; border-radius: 14px; background: var(--dsw-alias-bg-layer-2, transparent); }
+      .sc-picker { gap: 10px; }
+      .sc-picker-item { display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px 16px; border: 0; border-radius: 10px; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-1, transparent); cursor: pointer; font: inherit; text-align: left; }
+      .sc-picker-item:hover { background: var(--dsw-alias-bg-layer-2, transparent); }
+      .sc-picker-title { font-weight: 600; }
+      .sc-picker-billing { color: var(--dsw-alias-label-secondary, inherit); font-size: 14px; }
+      .sc-field { display: grid; gap: 8px; margin-block: 8px; color: var(--dsw-alias-label-primary, inherit); }
+      .sc-input { box-sizing: border-box; width: 100%; border: 1px solid var(--dsw-alias-border-l1, currentColor); border-radius: 8px; padding: 10px 12px; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-1, transparent); font: inherit; }
+      .sc-editor-title { margin: 0 0 4px; }
+      .sc-button-primary-small { justify-self: end; border: 0; border-radius: 8px; padding: 9px 18px; color: #fff; background: var(--dsw-alias-brand-primary, currentColor); font-weight: 600; }
+      .sc-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .sc-save-button { justify-self: end; width: auto; border: 0; border-radius: 10px; padding: 10px 28px; color: #fff; background: var(--dsw-alias-brand-primary, currentColor); font-weight: 600; }
+      .sc-status-node { color: var(--dsw-alias-label-secondary, inherit); }
+      .sc-button:disabled, .sc-button-danger:disabled, .sc-drag-handle:disabled, .sc-add-button:disabled, .sc-picker-item:disabled, .sc-button-primary-small:disabled, .sc-save-button:disabled { cursor: not-allowed; opacity: .55; }
+      @media (max-width: 720px) {
+        .sc-card { padding: 18px 16px; }
+        .sc-card-row { align-items: flex-start; flex-direction: column; }
+        .sc-card-actions { justify-content: flex-start; }
+        .sc-dialog, .sc-picker { padding: 18px; }
+      }
+    `;
     const POSIX_REF = /^[A-Za-z_][A-Za-z0-9_]*$/;
     const theme = (token, fallback = "inherit") => `var(--dsw-alias-${token}, ${fallback})`;
     const primaryTextStyle = { color: theme("label-primary") };
     const secondaryTextStyle = { color: theme("label-secondary") };
-    const cardStyle = {
-      border: `1px solid ${theme("border-l1", "currentColor")}`,
-      borderRadius: "8px",
-      padding: "12px",
-      marginBlock: "8px",
-      color: theme("label-primary"),
-      background: theme("bg-layer-1", "transparent"),
-    };
-    const secondarySurfaceStyle = {
-      border: `1px solid ${theme("border-l1", "currentColor")}`,
-      borderRadius: "8px",
-      padding: "12px",
-      marginBlock: "8px",
-      color: theme("label-primary"),
-      background: theme("bg-layer-2", "transparent"),
-    };
-    const buttonStyle = {
-      border: `1px solid ${theme("border-l1", "currentColor")}`,
-      borderRadius: "6px",
-      padding: "6px 10px",
-      color: theme("label-primary"),
-      background: theme("bg-layer-2", "transparent"),
-      cursor: "pointer",
-      font: "inherit",
-    };
-    const fieldLabelStyle = { display: "grid", gap: "6px", marginBlock: "8px", color: theme("label-primary") };
-    const inputStyle = {
-      border: `1px solid ${theme("border-l1", "currentColor")}`,
-      borderRadius: "6px",
-      padding: "8px 10px",
-      color: theme("label-primary"),
-      background: theme("bg-layer-1", "transparent"),
-      font: "inherit",
-    };
-    const saveButtonStyle = {
-      ...buttonStyle,
-      borderColor: "transparent",
-      background: theme("brand-primary", "#4f46e5"),
-      color: "white",
-      fontWeight: 600,
-    };
 
     function credentialRpc(method, args) {
       const body = {
@@ -621,13 +633,14 @@ globalThis.window?.__ModuleLoader__?.load({
         color: !e.enabled ? theme("state-idle-primary")
           : KEYED_TYPES.includes(e.type) && !e.credentialRef ? theme("state-warn-primary")
             : theme("state-success-primary"),
-        fontWeight: 500,
       });
       const cardNodes = model.draft.entries.map((entry) => {
         const row = CATALOG_UI.find((x) => x[0] === entry.type);
+        const displayName = entry.name || "（未命名条目）";
+        const displayType = row?.[1] ?? entry.type;
+        const duplicateTypeLabel = displayName === displayType;
         return React.createElement("article", {
-          key: entry.id, "data-role": "card", "data-entry-id": entry.id,
-          style: cardStyle,
+          key: entry.id, "data-role": "card", "data-entry-id": entry.id, className: "sc-card",
           onDragOver: (ev) => { if (!locked) ev.preventDefault?.(); },
           onDrop: (ev) => {
             if (locked) return;
@@ -643,39 +656,52 @@ globalThis.window?.__ModuleLoader__?.load({
             });
           },
         },
-          React.createElement("span", { "data-role": "card-name", "data-entry-id": entry.id }, entry.name || "（未命名条目）"),
-          React.createElement("span", { "data-role": "card-type", "data-entry-id": entry.id }, row?.[1] ?? entry.type),
-          React.createElement("span", { "data-role": "card-status", "data-entry-id": entry.id, "aria-live": "polite", style: entryStatusStyle(entry) }, entryStatusText(entry)),
-          React.createElement("label", null,
-            React.createElement("input", {
-              type: "checkbox", role: "switch", "aria-checked": entry.enabled,
-              "aria-label": `启用 ${entry.name || row?.[1] || entry.type}`,
-              "data-role": "enabled-toggle", "data-entry-id": entry.id, checked: entry.enabled, disabled: locked,
-              onChange: (ev) => updateEntry(entry.id, { enabled: Boolean(ev.target.checked) }),
-            }), "启用"),
-          React.createElement("button", {
-            type: "button", "data-role": "card-edit", "data-entry-id": entry.id, disabled: locked,
-            onClick: (ev) => { if (locked) return; restoreFocus.current = ev.currentTarget ?? null; setModel((m) => ({ ...m, editingId: entry.id, status: m.status.kind === "error" ? IDLE : m.status })); },
-          }, "编辑"),
-          React.createElement("button", {
-            type: "button", "data-role": "card-remove", "data-entry-id": entry.id, disabled: locked,
-            onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: entry.id })); },
-          }, "移除"),
-          React.createElement("button", {
-            type: "button", "data-role": "drag-handle", "data-entry-id": entry.id, disabled: locked,
-            draggable: !locked, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
-            title: "拖动排序；也可按方向键调整位置",
-            onDragStart: (ev) => { if (!locked) ev.dataTransfer?.setData?.("text/plain", entry.id); },
-            onKeyDown: (ev) => {
-              if (locked) return;
-              if (ev.key === "ArrowUp") { ev.preventDefault?.(); moveEntry(entry.id, -1); }
-              else if (ev.key === "ArrowDown") { ev.preventDefault?.(); moveEntry(entry.id, 1); }
-            },
-          }, "⠿"),
+          React.createElement("div", { className: "sc-card-row" },
+            React.createElement("div", { className: "sc-card-info" },
+              React.createElement("span", { "data-role": "card-name", "data-entry-id": entry.id, className: entry.name ? "sc-card-name" : "sc-card-name sc-card-name-placeholder" }, displayName),
+              React.createElement("span", { "data-role": "card-type", "data-entry-id": entry.id, className: duplicateTypeLabel ? "sc-type-duplicate" : "sc-type-badge" }, displayType),
+              React.createElement("span", { "data-role": "card-status", "data-entry-id": entry.id, "aria-live": "polite", className: "sc-status" },
+                React.createElement("span", { className: "sc-status-dot", "aria-hidden": "true", style: { backgroundColor: entryStatusStyle(entry).color } }),
+                React.createElement("span", null, entryStatusText(entry)),
+              ),
+            ),
+            React.createElement("div", { className: "sc-card-actions" },
+              React.createElement("label", { className: "sc-switch" },
+                React.createElement("input", {
+                  className: "sc-switch-input", type: "checkbox", role: "switch", "aria-checked": entry.enabled,
+                  "aria-label": `启用 ${entry.name || row?.[1] || entry.type}`,
+                  "data-role": "enabled-toggle", "data-entry-id": entry.id, checked: entry.enabled, disabled: locked,
+                  onChange: (ev) => updateEntry(entry.id, { enabled: Boolean(ev.target.checked) }),
+                }),
+                React.createElement("span", { className: "sc-switch-track", "aria-hidden": "true" }),
+                React.createElement("span", { className: "sc-switch-label" }, "启用"),
+              ),
+              React.createElement("button", {
+                className: "sc-button sc-button-secondary", type: "button", "data-role": "card-edit", "data-entry-id": entry.id, disabled: locked,
+                onClick: (ev) => { if (locked) return; restoreFocus.current = ev.currentTarget ?? null; setModel((m) => ({ ...m, editingId: entry.id, status: m.status.kind === "error" ? IDLE : m.status })); },
+              }, "编辑"),
+              React.createElement("button", {
+                className: "sc-button-danger", type: "button", "data-role": "card-remove", "data-entry-id": entry.id, disabled: locked,
+                onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: entry.id })); },
+              }, "移除"),
+              React.createElement("button", {
+                className: "sc-drag-handle", type: "button", "data-role": "drag-handle", "data-entry-id": entry.id, disabled: locked,
+                draggable: !locked, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
+                title: "拖动排序；也可按方向键调整位置",
+                onDragStart: (ev) => { if (!locked) ev.dataTransfer?.setData?.("text/plain", entry.id); },
+                onKeyDown: (ev) => {
+                  if (locked) return;
+                  if (ev.key === "ArrowUp") { ev.preventDefault?.(); moveEntry(entry.id, -1); }
+                  else if (ev.key === "ArrowDown") { ev.preventDefault?.(); moveEntry(entry.id, 1); }
+                },
+              }, "⠿"),
+            ),
+          ),
         );
       });
       const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
       const statusNode = model.status.kind === "idle" ? null : React.createElement("p", {
+        className: "sc-status-node",
         "data-role": model.status.kind === "error" ? "save-error" : "save-status",
         role: model.status.kind === "error" ? "alert" : "status",
         style: model.status.kind === "error" ? { color: theme("state-error-primary") }
@@ -683,57 +709,62 @@ globalThis.window?.__ModuleLoader__?.load({
       }, model.status.text, ...(model.status.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`)));
       const editor = editorEntry ? React.createElement("div", {
         role: "dialog", "aria-modal": "true", "aria-labelledby": "sc-editor-title",
-        "data-role": "editor", onKeyDown: onDialogKeyDown,
-        style: { ...secondarySurfaceStyle, position: "relative", zIndex: 1 },
+        "data-role": "editor", onKeyDown: onDialogKeyDown, className: "sc-dialog sc-editor",
       },
-        React.createElement("h4", { id: "sc-editor-title" }, `编辑 ${editorEntry.name || editorEntry.type}`),
-        React.createElement("label", { style: fieldLabelStyle }, "名称", React.createElement("input", {
-          type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
+        React.createElement("h4", { id: "sc-editor-title", className: "sc-editor-title" }, `编辑 ${editorEntry.name || editorEntry.type}`),
+        React.createElement("label", { className: "sc-field" }, "名称", React.createElement("input", {
+          className: "sc-input", type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, disabled: locked,
           value: editorEntry.name, onChange: (ev) => updateEntry(editorEntry.id, { name: ev.target.value }), autoFocus: true,
         })),
-        React.createElement("label", { style: fieldLabelStyle }, "凭据引用", React.createElement("input", {
-          type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
+        React.createElement("label", { className: "sc-field" }, "凭据引用", React.createElement("input", {
+          className: "sc-input", type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, disabled: locked,
           value: editorEntry.credentialRef ?? "", placeholder: "例如 TAVILY_API_KEY",
           onChange: (ev) => updateEntry(editorEntry.id, { credentialRef: ev.target.value }),
         })),
-        KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { style: fieldLabelStyle }, "API key（仅写入，不会回显）", React.createElement("input", {
-          type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
+        KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { className: "sc-field" }, "API key（仅写入，不会回显）", React.createElement("input", {
+          className: "sc-input", type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, disabled: locked,
           value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
           onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, keys: { ...m.keys, [editorEntry.id]: ev.target.value } })); },
         })) : null,
-        React.createElement("button", { type: "button", style: buttonStyle, disabled: locked, onClick: closeEditor }, "完成"),
+        React.createElement("button", { className: "sc-button sc-button-primary-small", type: "button", disabled: locked, onClick: closeEditor }, "完成"),
       ) : null;
-      const addPicker = model.addOpen ? React.createElement("div", { role: "group", "aria-label": "选择搜索工具", style: secondarySurfaceStyle },
+      const addPicker = model.addOpen ? React.createElement("div", { role: "group", "aria-label": "选择搜索工具", className: "sc-picker" },
         ...CATALOG_UI.map(([type, label, billing]) => React.createElement("button", {
-          key: type, type: "button", "data-role": "add-type", "data-type": type, style: buttonStyle, disabled: locked,
+          key: type, className: "sc-picker-item", type: "button", "data-role": "add-type", "data-type": type, disabled: locked,
           onClick: () => addEntry(type),
-        }, React.createElement("strong", null, label), React.createElement("span", { style: secondaryTextStyle }, ` — ${billing}`))),
+        }, React.createElement("strong", { className: "sc-picker-title" }, label), React.createElement("span", { className: "sc-picker-billing" }, billing))),
       ) : null;
-      const confirm = model.confirmId ? React.createElement("div", { role: "alertdialog", "aria-modal": "true", style: secondarySurfaceStyle },
+      const confirm = model.confirmId ? React.createElement("div", { role: "alertdialog", "aria-modal": "true", className: "sc-dialog sc-confirm" },
         React.createElement("p", null, "移除该搜索工具？不会删除宿主凭据。"),
-        React.createElement("button", { type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, style: buttonStyle, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null, draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== model.confirmId) } })); } }, "确认移除"),
-        React.createElement("button", { type: "button", style: buttonStyle, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null })); } }, "取消"),
+        React.createElement("div", { className: "sc-confirm-actions" },
+          React.createElement("button", { className: "sc-button-danger", type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null, draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== model.confirmId) } })); } }, "确认移除"),
+          React.createElement("button", { className: "sc-button sc-button-secondary", type: "button", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null })); } }, "取消"),
+        ),
       ) : null;
       return React.createElement("section", {
-        "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT,
-        style: { ...primaryTextStyle, fontFamily: "inherit", display: "grid", gap: "8px" },
+        className: "sc-panel", "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT,
+        style: { ...primaryTextStyle, fontFamily: "inherit", display: "grid" },
       },
-        React.createElement("h3", { style: { marginBlock: "4px" } }, SECTION_TITLE),
-        React.createElement("label", { style: { display: "flex", alignItems: "center", gap: "8px", color: theme("label-primary") } },
+        React.createElement("style", { "data-sc-style": "panel" }, PANEL_CSS),
+        React.createElement("h3", { className: "sc-title" }, SECTION_TITLE),
+        React.createElement("label", { className: "sc-switch sc-official-switch" },
           React.createElement("input", {
-            type: "checkbox", role: "switch", "aria-checked": model.draft.useOfficial,
+            className: "sc-switch-input", type: "checkbox", role: "switch", "aria-checked": model.draft.useOfficial,
             "aria-label": "DeepSeek 官方 API 使用官方搜索", "data-role": "official-toggle", disabled: locked,
             checked: model.draft.useOfficial,
             onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, draft: { ...m.draft, useOfficial: Boolean(ev.target.checked) } })); },
-          }), "DeepSeek 官方 API 使用官方搜索"),
-        React.createElement("p", { "data-role": "official-hint", style: { ...secondaryTextStyle, marginBlock: "0 8px" } }, "仅对 DeepSeek 官方 API 会话生效；关闭后相关会话改用下方工具链。官方搜索不另按次收费，模型用量仍按 token 计费。"),
+          }),
+          React.createElement("span", { className: "sc-switch-track", "aria-hidden": "true" }),
+          React.createElement("span", { className: "sc-switch-label" }, "DeepSeek 官方 API 使用官方搜索"),
+        ),
+        React.createElement("p", { className: "sc-description", "data-role": "official-hint" }, "仅对 DeepSeek 官方 API 会话生效；关闭后相关会话改用下方工具链。官方搜索不另按次收费，模型用量仍按 token 计费。"),
         model.draft.entries.length === 0 ? React.createElement("p", { "data-role": "empty-state", style: secondaryTextStyle }, "还没有配置搜索工具，点击下方「添加搜索工具」添加第一条。") : null,
         ...cardNodes,
         addPicker,
-        React.createElement("button", { type: "button", style: buttonStyle, "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "添加搜索工具"),
+        React.createElement("button", { className: "sc-add-button", type: "button", "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "＋ 添加搜索工具"),
         confirm,
         editor,
-        React.createElement("button", { type: "button", style: saveButtonStyle, "data-role": "save", disabled: model.phase !== "ready" || model.status.kind === "pending", onClick: save }, "保存"),
+        React.createElement("button", { className: "sc-button sc-save-button", type: "button", "data-role": "save", disabled: model.phase !== "ready" || model.status.kind === "pending", onClick: save }, "保存"),
         statusNode,
       );
     }
