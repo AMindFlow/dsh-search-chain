@@ -801,7 +801,7 @@ async function waitForAutoSave(beforeCount) {
   }
   await wait(600);
   await waitRpc("/api/settings/mutate", before, 60).catch(() => {});
-  return settleSaved();
+  return true; // run-acc8 v3 取数面（5bd84f5 V3-3）：开关类不再发 savedNotice——「落定」锚=该动作 mutate 落定；settleSaved 仅保留给提示保留动作族（编辑器提交/超时/删除/重排落定）。
 }
 // ───────── v1 兼容层（纠偏前校准轮 run-9 实证面）─────────
 // 被测实现可能是纠偏前（v1：全局 [data-role=save] 钮、选类型即入账无新建编辑器、持久化=全局保存）
@@ -1431,14 +1431,15 @@ async function editorPhase(theme, doShot) {
     const busyE = labels["busyEdit" + theme]; const busyC = labels.createBusy;
     const mis = [];
     if (!edit.includes("取消") || !edit.includes("保存")) mis.push(`编辑模式文案 got ${JSON.stringify(edit)} 期望含 取消/保存`);
-    if (!create.includes("取消") || !create.includes("创建工具")) mis.push(`新建模式文案 got ${JSON.stringify(create)} 期望含 取消/创建工具`);
+    if (!create.includes("取消") || !create.includes("保存")) mis.push(`新建模式文案 got ${JSON.stringify(create)} 期望含 取消/保存（v3 统一·5bd84f5 V3-1：创建工具/创建中 废止）`); // run-acc8 取数面：按 v3 定稿规格判，目录字面对齐待 Luna 替换行
     if (/完成/.test(edit) || /完成/.test(create)) mis.push("「完成」出现在编辑器动作文案");
+    if (/创建工具|创建中/.test(edit) || /创建工具|创建中/.test(create)) mis.push("已废止文案「创建工具/创建中」出现在编辑器动作标签（v3 V3-1 废止面）");
     if (mis.length) throw new Error(`A-057 文案违规：${mis.join("；")}`);
     if (!busyE || !busyC) throw new SkipGap(`主文案已实证（编辑「${edit}」/新建「${create}」）；busy 文案采样缺失（edit=${JSON.stringify(busyE)} create=${JSON.stringify(busyC)}，busy 窗口短）→ state-unreachable=SKIP gap`);
     if (!/保存中/.test(busyE)) mis.push(`编辑 busy got ${JSON.stringify(busyE)}`);
-    if (!/创建中/.test(busyC)) mis.push(`新建 busy got ${JSON.stringify(busyC)}`);
+    if (!/保存中/.test(busyC)) mis.push(`新建 busy got ${JSON.stringify(busyC)}（v3 busy 双态统一「保存中…」）`);
     if (mis.length) throw new Error(`A-057 busy 文案违规：${mis.join("；")}`);
-    return { measured: `取消/保存 + 取消/创建工具 + busy「${busyE}」「${busyC}」全检出；「完成」零出现` };
+    return { measured: `取消/保存 双态统一（编辑「${edit}」/新建「${create}」）+ busy「${busyE}」「${busyC}」全检出；「完成」「创建工具/创建中」零出现（v3 判据）` };
   });
 }
 
@@ -1910,7 +1911,7 @@ try {
   await a046confirmPhase("dark"); // Luna call-2：A-046 补 dark（危险前景 + hover，采完即取消）
   await a028Phase("dark");
   await reducedMotionPhase("dark"); // Luna call-2：A-050 补 dark（规则 + 运行时分别判定）
-  // 暗态 afterSave 复位：官方开关 关（自动落盘，savedNotice 采样面）→ busy 三档（c1 提交）→ A-048/049 dark → 开回 true。
+  // 暗态 afterSave 复位：官方开关 关（自动落盘；run-acc8 v3：开关不再发 savedNotice，A-048/049 的 saved 节点源=c1 编辑器提交——提示保留动作族）→ busy 三档（c1 提交）→ A-048/049 dark → 开回 true。
   const nDark = (await calls()).length;
   await evaluate(`(() => { document.querySelector('${OFFICIAL_TOGGLE}').click(); return true; })()`, 30000);
   await waitForAutoSave(nDark);
@@ -2043,8 +2044,11 @@ try {
     // ── SET-006 v2 diff-payload 专责区（B-016/017/018/019）：离散动作自持久 + 请求体仅含该项变更 ──
   {
     const n16 = (await calls()).length;
+    const nt16a = await evaluate(`(() => { const e = document.querySelector('${ROOT} [data-role="save-status"]'); return { exists: !!e, text: (e && e.textContent || "").trim() }; })()`, 30000); // run-acc8 v3 V3-3：开关动作 savedNotice 缺席判据的前/后快照
     await evaluate(`(() => { const el = document.querySelector('${OFFICIAL_TOGGLE}'); if (el) el.click(); return true; })()`, 30000);
     await wait(350);
+    const nt16b = await evaluate(`(() => { const e = document.querySelector('${ROOT} [data-role="save-status"]'); return { exists: !!e, text: (e && e.textContent || "").trim() }; })()`, 30000);
+    const vis16 = await evaluate(`(() => { const el = document.querySelector('${OFFICIAL_TOGGLE}'); return el ? { checked: !!el.checked, aria: el.getAttribute("aria-checked") } : null; })()`, 30000); // 开关视觉态（reload 前的即时反馈面）
     const recs16 = (await calls()).slice(n16).filter((x) => x.url === "/api/settings/mutate");
     const mk16 = recs16.length ? recs16[recs16.length - 1].mkeys : null;
     const hadSave16 = await evaluate(`() => !!document.querySelector('${ROOT} [data-role="save"], ${ROOT} .sc-save-button')`, 30000);
@@ -2061,10 +2065,12 @@ try {
         const rel = mk16.filter((k) => /(^|[:.])entries\.|(^|[:.])order|timeoutMs/i.test(k)); // run-acc2：兼容 op-token 前缀
         if (rel.length) mis.push(`载荷含无关字段 ${JSON.stringify(rel.slice(0, 5))}`);
       }
+      if (nt16b.exists && nt16b.text !== nt16a.text) mis.push(`开关动作触发 savedNotice 新增=V3-3 违例：动作后 ${JSON.stringify(nt16b.text)}（动作前 ${JSON.stringify(nt16a.text)}）`); // v3 定稿规格判据：开关本身状态即反馈
+      if (vis16 && (vis16.checked !== false || vis16.aria === "true")) mis.push(`官方开关视觉态未随动作同步 got ${JSON.stringify(vis16)}（期望 checked=false）`);
       if (hadSave16) mis.push("持久化路径存在全局保存入口（v2 应无）");
       if (!panelAlive16) mis.push("开关切换导致面板跳转/卸载（期望停留原分区）");
       if (mis.length) throw new Error(mis.join("；"));
-      return { measured: `关→自动落盘→reload=false；载荷 ${JSON.stringify(mk16.slice(0, 4))} 仅开关字段；无保存入口、面板未跳转` };
+      return { measured: `关→自动落盘→reload=false；载荷 ${JSON.stringify(mk16.slice(0, 4))} 仅开关字段；无保存入口、面板未跳转；savedNotice 无新增✓(前=${JSON.stringify(nt16a.text)} 后=${JSON.stringify(nt16b.text)})；视觉态 ${JSON.stringify(vis16)}` };
     });
     { const n = (await calls()).length; await evaluate(`(() => { document.querySelector('${OFFICIAL_TOGGLE}').click(); return true; })()`, 30000); await wait(350); if (!(await waitForAutoSave(n))) throw new Error("B-016 复原（再开）未落定"); }
   }
@@ -2101,8 +2107,11 @@ try {
   }
   {
     const n18 = (await calls()).length;
+    const nt18a = await evaluate(`(() => { const e = document.querySelector('${ROOT} [data-role="save-status"]'); return { exists: !!e, text: (e && e.textContent || "").trim() }; })()`, 30000); // run-acc8 v3 V3-3 缺席判据快照
     await evaluate(`(() => { const el = document.querySelector('${T.toggle(cardIds[1])}'); if (el && el.checked) el.click(); return true; })()`, 30000);
     await wait(350);
+    const nt18b = await evaluate(`(() => { const e = document.querySelector('${ROOT} [data-role="save-status"]'); return { exists: !!e, text: (e && e.textContent || "").trim() }; })()`, 30000);
+    const vis18 = await evaluate(`(() => { const el = document.querySelector('${T.toggle(cardIds[1])}'); return el ? { checked: !!el.checked, aria: el.getAttribute("aria-checked") } : null; })()`, 30000);
     const recs18 = (await calls()).slice(n18).filter((x) => x.url === "/api/settings/mutate");
     const mk18 = recs18.length ? recs18[recs18.length - 1].mkeys : null;
     await waitForAutoSave(n18);
@@ -2112,6 +2121,8 @@ try {
       const idx = st18.ids.indexOf(cardIds[1]);
       const mis = [];
       if (st18.enabled[idx] !== false) mis.push(`reload 读回 enabled=${st18.enabled[idx]} 期望 false`);
+      if (nt18b.exists && nt18b.text !== nt18a.text) mis.push(`条目开关触发 savedNotice 新增=V3-3 违例：动作后 ${JSON.stringify(nt18b.text)}（动作前 ${JSON.stringify(nt18a.text)}）`);
+      if (vis18 && vis18.checked !== false) mis.push(`条目开关视觉态未同步 got ${JSON.stringify(vis18)}（期望 checked=false，开关状态即反馈）`);
       if (!recs18.length) mis.push("条目开关未触发自身 mutate");
       else if (!mk18) mis.push("mkeys 缺失");
       else {
@@ -2125,7 +2136,7 @@ try {
         if (foreign18.length) mis.push(`载荷混入无关字段：${JSON.stringify(foreign18.slice(0, 5))}`);
       }
       if (mis.length) throw new Error(mis.join("；"));
-      return { measured: `关条目→自动落盘→reload enabled=false；载荷 ${JSON.stringify(mk18.slice(0, 4))} 仅该条目 enabled 字段` };
+      return { measured: `关条目→自动落盘→reload enabled=false；载荷 ${JSON.stringify(mk18.slice(0, 4))} 仅该条目 enabled 字段；savedNotice 无新增✓；视觉态 ${JSON.stringify(vis18)}` };
     });
     { const n = (await calls()).length; await evaluate(`(() => { const el = document.querySelector('${T.toggle(cardIds[1])}'); if (el && !el.checked) el.click(); return true; })()`, 30000); if (!(await waitForAutoSave(n))) throw new Error("B-018 复原（再开）未落定"); }
   }
@@ -2221,7 +2232,7 @@ try {
     if (JSON.stringify(after.ids) !== JSON.stringify(before.ids)) {
       // codex 第三轮 P2（定性有效）：持久化闭环断言补全——保存必须判落定；真实 reload 后 ID 序列必须 === drop 后即时序列
       // （SET-003「保存读回」本意含持久化比较，与 B-012 键盘路径断言形态对齐；「drop 改序→未落库→reload 回弹」不得判 PASS）。
-      const saved = await waitForAutoSave(nB13);
+      const saved = (await waitForAutoSave(nB13)) && (await settleSaved()); // 重排落定=保留提示动作族（v3）：notice 闭环校验保留
       if (!saved) throw new Error(`拖拽重排成功（即时序 ${JSON.stringify(after.ids)}）但自动持久未落定（savedNotice 未达 saved）——持久化闭环失败`);
       await reloadAndReopen();
       const fin = await ui.state();
@@ -2247,6 +2258,16 @@ try {
     if (mk20 && mk20.some((k) => /timeoutMs|official/i.test(k))) throw new Error(`拖拽载荷混入无关全局字段：${JSON.stringify(mk20.slice(0, 5))}`);
     return { measured: `drop 即自动落盘（settled=${settled}）mutate×${recs20.length}；载荷 ${JSON.stringify((mk20 || []).slice(0, 6))}（排序族，无全局字段）` };
   });
+  {
+    // run-acc8 v3 取数面（5bd84f5 V3-1.2「未提交新建不入列」，B-027 新 id 行取数准备）：开新建编辑器即时列表行数对比后取消复位。
+    const s27a = await ui.state();
+    await addViaPicker("exa");
+    const s27b = await ui.state();
+    const draftInList = s27b.ids.length > s27a.ids.length;
+    console.log(`[oracle] v3 无占位行观察（B-027 取数准备）：开新建编辑器 前count=${s27a.ids.length} 后count=${s27b.ids.length} 后名单=${JSON.stringify(s27b.names.slice(0, 5))} 草稿入列=${draftInList}（v3 期望 false）`);
+    await cancelEditor();
+    await wait(300);
+  }
   {
     // B-022/023：未提交草稿（名称+key buffer+timeout）跨分区切换存活；草稿期 storage 泄漏扫描。
     await openEditor(cardIds[1]);
