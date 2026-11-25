@@ -84,7 +84,10 @@ const PACKAGE_ID = "dsh-search-chain"; // [M3]：load 注册 id 恒 = 包名
 // 可走路径 = 侧栏「插件」→ dsh-search-chain 卡片 → 详情页配置表单；「设置→…」路由仍未证
 // （nav 无设置入口）→ 禁「设置→」前缀，设置页路由仍为规格 BCF-006 开放项。历史：六要素
 // 钉过约束废 → 放宽为 设置+包名 → 本轮按已证路径重新收紧（git 历史可考））：
-const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "dsh-search-chain", "插件", "详情", "配置表单"];
+// Issue #48 migration：section 4 原断言 v0.1 只读指示器的指引文案（插件/详情/配置表单）已迁移为
+// v0.2 面板 SET-001 的区域文案（网页搜索链 / 添加搜索工具）。迁移后本段对 v0.1 组件红属预期，
+// 直至 v0.2 面板落地；「设置→」禁令保留（BCF-006 开放项未变）。
+const COMPONENT_TEXT_MARKS = [SECTION_TITLE, "添加搜索工具"];
 // live [L3]：client 平台真实服务目录（factory 产物 inject 的消息参照）。
 const CLIENT_SERVICE_CATALOG = [
   "layout", "locale", "sessions", "slots", "theme", "timer", "uiWorkspace", "workspaces",
@@ -382,7 +385,7 @@ test("factory 面：factory(fakeRequire) 返回 {inject:[\"slots\"],apply}；fak
 // 4. 挂载形状（v0.2 T2 有效钉迁移到 factory 产物）+ 只读渲染树 + 无 react 降级
 // ────────────────────────────────────────────────────────────────────────────────────────
 
-test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」与 #46 已证路径指引要素（插件/详情/配置表单，禁「设置→」，BCF-006 P1-1）；无 react 安全降级；effect cleanup（[L1][L2]）", async () => {
+test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register 恰 {name,id,order,label}；假 react 渲染树含「网页搜索链」与「添加搜索工具」（SET-001 v0.2 区域文案，禁「设置→」，BCF-006 P1-1）；无 react 安全降级；effect cleanup（[L1][L2]）", async () => {
   const registrations = await importSelfRegister("mount");
   if (registrations.length !== 1 || typeof registrations[0].factory !== "function") {
     assert.fail(
@@ -453,7 +456,7 @@ test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register
     for (const mark of COMPONENT_TEXT_MARKS) {
       assert.ok(
         text.includes(mark),
-        `组件文案须含「${mark}」（P1-1 已证路径：侧栏插件→卡片→详情页配置表单，verify 6a-6b 实证）；实收文本：${JSON.stringify(text)}`,
+        `组件文案须含「${mark}」（SET-001 v0.2 区域文案，Issue #48 迁移）；实收文本：${JSON.stringify(text)}`,
       );
     }
     assert.ok(

@@ -22,7 +22,7 @@ export const SECTION_SLOT = "settings.section";
 /** 设置区域标题（SET-001：DSH 设置中必须出现「网页搜索链」区域）。 */
 export const SECTION_TITLE = "网页搜索链";
 
-/** CAT-001 七种首期类型（镜像 contract.js TOOL_TYPES，顺序即目录展示顺序）。 */
+/** CAT-001 八种首期类型（镜像 contract.js TOOL_TYPES，顺序即目录展示顺序）。 */
 export const TOOL_TYPES = Object.freeze([
   "openai",
   "tavily",
