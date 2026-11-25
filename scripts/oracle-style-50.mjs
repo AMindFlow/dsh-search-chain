@@ -135,7 +135,26 @@ await cdp("Runtime.enable"); await cdp("Page.enable");
 // 宽视口稳定（SPC-001 720px 钳制前提）+ 插桩跨 reload 存活（addScriptToEvaluateOnNewDocument + sessionStorage 累加器）。
 await cdp("Emulation.setDeviceMetricsOverride", { width: 1300, height: 900, deviceScaleFactor: 1, mobile: false }).catch(() => {});
 const INSTRUMENT = () => {
-  window.__oracle50 = window.__oracle50 || { onlySynthetic: true, responseEchos: 0, envEchoes: 0 };
+  // codex-P2（L138 定性有效）：审计旗标与会话计数器同源持久化——reload 换新 window 后内存旗标归零，
+  // 最终窗口只读到最后窗口的旗标会误报 PASS。审计并入 sessionStorage 紧凑通道：只存计数/布尔（记录前即脱敏，绝不含回包原文），B-003 按全 run 聚合判定。
+  let audit = null;
+  try { audit = JSON.parse(sessionStorage.getItem("__oracle50Audit") || "null"); } catch { audit = null; }
+  if (!audit || typeof audit !== "object") audit = { onlySynthetic: true, responseEchos: 0, envEchoes: 0, windows: 0 };
+  // 窗口自增按 document 幂等（安装期 evaluate 与 new-document 注入可能先后跑在同一文档）。
+  if (!window.__oracle50AuditWindow) {
+    window.__oracle50AuditWindow = true;
+    audit.windows += 1;
+    try { sessionStorage.setItem("__oracle50Audit", JSON.stringify(audit)); } catch { /* 存储异常不得影响被测应用 */ }
+  }
+  window.__oracle50 = audit;
+  const bump = (field) => {
+    try {
+      const a = JSON.parse(sessionStorage.getItem("__oracle50Audit") || "null") || audit;
+      if (field === "onlySynthetic") a.onlySynthetic = false; else a[field] = (a[field] || 0) + 1;
+      sessionStorage.setItem("__oracle50Audit", JSON.stringify(a));
+      window.__oracle50 = a;
+    } catch { /* noop */ }
+  };
   // 记录为紧凑形态（页内解析的应用级 ok 布尔，绝不存回包原文——run-4 实证大回包会打满 sessionStorage 配额）。
   // 权威累加器是 sessionStorage 追加数组：跨 Page.reload 历史连续，且紧凑尺寸不会触顶配额。
   const KEYS = window.__oracle50Keys || [];
@@ -154,14 +173,14 @@ const INSTRUMENT = () => {
   const inspectValue = (body) => {
     try {
       const args = JSON.parse(body)?.payload?.args || {};
-      if ("value" in args && !KEYS.includes(args.value)) window.__oracle50.onlySynthetic = false;
+      if ("value" in args && !KEYS.includes(args.value)) bump("onlySynthetic");
     } catch { /* 非 JSON body */ }
   };
   const inspectResponse = (json) => {
     try {
       const s = JSON.stringify(json) || "";
-      if (KEYS.some((k) => s.includes(k))) window.__oracle50.responseEchos += 1;
-      if (s.includes("synthetic-not-a-secret")) window.__oracle50.envEchoes += 1;
+      if (KEYS.some((k) => s.includes(k))) bump("responseEchos");
+      if (s.includes("synthetic-not-a-secret")) bump("envEchoes");
     } catch { /* noop */ }
   };
   // Luna call-3 归属判据：仅对非 /api/ 请求在包装器调用点即时判栈（不落栈原文，只存布尔 hf/pf）。
@@ -1521,16 +1540,17 @@ try {
 
   // 全程审计：B-003 / B-005 / B-006
   const all = await calls();
-  const flags = await evaluate(`() => window.__oracle50 || {}`, 30000);
-  const storageLeak = await evaluate(`(() => { const s = sessionStorage.getItem('__oracle50Calls') || ''; return window.__oracle50Keys.filter((k) => s.includes(k)).length; })()`, 30000);
+  // codex-P2：B-003 判据读「全 run 聚合」审计面（sessionStorage 通道，跨 reload 连续；窗口数=audit.windows）。
+  const flags = await evaluate(`() => { try { const a = JSON.parse(sessionStorage.getItem('__oracle50Audit') || 'null'); if (a && typeof a === 'object') return a; } catch { /* fallthrough */ } return window.__oracle50 || {}; }`, 30000);
+  const storageLeak = await evaluate(`(() => { const s = (sessionStorage.getItem('__oracle50Calls') || '') + (sessionStorage.getItem('__oracle50Audit') || ''); return window.__oracle50Keys.filter((k) => s.includes(k)).length; })()`, 30000);
   await exec("B-003", "light", async () => {
     const setRecs = all.filter((x) => x.url === "/api/credentials/set");
     if (setRecs.length !== 2) throw new Error(`脱敏自证依据缺失：捕获的 credentials/set 记录 ${setRecs.length} 条 ≠ 2（空真值不得判 PASS）`);
-    if (!flags.onlySynthetic) throw new Error("检测到非合成值写入 credentials/set");
-    if ((flags.responseEchos || 0) > 0 || (flags.envEchoes || 0) > 0 || storageLeak > 0) throw new Error(`回显自证失败 responseEchos=${flags.responseEchos || 0} envEchoes=${flags.envEchoes || 0} storage=${storageLeak}`);
+    if (!flags.onlySynthetic) throw new Error("检测到非合成值写入 credentials/set（全 run 聚合面）");
+    if ((flags.responseEchos || 0) > 0 || (flags.envEchoes || 0) > 0 || storageLeak > 0) throw new Error(`回显自证失败（全 run 聚合） responseEchos=${flags.responseEchos || 0} envEchoes=${flags.envEchoes || 0} storage=${storageLeak}`);
     const rawTable = results.map((r) => `${r.id}|${r.measured}|${r.expected}`).join("\n");
     if (rawTable.includes(KEY_A) || rawTable.includes(KEY_B)) throw new Error("断言表/rpc 报告出现合成 key 明文");
-    return { measured: "两枚 exa key 恒为合成 sk-TEST-oracle-*；宿主回包/插桩存储/断言表/raw 证据零明文（打印面全脱敏）" };
+    return { measured: `两枚 exa key 恒为合成 sk-TEST-oracle-*；宿主回包/插桩存储/断言表/raw 证据零明文（打印面全脱敏）。codex-P2 修复后为跨 reload 聚合判据：全 run 窗口数×${flags.windows || 1}（sessionStorage 审计通道仅存计数/布尔，脱敏扫描覆盖聚合通道）` };
   });
   await exec("B-005", "light", async () => {
     const rpc = all.filter((x) => /^\/api\/(settings|credentials)\//.test(x.url));
