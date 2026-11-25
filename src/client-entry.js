@@ -12,10 +12,11 @@
 //   - 幂等：同一 ctx.slots 重复 apply 只挂载一次；卸载 cleanup 经 ctx.effect 登记并清空幂等键。
 //   - React 缺失（require 抛出或返回非 React 值）时组件安全降级为 null。
 //
-// 通道（规格 bundle-config-ui.md [C8]，终选；host.call 通道已作废）：
-//   读 = 同源 POST /api/settings/describe，取 namespaces 中 ns=search-chain 的 user 层（投影）；
-//   写 = 同源 POST /api/settings/mutate，args={ns, ops}，ops 由 contract.toOps 产出（路径补丁，
-//         不触及既有明文 key 路径；宿主只改 user 层）。
+// 通道（规格 bundle-config-ui.md [C8]）：
+//   读 = 同源 POST /api/settings/describe（args={}），取 namespaces 中 ns=search-chain 的 user 层与
+//         revision（投影）；缺 revision 即禁止保存。
+//   写 = 同源 POST /api/settings/mutate，args={ns, ops, expectedRevision}（revision 原样回传 describe 值）；
+//         ops 由 contract.toOps 产出，set 值递归剥离明文字段（apiKey 等），不触及既有明文 key。
 //   合并/校验 = Component.contract（内联纯函数，与 src/config.js normalizeConfig 全等，对比钉见 test）。
 //
 // 本文件的常量为 src/constants.js 的本地镜像（TOOL_TYPES / 默认超时 / 凭据字段），变更须同步。
@@ -46,11 +47,13 @@ const SECRET_FIELD = /^(apikey|api_key|key|secret|token|password|auth|authorizat
 const HANDLED_ENTRY_FIELDS = ["id", "type", "name", "enabled", "credentialRef", "proxy"];
 /** 表单管理的条目子字段（合并时覆盖；其余字段保留既有值）。 */
 const MANAGED_ENTRY_KEYS = ["id", "type", "name", "enabled", "credentialRef"];
+/** 表单管理的顶层键：保存时恒产出 set（即便值未变）。 */
+const MANAGED_TOP_KEYS = ["useOfficialDeepSeekSearch", "timeoutMs"];
 
 const sectionLabel = () => SECTION_TITLE;
 
-/** 编辑指引（BCF-006 放宽：含「设置」与包名；路径措辞的 DOM 锚点为开放项）。 */
-const EDIT_HINT = "编辑请在 设置 → 插件 中打开 dsh-search-chain 的配置表单";
+/** 编辑指引（P1-1：仅含已证路径——侧栏「插件」→ dsh-search-chain 卡片 → 详情页配置表单；禁「设置→」前缀）。 */
+const EDIT_HINT = "编辑请在侧栏「插件」中打开 dsh-search-chain 卡片，进入详情页的配置表单";
 
 /** 已挂载的 ctx.slots 幂等键；卸载 cleanup 清除。 */
 const mounted = new WeakMap();
@@ -173,7 +176,7 @@ globalThis.window?.__ModuleLoader__?.load({
       return next;
     }
 
-    /** 合并：表单管理字段覆盖 current；未知键与既有 apiKey 原样保留；表单明文字段忽略。 */
+    /** 合并：表单管理字段覆盖 current；未知键与既有 apiKey 原样保留（merged 面）；表单明文字段忽略。 */
     function merge(form, current) {
       const base = isPlainObject(current) ? current : {};
       const f = isPlainObject(form) ? form : {};
@@ -189,7 +192,7 @@ globalThis.window?.__ModuleLoader__?.load({
           out.entries = f.entries; // 非数组原样交写闸
         }
       }
-      for (const k of ["useOfficialDeepSeekSearch", "timeoutMs"]) {
+      for (const k of MANAGED_TOP_KEYS) {
         if (f[k] !== undefined) out[k] = f[k];
       }
       return out;
@@ -203,6 +206,17 @@ globalThis.window?.__ModuleLoader__?.load({
       const kb = Object.keys(b);
       if (ka.length !== kb.length) return false;
       return ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEq(a[k], b[k]));
+    }
+
+    /** 递归剥离明文字段（SECRET_FIELD 键）：ops 的 set 值绝不携带既有/表单的明文 key（P2-1）。 */
+    function stripSecrets(v) {
+      if (Array.isArray(v)) return v.map(stripSecrets);
+      if (v !== null && typeof v === "object") {
+        const out = {};
+        for (const [k, child] of Object.entries(v)) if (!SECRET_FIELD.test(k)) out[k] = stripSecrets(child);
+        return out;
+      }
+      return v;
     }
 
     /** 路径补丁 reducer（与 settings 宿主 mutate 语义同形：数值段=数组下标；unset 数组段=splice）。 */
@@ -221,26 +235,26 @@ globalThis.window?.__ModuleLoader__?.load({
     }
 
     /**
-     * 产出路径补丁（set/unset），作用于 current 后 ≡ next。从不产出含既有明文 key 值的 op：
+     * 产出路径补丁（set/unset），作用于 current 后 ≡ next（剥离明文后）。set 值逐层剥离 SECRET_FIELD。
      * 既有条目只做字段级 diff；新增条目仅允许追加；删除经 unset 索引。
-     * v0.1 表单只增删改、不重排：保留条目的相对顺序变化或中段插入即抛错（重排需整条覆写，会携带既有明文 key）。
+     * v0.1 表单只增删改、不重排：保留条目相对顺序变化或中段插入即抛错（重排需整条覆写）。
      */
     function toOps(next, current) {
       const ops = [];
       const state = structuredClone(isPlainObject(current) ? current : {});
       const emit = (op) => {
-        ops.push(op);
-        applyOne(state, op);
+        const o = op.op === "set" ? { op: "set", path: op.path, value: stripSecrets(op.value) } : op;
+        ops.push(o);
+        applyOne(state, o);
       };
       const nxt = isPlainObject(next) ? next : {};
       for (const key of Object.keys(state)) {
         if (key !== "entries" && !(key in nxt)) emit({ op: "unset", path: [key] });
       }
       // 管理键恒产出 set（即便值未变，保存总有可观测写入；值相同不改变结果）；未知键仅在变化时产出。
-      const MANAGED_TOP = ["useOfficialDeepSeekSearch", "timeoutMs"];
       for (const key of Object.keys(nxt)) {
         if (key === "entries") continue;
-        if (MANAGED_TOP.includes(key) || !deepEq(state[key], nxt[key])) emit({ op: "set", path: [key], value: nxt[key] });
+        if (MANAGED_TOP_KEYS.includes(key) || !deepEq(state[key], nxt[key])) emit({ op: "set", path: [key], value: nxt[key] });
       }
       const target = nxt.entries;
       if (target === undefined) {
@@ -271,7 +285,7 @@ globalThis.window?.__ModuleLoader__?.load({
           p += 1;
         } else {
           if (p !== state.entries.length) {
-            throw new Error("条目顺序调整或中段插入 v0.1 不支持（重排需整条覆写，会携带既有明文 key）");
+            throw new Error("条目顺序调整或中段插入 v0.1 不支持（重排需整条覆写）");
           }
           emit({ op: "set", path: ["entries", String(p)], value: t });
           p += 1;
@@ -284,7 +298,7 @@ globalThis.window?.__ModuleLoader__?.load({
 
     // ───────────────────────────── 组件 ─────────────────────────────
 
-    /** settings RPC 信封（[C8]）：不赌 args 传形以外的字段；payload 恒为 {args}。 */
+    /** settings RPC 信封（[C8]）：payload 恒为 {args}。 */
     let rpcSeq = 0;
     function rpc(method, args) {
       const body = {
@@ -312,7 +326,7 @@ globalThis.window?.__ModuleLoader__?.load({
       return { ok: false, message: (res.error && res.error.message) || "宿主拒绝该请求" };
     }
 
-    /** 投影：describe 值中 search-chain 的 base/user（user = 宿主 mutate 作用的层）。 */
+    /** 投影：describe 值中 search-chain 的 base/user 与 revision（user = 宿主 mutate 作用的层）。 */
     function projectionOf(value) {
       if (!value || !Array.isArray(value.namespaces)) return null;
       const item = value.namespaces.find((n) => n && n.ns === SEARCH_NS);
@@ -320,6 +334,7 @@ globalThis.window?.__ModuleLoader__?.load({
       return {
         base: isPlainObject(item.base) ? item.base : {},
         user: isPlainObject(item.user) ? item.user : {},
+        revision: typeof item.revision === "number" ? item.revision : undefined,
       };
     }
 
@@ -361,14 +376,14 @@ globalThis.window?.__ModuleLoader__?.load({
         draft: EMPTY_DRAFT,
         base: {},
         user: {},
+        revision: undefined,
         status: IDLE,
       });
       const alive = React.useRef(true);
       const ackPending = React.useRef(false);
 
-      // 挂载即拉取投影：setModel 同步置位（驱动渲染），结果异步回填。
-      React.useEffect(() => {
-        alive.current = true;
+      /** 读取投影（describe）。挂载与保存后的刷新共用。 */
+      const load = (keepStatus) => {
         setModel((m) => ({ ...m, phase: "loading" }));
         let pending;
         try {
@@ -383,7 +398,16 @@ globalThis.window?.__ModuleLoader__?.load({
             const proj = got.ok ? projectionOf(got.value) : null;
             if (!proj) {
               const text = got.ok ? "宿主投影中缺少 search-chain 命名空间" : `读取配置失败：${got.message}`;
-              setModel((m) => ({ ...m, phase: "unavailable", status: { kind: "error", text, issues: [] } }));
+              setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, status: { kind: "error", text, issues: [] } }));
+              return;
+            }
+            if (proj.revision === undefined) {
+              setModel((m) => ({
+                ...m,
+                phase: "unavailable",
+                revision: undefined,
+                status: { kind: "error", text: "宿主投影缺少 revision，禁止保存（请重新打开配置表单）", issues: [] },
+              }));
               return;
             }
             const effective = { ...proj.base, ...proj.user };
@@ -393,10 +417,13 @@ globalThis.window?.__ModuleLoader__?.load({
               phase: "ready",
               base: proj.base,
               user: proj.user,
+              revision: proj.revision,
               draft: draftFrom(check.ok ? check.config : effective),
-              status: check.ok
-                ? IDLE
-                : { kind: "error", text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) },
+              status: keepStatus
+                ? m.status
+                : check.ok
+                  ? IDLE
+                  : { kind: "error", text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) },
             }));
           },
           (err) => {
@@ -404,17 +431,23 @@ globalThis.window?.__ModuleLoader__?.load({
             setModel((m) => ({
               ...m,
               phase: "unavailable",
+              revision: undefined,
               status: { kind: "error", text: `读取配置失败：${String((err && err.message) || err)}`, issues: [] },
             }));
           },
         );
+      };
+
+      // 挂载即拉取投影。
+      React.useEffect(() => {
+        alive.current = true;
+        load();
         return () => {
           alive.current = false;
         };
       }, []);
 
-      // 保存进行中：同值 render 期 setState（React 下 identity 更新即 bailout，无副作用）。
-      // 作用：保存结果回填后的那一趟渲染必被驱动，不因首趟未置脏而停在 pending。
+      // 保存进行中：一次性 ref 驱动结果回填后的那一趟渲染（真实 React 下仅多一次渲染）。
       if (model.status.kind !== "pending") ackPending.current = false;
       else if (!ackPending.current) {
         ackPending.current = true;
@@ -447,6 +480,10 @@ globalThis.window?.__ModuleLoader__?.load({
 
       const save = () => {
         if (!ready) return;
+        if (typeof model.revision !== "number") {
+          setModel((m) => ({ ...m, status: { kind: "error", text: "缺少 revision，禁止保存（请重新打开配置表单）", issues: [] } }));
+          return;
+        }
         const form = {
           entries: draft.entries.map((e) => ({
             id: e.id,
@@ -474,10 +511,11 @@ globalThis.window?.__ModuleLoader__?.load({
           setModel((m) => ({ ...m, status: { kind: "error", text: String((err && err.message) || err), issues: [] } }));
           return;
         }
+        const revision = model.revision;
         setModel((m) => ({ ...m, status: { kind: "pending", text: "保存中…", issues: [] } }));
         let pending;
         try {
-          pending = rpc("mutate", { ns: SEARCH_NS, ops });
+          pending = rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: revision });
         } catch (err) {
           pending = Promise.reject(err);
         }
@@ -486,11 +524,14 @@ globalThis.window?.__ModuleLoader__?.load({
             if (!alive.current) return;
             const got = unwrap(res);
             if (got.ok) {
+              const nextRev = got.value && typeof got.value.revision === "number" ? got.value.revision : undefined;
               setModel((m) => ({
                 ...m,
                 user: merged,
+                revision: nextRev !== undefined ? nextRev : m.revision,
                 status: { kind: "saved", text: "已保存", issues: [] },
               }));
+              if (nextRev === undefined) load(true); // 宿主回包未带 revision：重新读投影取得新版本号（保留 saved 态）
             } else {
               setModel((m) => ({
                 ...m,

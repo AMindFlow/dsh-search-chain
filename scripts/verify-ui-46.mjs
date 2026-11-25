@@ -257,7 +257,18 @@ await cdp("Runtime.enable");
 await cdp("Page.enable");
 
 let shot = 0;
+const RUN_NONCE = `${process.pid}-${Date.now().toString(36)}`;
 async function snapshot(tag) {
+  // 防陈旧画面（fix46 规范）：截图前在页面绘一个本次运行专属的 nonce 角标，截后移除；图中可见 nonce 即证明画面新鲜。
+  const nonce = `verify-ui-46 run=${RUN_NONCE} ${tag} ${new Date().toISOString()}`;
+  await evalInPage(`() => { const d = document.createElement("div"); d.id = "verify-ui46-nonce"; d.textContent = ${JSON.stringify(nonce)}; d.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:99999;background:#ff0;color:#000;font:12px monospace;padding:2px 4px"; document.body.appendChild(d); return true; }`).catch(() => {});
+  try {
+    await snapshotRaw(tag, nonce);
+  } finally {
+    await evalInPage(`() => { document.getElementById("verify-ui46-nonce")?.remove(); return true; }`).catch(() => {});
+  }
+}
+async function snapshotRaw(tag, nonce) {
   try {
     const png = await cdp("Page.captureScreenshot", { format: "png" });
     const p = join(tmpdir(), `dsh-verify-ui46-${tag}-${++shot}.png`);
