@@ -1346,6 +1346,104 @@ test("三轮(B-012) 回焦目标裁决 reorderFocusTarget 纯逻辑：被移动�
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
+// 第 11 组 · 四轮修复（round-4）：空名新建被放行落库（B-007/009/019 三连胜污染源的同一根）
+//   症状（run-6 探针实锤）：A-047 真空名提交 → mutate×1 载荷 ["set:entries.3"] 直接落库——
+//   期望是 SPC-023/SET-006「新建=完整校验」拦截 + 编辑器动作行上方 role=alert 错误（SPC-030）。
+//   根因：SET-006 提交校验链（实时 editorBlock 与提交前 validate 同源 normalizeConfig）
+//   对 name 只判 typeof string，空串/纯空白放行；v1 的名称门在迁移中丢失。
+//   修复：entryNameGate 名称门（trim 后非空）——新建与编辑同一路径同判据：
+//   实时 editorBlock（禁用提交钮 + 动作行上方 role=alert）+ 提交前代码级守卫（零出站、
+//   编辑器不关、输入不丢=SET-004 失败保留面）。运行时 normalizeConfig（src/config.js）
+//   保持宽容不动（name 仅展示面，legacy 空名行不得拒载整份配置）。
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+test("四轮(B-007/009/019) 空名/纯空白名新建被拦截：零 mutate + 动作行上方 role=alert + 编辑器不关 + 输入不丢 + 提交钮禁用", async () => {
+  const state = makeSettingsState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("r4-empty-name-create");
+    const n0 = fetchStub.mutates().length;
+    const c0 = fetchStub.credentialSets().length;
+    // 新建 brave（编辑器预填目录标签 "Brave"）→ 清空为空名 → 提交（真实 DOM 中提交钮已禁用；
+    // harness 直触 handler，验证代码级守卫零出站）。
+    let t = await addType(view, tree, "brave");
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "" } }));
+    await step(view, t, ROLE.editorSubmit);
+    assert.equal(fetchStub.mutates().length, n0, "空名新建必须零 mutate（SPC-023 新建=完整校验：空名不得落库）");
+    assert.equal(fetchStub.credentialSets().length, c0, "空名新建不得连带触发 credentials/set");
+    const errs = byRole(t, ROLE.saveError);
+    assert.equal(errs.length, 1, "编辑器动作行上方须有可见错误");
+    assert.equal(one(t, ROLE.saveError).props.role, "alert", "错误节点须 role=alert（SPC-023/SPC-030）");
+    assert.ok(textOf(one(t, ROLE.saveError)).includes("名称"), "错误文案须指向名称问题");
+    assert.ok(one(t, ROLE.editor), "拦截后编辑器不得关闭（SET-004 失败保留面）");
+    assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "", "输入不丢：名称字段保持所输（空）");
+    assert.equal(one(t, ROLE.editorSubmit).props.disabled, true, "提交钮须实时禁用（真实 DOM 中禁用钮不可点）");
+    // 纯空白名 → 同样拦截，累计仍零 mutate。
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "   \t " } }));
+    t = await step(view, t, ROLE.editorSubmit);
+    assert.equal(fetchStub.mutates().length, n0, "纯空白名新建同样零 mutate");
+    assert.ok(one(t, ROLE.saveError), "纯空白名同样须有可见错误");
+    assert.ok(one(t, ROLE.editor), "纯空白拦截后编辑器仍开");
+    // 校验失败时取消钮须可点（SET-006：只读/在途之外均可取消）。
+    t = await step(view, t, ROLE.editorCancel);
+    assert.equal(byRole(t, ROLE.editor).length, 0, "校验失败时取消仍须可关编辑器（新条目草稿随之清除）");
+    assert.equal(stateEntries(state).length, 3, "拦截的新建不得在持久层留痕");
+  });
+});
+
+test("四轮(B-007/009/019) trim 后合法：前后带空白的名称新建照常落库（持久名保留原输入）", async () => {
+  const state = makeSettingsState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("r4-trim-name-create");
+    const n0 = fetchStub.mutates().length;
+    let t = await addType(view, tree, "brave");
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "  Brave 备 " } }));
+    t = await step(view, t, ROLE.editorSubmit);
+    assert.equal(fetchStub.mutates().length, n0 + 1, "trim 后非空=合法，新建照常落库");
+    const added = stateEntries(state).at(-1);
+    assert.equal(added.type, "brave", "新落库条目即本次新建 brave");
+    assert.equal(added.name, "  Brave 备 ", "持久名保留原输入（trim 只做合法性裁决，不做值归一）");
+    assert.equal(byRole(t, ROLE.editor).length, 0, "成功提交后编辑器关闭");
+    assert.ok(one(t, ROLE.saveStatus), "须有保存成功提示");
+  });
+});
+
+test("四轮(B-007/009/019) 编辑面同查：既有条目改空名/空白名提交同样被拦；trim 后合法照常落库", async () => {
+  const state = makeSettingsState(); // bing-c 持久名 "Bing 公开"
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("r4-empty-name-edit");
+    const n0 = fetchStub.mutates().length;
+    // 编辑 bing-c → 清空为空名 → 提交 → 拦（编辑与新建同判据）。
+    let t = await setName(view, tree, "bing-c", "");
+    await step(view, t, ROLE.editorSubmit);
+    assert.equal(fetchStub.mutates().length, n0, "既有条目改空名必须零 mutate（编辑面与新建同判据）");
+    assert.ok(one(t, ROLE.saveError), "编辑面拦截须有可见错误");
+    assert.ok(one(t, ROLE.editor), "编辑面拦截后编辑器不得关闭");
+    assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "", "输入不丢");
+    assert.equal(stateEntries(state).find((e) => e.id === "bing-c").name, "Bing 公开", "持久名未被空名覆盖");
+    // 纯空白名 → 仍拦。
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "\t  " } }));
+    t = await step(view, t, ROLE.editorSubmit);
+    assert.equal(fetchStub.mutates().length, n0, "既有条目改纯空白名同样零 mutate");
+    // trim 后合法 → 照常落库。
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "  Bing 备用 " } }));
+    t = await step(view, t, ROLE.editorSubmit);
+    assert.equal(fetchStub.mutates().length, n0 + 1, "trim 后非空=合法，编辑照常落库");
+    assert.equal(stateEntries(state).find((e) => e.id === "bing-c").name, "  Bing 备用 ", "持久名保留原输入");
+  });
+});
+
+test("四轮(B-007/009/019) 名称门裁决 entryNameGate 纯逻辑：trim 后非空放行，空/空白/非字符串拦截", async () => {
+  const C = await pureContract();
+  assert.equal(C.entryNameGate("Brave"), null, "常规名称 → 放行");
+  assert.equal(C.entryNameGate("  Brave 备 "), null, "前后带空白但 trim 非空 → 放行（trim 后合法）");
+  assert.equal(typeof C.entryNameGate(""), "string", "空名 → 拦截（返回错误文本）");
+  assert.equal(typeof C.entryNameGate("   "), "string", "纯空白名 → 拦截");
+  assert.equal(typeof C.entryNameGate("\t\n"), "string", "纯空白（制表/换行）→ 拦截");
+  assert.equal(typeof C.entryNameGate(undefined), "string", "缺失 name → 拦截");
+  assert.equal(typeof C.entryNameGate(42), "string", "非字符串 name → 拦截");
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
 // 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
 // ────────────────────────────────────────────────────────────────────────────────────────
 

@@ -331,6 +331,17 @@ globalThis.window?.__ModuleLoader__?.load({
       return nextEntries.some((e) => isPlainObject(e) && e.id === movedId) ? movedId : null;
     }
 
+    /**
+     * 四轮修复（B-007/009/019 污染源）：SET-006 新建/编辑提交名称门裁决（SPC-023「新建=完整校验」）。
+     * name 须 trim 后非空——空名/纯空白名不得落库（落库后界面占位「（未命名条目）」，
+     * 并污染下游校验面）。合法 → null；不合法 → 编辑器动作行上方 role=alert 呈现的错误文本。
+     * 仅本面板提交面收紧：运行时 normalizeConfig（src/config.js）保持对 legacy 空名行宽容
+     * （name 只用于展示/文案，运行时不因空名拒载整份配置）。
+     */
+    function entryNameGate(name) {
+      return (typeof name === "string" && name.trim() !== "") ? null : "名称不能为空（纯空白无效）：请输入名称后再提交。";
+    }
+
     // ─────────────────────── SET-008 跨分区草稿保全：纯函数面（Component.contract） ───────────────────────
     // cache: Map；key = 条目 id（新建条目为稳定临时 id）| 全局键 draftCacheGlobalKey（超时草稿）。
     // 条目记录 = { mode:"edit"|"create", type, fields:{ name, credentialRef }, key, baseRevision }；
@@ -396,6 +407,8 @@ globalThis.window?.__ModuleLoader__?.load({
       applyOpsToLayer,
       // 三轮修复（B-012 键盘重排焦点断链）：重排渲染提交后的回焦目标裁决（纯函数面，测试直测）。
       reorderFocusTarget,
+      // 四轮修复（B-007/009/019 污染源）：新建/编辑提交名称门（纯函数面，测试直测）。
+      entryNameGate,
     });
 
     // ───────────────────────────── 组件 ─────────────────────────────
@@ -1243,6 +1256,14 @@ globalThis.window?.__ModuleLoader__?.load({
         const keyVal = (typeof model.keys[boundId] === "string" ? model.keys[boundId] : "").trim();
         let credRef = (entry.credentialRef ?? "").trim();
         const writesKey = keyVal !== "" && KEYED_TYPES.includes(entry.type);
+        // 四轮修复（B-007/009/019 污染源）：名称门（与实时 editorBlock 同判据；真实 DOM 中禁用钮不可点，
+        // 此守卫兜底测试侧直接触发）：空名/纯空白名 → 零出站、编辑器不关、输入不丢（SET-004 失败保留面），
+        // 错误于动作行上方 role=alert 呈现（SPC-023/SPC-030）。新建与编辑同一路径同判据。
+        const nameProblem = entryNameGate(entry.name);
+        if (nameProblem) {
+          setModel((m) => ({ ...m, editorError: { text: nameProblem, issues: [] } }));
+          return;
+        }
         // 代码级阻断（与实时 editorBlock 同判据；真实 DOM 中禁用钮不可点，此守卫兜底测试侧直接触发）：
         // 超语法 ref 且本次不带新 key → 零出站（R-1 / P2-3 留空变体）。
         if (!writesKey && credRef && !POSIX_REF.test(credRef)) {
@@ -1475,6 +1496,10 @@ globalThis.window?.__ModuleLoader__?.load({
       const editorIsCreate = editorEntry ? !entryIsPersisted(model, editorEntry) : false;
       const editorBlock = (() => {
         if (!editorEntry) return null;
+        // 四轮修复（B-007/009/019 污染源）：名称门实时呈现——空名/纯空白名即时禁用提交钮并在动作行
+        // 上方 role=alert 报错（SPC-023「新建=完整校验」/SPC-030），不必等提交才暴露。
+        const nameProblem = entryNameGate(editorEntry.name);
+        if (nameProblem) return { text: nameProblem, issues: [] };
         const keyVal = (typeof model.keys[editorEntry.id] === "string" ? model.keys[editorEntry.id] : "").trim();
         const writesKey = keyVal !== "" && KEYED_TYPES.includes(editorEntry.type);
         const credRef = (editorEntry.credentialRef ?? "").trim();
