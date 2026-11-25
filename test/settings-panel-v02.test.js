@@ -182,7 +182,7 @@ test("SET-001 卡片：每张卡片恰含名称、类型、配置状态、启用
   });
 });
 
-test("SET-001 状态可辨：缺少凭据、已关闭、已就绪三种状态文案互不相同且非空", async () => {
+test("SET-001 状态可辨（R2 纯点）：三态 data-state 落在点自身且区分明确；aria-label/title 互不相同且非空；空文本、role=img、无 aria-live", async () => {
   const state = makeSettingsState({
     user: {
       entries: [
@@ -196,16 +196,27 @@ test("SET-001 状态可辨：缺少凭据、已关闭、已就绪三种状态文
   });
   await withEnv(state, async () => {
     const { tree } = await openPanel("status");
-    const status = (id) => textOf(one(tree, ROLE.cardStatus, { entryId: id }));
-    const ready = status("tavily-a");
-    const missing = status("exa-b");
-    const closed = status("bing-c");
-    assert.ok(ready && missing && closed, "三张卡片的状态文案均须非空");
-    assert.notEqual(missing, ready, "缺少 key 与已就绪不可同文案");
-    assert.notEqual(closed, ready, "已关闭与已就绪不可同文案");
-    assert.notEqual(closed, missing, "已关闭与缺少 key 不可同文案");
-    assert.match(missing, /缺|未配置|凭据/, "缺少 key 的状态须含「缺/未配置/凭据」之一");
-    assert.match(closed, /关闭|停用/, "已停用条目的状态须含「关闭/停用」之一");
+    const dot = (id) => one(tree, ROLE.cardStatus, { entryId: id });
+    const ready = dot("tavily-a");
+    const missing = dot("exa-b");
+    const closed = dot("bing-c");
+    assert.equal(ready.props["data-state"], "ready", "已就绪 data-state=ready");
+    assert.equal(missing.props["data-state"], "missing", "缺 key data-state=missing");
+    assert.equal(closed.props["data-state"], "disabled", "已关闭 data-state=disabled");
+    const label = (n) => n.props["aria-label"];
+    assert.ok(label(ready) && label(missing) && label(closed), "三张卡片状态点 aria-label 均须非空");
+    assert.notEqual(label(missing), label(ready), "缺少 key 与已就绪不可同标签");
+    assert.notEqual(label(closed), label(ready), "已关闭与已就绪不可同标签");
+    assert.notEqual(label(closed), label(missing), "已关闭与缺少 key 不可同标签");
+    assert.match(label(missing), /缺|未配置|凭据/, "缺少 key 的标签须含「缺/未配置/凭据」之一");
+    assert.match(label(closed), /关闭|停用/, "已停用条目的标签须含「关闭/停用」之一");
+    for (const d of [ready, missing, closed]) {
+      assert.equal(d.props.role, "img", "状态点须 role=img");
+      assert.equal(d.props.title, label(d), "title 须等于 aria-label");
+      assert.ok(!(d.children || []).some((c) => c !== null && c !== undefined && c !== false), "状态点 textContent 须为空（无子节点、无可见状态文字）");
+      assert.ok(!("aria-live" in d.props), "状态点禁止 aria-live");
+      assert.ok(String(d.props.className).includes("sc-status-dot"), "状态宿主须为 .sc-status-dot 自身（无 wrapper）");
+    }
   });
 });
 

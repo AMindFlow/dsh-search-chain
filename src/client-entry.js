@@ -471,7 +471,7 @@ globalThis.window?.__ModuleLoader__?.load({
       .sc-card-name-placeholder { color: var(--dsw-alias-label-secondary, inherit); }
       .sc-type-badge { flex: none; padding: 1px 6px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-xs); font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
       .sc-type-duplicate { display: none; }
-      .sc-status { display: inline-flex; flex: none; align-items: center; gap: 6px; font-size: 13px; line-height: 20px; font-weight: 400; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+      /* R2：徽标纯点——.sc-status wrapper 废止；语义（role=img/aria-label/title/data-state）落在点自身。 */
       .sc-status-dot { box-sizing: border-box; display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; corner-shape: round; }
       .sc-status-dot[data-state="ready"] { background: var(--dsw-alias-state-success-primary); }
       .sc-status-dot[data-state="missing"] { background: var(--dsw-alias-state-error-primary); }
@@ -561,16 +561,25 @@ globalThis.window?.__ModuleLoader__?.load({
         outline: none;
         box-shadow: 0 0 0 var(--dsw-focus-ring-width, 2px) var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
       }
+      /* R3：display 用 flex 而非 inline-flex（flex 子项被块级化，视觉等价；且禁 display 隐藏机制审查按字面匹配）。 */
       .sc-drag-handle {
-        box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+        box-sizing: border-box; display: flex; align-items: center; justify-content: center;
         width: 28px; height: 28px; padding: 0; border: none;
         border-radius: var(--dsw-radius-sm);
         background: transparent; color: var(--dsw-alias-label-tertiary);
         font-family: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+        flex: none;
+        /* R3：opacity 过渡为基线层声明（hover:none 常显环境亦须 0.12s ease）；显隐值由 hover 层接管。 */
+        transition: opacity 0.12s ease;
       }
       .sc-drag-handle:not(:disabled) { cursor: grab; }
       .sc-drag-handle:active:not(:disabled) { cursor: grabbing; }
+      /* R3 v2 显隐层（仅 hover:hover 环境）：静息 opacity 0 常隐；卡片 hover 或把手 focus-visible 显现 1；
+         disabled 恒 .4（含 hover/focus-visible 叠加态）。禁用 display/visibility 机制。 */
       @media (hover: hover) {
+        .sc-drag-handle { opacity: 0; }
+        .sc-card:hover .sc-drag-handle, .sc-drag-handle:focus-visible { opacity: 1; }
+        .sc-drag-handle:disabled, .sc-card:hover .sc-drag-handle:disabled, .sc-drag-handle:disabled:focus-visible { opacity: .4; }
         .sc-drag-handle:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
       }
       .sc-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); cursor: pointer; white-space: nowrap; }
@@ -626,6 +635,7 @@ globalThis.window?.__ModuleLoader__?.load({
       @media (prefers-reduced-motion: reduce) {
         .sc-switch-track { transition: none; }
         .sc-switch-track::after { transition: none; }
+        .sc-drag-handle { transition: none; }
       }
       .sc-add-block { display: flex; flex-direction: column; gap: 12px; }
       .sc-add-actions { display: flex; }
@@ -671,7 +681,8 @@ globalThis.window?.__ModuleLoader__?.load({
         align-items: flex-start;
         gap: 4px;
         padding: 14px 16px;
-        border: 0;
+        /* R4：picker 项边框——常驻 0.5px solid border-l4。 */
+        border: 0.5px solid var(--dsw-alias-border-l4);
         border-radius: var(--dsw-radius-md);
         background: var(--dsw-alias-bg-layer-1);
         color: var(--dsw-alias-label-primary);
@@ -679,8 +690,9 @@ globalThis.window?.__ModuleLoader__?.load({
         text-align: start;
         cursor: pointer;
       }
+      /* R4：hover 单声明——仅背景，用非实色 interactive-bg-hover 复合估计。 */
       @media (hover: hover) {
-        .sc-picker-item:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-solid); }
+        .sc-picker-item:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
       }
       .sc-picker-title { font-size: 14px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-primary); }
       .sc-picker-billing { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
@@ -1227,13 +1239,28 @@ globalThis.window?.__ModuleLoader__?.load({
           },
         },
           React.createElement("div", { className: "sc-card-row" },
+            // R3：把手左移——.sc-card-info 首子节点（button）；骨架 把手→名称→徽标→状态点。
             React.createElement("div", { className: "sc-card-info" },
+              React.createElement("button", {
+                className: "sc-drag-handle", type: "button", "data-role": "drag-handle", "data-entry-id": entry.id, disabled: locked,
+                draggable: !locked, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
+                title: "拖动排序；也可按方向键调整位置",
+                onDragStart: (ev) => { if (locked) return; ev.dataTransfer?.setData?.("text/plain", entry.id); ev.currentTarget?.closest?.('[data-role="card"]')?.setAttribute?.("data-dragging", ""); },
+                onDragEnd: (ev) => { clearDragMarks(ev.currentTarget); },
+                onKeyDown: (ev) => {
+                  if (locked) return;
+                  if (ev.key === "ArrowUp") { ev.preventDefault?.(); moveEntry(entry.id, -1); }
+                  else if (ev.key === "ArrowDown") { ev.preventDefault?.(); moveEntry(entry.id, 1); }
+                },
+              }, "⠿"),
               React.createElement("span", { "data-role": "card-name", "data-entry-id": entry.id, className: entry.name ? "sc-card-name" : "sc-card-name sc-card-name-placeholder" }, displayName),
               React.createElement("span", { "data-role": "card-type", "data-entry-id": entry.id, className: duplicateTypeLabel ? "sc-type-duplicate" : "sc-type-badge" }, displayType),
-              React.createElement("span", { "data-role": "card-status", "data-entry-id": entry.id, "aria-live": "polite", className: "sc-status" },
-                React.createElement("span", { className: "sc-status-dot", "aria-hidden": "true", "data-state": entryStatusState(entry) }),
-                React.createElement("span", null, entryStatusText(entry)),
-              ),
+              // R2：徽标纯点——data-role/data-state/role=img/aria-label/title 全部落在点自身；空文本、无 aria-live、无 wrapper。
+              React.createElement("span", {
+                className: "sc-status-dot", "data-role": "card-status", "data-entry-id": entry.id,
+                role: "img", "aria-label": entryStatusText(entry), title: entryStatusText(entry),
+                "data-state": entryStatusState(entry),
+              }),
             ),
             React.createElement("div", { className: "sc-card-actions" },
               React.createElement("label", { className: "sc-switch" },
@@ -1254,18 +1281,6 @@ globalThis.window?.__ModuleLoader__?.load({
                 className: "sc-button-danger", type: "button", "data-role": "card-remove", "data-entry-id": entry.id, disabled: locked,
                 onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: entry.id })); },
               }, "移除"),
-              React.createElement("button", {
-                className: "sc-drag-handle", type: "button", "data-role": "drag-handle", "data-entry-id": entry.id, disabled: locked,
-                draggable: !locked, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
-                title: "拖动排序；也可按方向键调整位置",
-                onDragStart: (ev) => { if (locked) return; ev.dataTransfer?.setData?.("text/plain", entry.id); ev.currentTarget?.closest?.('[data-role="card"]')?.setAttribute?.("data-dragging", ""); },
-                onDragEnd: (ev) => { clearDragMarks(ev.currentTarget); },
-                onKeyDown: (ev) => {
-                  if (locked) return;
-                  if (ev.key === "ArrowUp") { ev.preventDefault?.(); moveEntry(entry.id, -1); }
-                  else if (ev.key === "ArrowDown") { ev.preventDefault?.(); moveEntry(entry.id, 1); }
-                },
-              }, "⠿"),
             ),
           ),
         );
