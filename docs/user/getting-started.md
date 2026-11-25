@@ -18,7 +18,7 @@
 
 ## 2. 启用
 
-1. 在插件设置中启用 dsh-search-chain。启用后「设置」页预期出现「网页搜索链」区域（v0.1 待实机确认；只读指示器，见第 3.1 节）。
+1. 在插件设置中启用 dsh-search-chain。启用后「设置」页出现「网页搜索链」设置面板（其在目标 DSH 版本中的具体外观仍需实机确认，见第 3.1 节）。
 2. 若要让搜索使用本插件，把 `web.searchProvider` 设为 `search-chain`（依据 `docs/specs/draft/dsh-integration.md` 的 DSH-003；本包代码不修改 `web` 行）。
 3. 新开一个会话，发起一次搜索验证。
 
@@ -26,11 +26,11 @@
 
 ## 3. 配置条目
 
-### 3.1 编辑入口（v0.1 实态）
+### 3.1 设置面板
 
-启用本插件后，DSH 的「设置」页**预期**出现「网页搜索链」区域（该页路由尚未实机核实，实际呈现待确认），且它只是**只读指示器**：只显示标题和一句指引。配置的编辑入口已实机验证：侧栏「插件」→ dsh-search-chain 卡片 → 详情页的配置表单（改条目、官方搜索开关、超时，保存后重开仍读回）。两处入口均由插件的 client 产物（`src/client-entry.js`）经宿主模块装载器自注册；表单写回走宿主设置通道，带修订号防冲突写入。
+启用本插件后，DSH「设置」页的「网页搜索链」区域提供配置面板：可新增、编辑、停用、移除和排序工具条目，并配置 DeepSeek 官方搜索开关。设置页负责编辑和显示本地配置状态；打开、修改、排序和保存都不会向搜索供应商发请求。保存前先写入新 key 的宿主凭据引用，成功后再提交配置；失败时草稿保留且已生效配置不变。凭据只写不读，输入框不会回显旧 key。
 
-**条目与开关的编辑在「插件」页的 dsh-search-chain 详情页（配置表单）进行**（进入路径：插件面板 → dsh-search-chain 卡片 → 详情页；本页所有宿主界面路径措辞以你所用 DSH 当前版式为准）。该表单提供条目增删改（类型、启用、名称、凭据引用）、「使用官方 DeepSeek 搜索」开关与超时输入，点击「保存」写入；校验失败时页面显示宿主返回的原因，已生效配置保持不变。表单不含 API key 输入框，key 仍经凭据引用或环境变量提供（第 4 节）。表单字段与下面 3.2 的 JSON 形状一一对应。带拖拽排序和 key 输入框的「网页搜索链」设置面板仍是 v0.2 的内容。
+面板与插件详情页的配置表单共享 `search-chain` 设置命名空间。面板通过宿主同源 settings/credentials Remote API 保存，并携带配置 revision 防止覆盖并发修改。当前安装未能连接真实 GUI 时，本轮未完成隔离 profile 的实机 DOM 验收；具体 DSH 版本的外观和宿主 Remote 回包形状仍以本地验证结果为准。
 
 ### 3.2 配置形状
 
@@ -50,7 +50,7 @@
 | `type` | 是 | 取值为 `openai`、`tavily`、`exa`、`brave`、`bing`、`gemini`、`deepseek-search`、`deepseek-agentic-search` 之一。其中两个 DeepSeek 类型对应 DeepSeek 的两种模式，共用同一个 key。 |
 | `name` | 否 | 显示名，字符串。缺省时等于 `type`。 |
 | `enabled` | 否 | 布尔。缺省 `true`。为 `false` 时该条目不解析凭据、不出站，但保留在列表中的位置。 |
-| `credentialRef` | 否 | 凭据引用名（字符串），首尾空白会被去掉。空串视为未设置。见第 4 节。 |
+| `credentialRef` | 否 | 凭据引用名（字符串），首尾空白会被去掉。非空值必须符合 POSIX 标识符语法 `^[A-Za-z_][A-Za-z0-9_]*$`；空串视为未设置，旧冒号形式视为无效引用并继续查找后续凭据来源。见第 4 节。 |
 | `proxy` | 否 | 省略或空白表示直连；`"http://..."` 或 `"https://..."` 表示 HTTP(S) 代理 URL；`{ "pac": "http(s)://..." }` 表示 PAC 文件地址（查询参数会原样保留）。其他形状为 `CONFIG_INVALID`（`src/config.js` 的 `normalizeProxy`、`src/transport.js` 的 `classifyProxy`）。**代理与 PAC 在当前版本实际能走到哪一步，见第 7 节。** |
 | 其他标量参数 | 否 | 字符串、数字、布尔值按原样保留，供对应适配器读取。对象和数组会被丢弃。 |
 
@@ -62,7 +62,7 @@
 {
   "entries": [
     { "id": "tavily-main", "type": "tavily", "name": "Tavily 主用", "enabled": true,
-      "credentialRef": "search-chain-credential:tavily-main:<生成值>" },
+      "credentialRef": "SEARCH_CHAIN_CREDENTIAL_tavily_main_<唯一后缀>" },
     { "id": "bing-rss", "type": "bing", "enabled": true },
     { "id": "exa-backup", "type": "exa", "enabled": false }
   ],
@@ -71,7 +71,7 @@
 }
 ```
 
-v0.1 没有列表界面，条目是否配置完整请按 `entries` 数组自查（v0.2 面板将用同样的三态展示，见 `src/settings/catalog.js` 的 `entryStatus`）：
+面板用三态区分条目状态（见 `src/settings/catalog.js` 的 `entryStatus`）：
 
 - **已关闭**：`enabled` 为 `false`。
 - **缺凭据引用**：启用的条目需要 key，但没有 `credentialRef`。Bing RSS 免 key，不算缺。
@@ -102,16 +102,13 @@ v0.1 没有列表界面，条目是否配置完整请按 `entries` 数组自查�
 
 纯空白的值视为未提供。宿主凭据服务返回 `undefined` 时同样视为未提供。以上三层都没有 key 的条目会记为 `SKIPPED_NO_KEY` 并跳过，不发出请求。
 
-注意：条目引用的优先级高于环境变量。如果引用指向的是旧 key，即使环境变量是正确的，也不会被使用。解决办法是在配置表单把 `credentialRef` 改指向含新 key 的引用（v0.2 面板则直接重新保存该条目的 key）。
+注意：条目引用的优先级高于环境变量。如果合法引用指向的是旧 key，即使环境变量是正确的，也不会被使用。解决办法是在设置面板重新保存该条目的 key 生成新引用，或改填其他合法引用。
 
-### 4.3 v0.1 如何提供 key
+### 4.3 面板中提供 key
 
-v0.1 的编辑面是插件配置表单（第 3.1 节），**没有 API key 输入框**。可用方式：
+在条目编辑器中输入新 key 并保存。面板将明文只发送到同源 `/api/credentials/set` 请求，使用生成的 `SEARCH_CHAIN_CREDENTIAL_<条目 ID>_<唯一后缀>` 引用；只有 credentials/set 成功后才提交带 `credentialRef` 的配置。`credentialRef` 必须符合 `^[A-Za-z_][A-Za-z0-9_]*$`，旧式含冒号引用无效。留空 key 表示保留当前引用，不会清空凭据。
 
-- **进程环境变量**（第 4.2 节第 2 层）：让 DSH 进程环境带有表中对应的变量，例如 `TAVILY_API_KEY`。
-- **条目引用 / 托管引用**（第 1、3 层）：在配置表单把条目的 `credentialRef` 写成宿主凭据服务中已存在的引用名；或以环境变量名作为引用名在宿主凭据服务中保存 key。本仓库没有提供写凭据的界面，宿主中的具体入口需要实机确认。
-
-带 API key 输入框的面板编辑是 v0.2 的内容。其数据层已冻结的语义（供了解）：输入框只写不读，保存时 key 经宿主凭据服务落为新引用、配置中只保留引用；每次带 key 保存生成新 `credentialRef`，旧引用不删除；移除条目也不会删除宿主凭据服务中的 key，因为同一个 key 可能被其他条目或插件复用。
+凭据引用是写入时新建的，替换 key 不会删除旧引用；移除条目也不会删除宿主凭据，因为同一凭据可能被其他条目或插件复用。若不在面板输入 key，也可继续使用环境变量或已有合法托管引用（见第 4.2 节）。
 
 ## 5. DeepSeek 官方分支
 
@@ -122,7 +119,7 @@ v0.1 的编辑面是插件配置表单（第 3.1 节），**没有 API key 输�
 
 官方分支会**读取**宿主 `web-search-deepseek` 配置行的活配置（key、`baseURL`、`model` 等，每次搜索现读一次，行内改动从下一次搜索起生效），并把这些值直接交给宿主的官方搜索组件使用；但本插件**不写回宿主配置行，也不写宿主凭据记录**——对该行只读不写。如果该行未挂载或宿主组件无法加载，搜索返回 `WEB_PROVIDER_UNAVAILABLE`，**不会回退到条目链**。这种情况下可在宿主插件设置中启用该行，或把 `useOfficialDeepSeekSearch` 设为 `false` 改用条目链。
 
-v0.2 面板将在开关旁显示如下文案（数据层已定稿）：官方搜索仅对 DeepSeek 官方 API 会话生效、关闭后相关会话改用工具链；官方搜索不另按次收费，模型用量仍按 token 计费。
+面板开关旁说明：官方搜索仅对 DeepSeek 官方 API 会话生效；关闭后相关会话改用工具链；官方搜索不另按次收费，模型用量仍按 token 计费。
 
 ## 6. 搜索如何降级，以及 `timeoutMs`
 
@@ -148,7 +145,7 @@ v0.2 面板将在开关旁显示如下文案（数据层已定稿）：官方搜
   - 但生产装配（`src/index.js` 的 `productionFetch`）零依赖、未接代理分发器：**凡最终需要经代理出站的路由（固定代理 URL，或 PAC 命中 `PROXY`/`HTTPS` 指令）都显式失败、零出站、绝不静默改走直连**；条目记 `ENTRY_PROXY` 并降级到下一条目。只有直连条目、以及 PAC 返回 `DIRECT` 的请求能正常出站。
   - 本节结论有本地 headless 复测支撑（只连回环地址，无真实供应商）：fixture [evidence/proxy-retest-v0.1.mjs](evidence/proxy-retest-v0.1.mjs)，输出 [evidence/proxy-retest-v0.1.log](evidence/proxy-retest-v0.1.log)。复测与上述描述一致，未发现额外缺陷；代理分发器接入前的版本，代理条目请停用或改直连。
 - **响应体上限 2 MiB**（`src/constants.js` 的 `MAX_RESPONSE_BYTES`，PAC 与七家供应商正文共用；bing 适配器的 `MAX_BODY_BYTES` 是该常量的别名，同值）：超限立即停止读取。供应商 2xx 正文超限按异常响应记 `ENTRY_BAD_RESPONSE`（原因含尺寸线索），PAC 超限记 `PAC_FETCH_FAILED`。
-- **设置页的「网页搜索链」区域**：由 client 产物自注册，预期出现、v0.1 待实机确认实际呈现；它是只读指示器，编辑一律走「插件」页的 dsh-search-chain 详情页（配置表单），面板编辑 UI 是 v0.2（见第 3.1 节）。
+- **设置页的「网页搜索链」区域**：由 client 产物自注册完整设置面板；操作只读/写入本插件配置和宿主凭据 Remote，不发起供应商请求。目标 DSH 版本的面板外观和 Remote 回包仍待隔离 profile 实机确认（见第 3.1 节）。
 - **v0.1 不自动导入旧版 YAML 凭据**（见第 4.2 节；TODO 见 [Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)）。
 - **额度判定中的 `QUOTA_LIMITED` 待证认**。它在代码中作为额度证据码出现，但来源是第三方文档，尚未取得实机样本。Gemini 在 429 下按消息含 `quota` 判为额度的做法也是待复核的临时口径。详见 [排错指南](troubleshooting.md)。
 - 本页不包含真实供应商的实网验收结果。
