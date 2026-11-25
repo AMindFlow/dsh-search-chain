@@ -574,12 +574,14 @@ globalThis.window?.__ModuleLoader__?.load({
       }
       .sc-drag-handle:not(:disabled) { cursor: grab; }
       .sc-drag-handle:active:not(:disabled) { cursor: grabbing; }
-      /* R3 v2 显隐层（仅 hover:hover 环境）：静息 opacity 0 常隐；卡片 hover 或把手 focus-visible 显现 1；
-         disabled 恒 .4（含 hover/focus-visible 叠加态）。禁用 display/visibility 机制。 */
+      /* R3 v2 显隐层（仅 hover:hover 环境）：静息 opacity 0 常隐（含静息 disabled，SPC-027 v2 裁决）；
+         卡片 hover 或把手 focus-visible 显现 1；disabled 仅 hover/focus-visible 叠加态 .4。
+         baseline（hover:none）端常显 1、disabled 恒 .4 由顶层 :disabled 组保持。禁用 display/visibility 机制。 */
       @media (hover: hover) {
         .sc-drag-handle { opacity: 0; }
+        .sc-drag-handle:disabled { opacity: 0; }
         .sc-card:hover .sc-drag-handle, .sc-drag-handle:focus-visible { opacity: 1; }
-        .sc-drag-handle:disabled, .sc-card:hover .sc-drag-handle:disabled, .sc-drag-handle:disabled:focus-visible { opacity: .4; }
+        .sc-card:hover .sc-drag-handle:disabled, .sc-drag-handle:disabled:focus-visible { opacity: .4; }
         .sc-drag-handle:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
       }
       .sc-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); cursor: pointer; white-space: nowrap; }
