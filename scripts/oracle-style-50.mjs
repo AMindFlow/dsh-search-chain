@@ -1468,35 +1468,49 @@ async function a047(theme = "light") {
   await addViaPicker("exa");
   // run-acc5 实证修复：picker 打开的编辑器带种子名「Exa」——直接提交=真条目落库（B-007 持久面 "Exa" 幽灵的真源），且探针从未测过目录声明的「空名」面。置空名（native setter+input）才是该断言的合法取数。
   await evaluate(`(() => { const el = document.querySelector('${ROOT} [data-role="field"][data-field="name"]'); if (!el) return false; const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ""); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`, 30000);
+  const probeEid = await evaluate(`(() => { const el = document.querySelector('${ROOT} [data-role="field"][data-field="name"]'); return el ? el.getAttribute("data-entry-id") : null; })()`, 30000); // run-acc6：探针唯一清理凭证（名判据两次失真教训）
+  console.log(`[oracle] A-047 探针 probeEid=${probeEid}`);
   const submitClicked = await evaluate(`() => { const b = [...document.querySelectorAll('${ROOT} [data-role="editor"] button')].find((x) => /sc-button-primary/.test(x.className || '') && !/取消/.test(x.textContent || '')); if (!b) return false; b.click(); return true; }`, 30000);
   if (!submitClicked) { await closeEditor(); throw new Error("missing element: 新建编辑器提交钮（错误面探测前置）"); }
   await wait(700);
   const seen = (await calls()).slice(n).filter((x) => x.url === "/api/settings/mutate").length;
-  { const recsP = (await calls()).slice(n).filter((x) => x.url === "/api/settings/mutate"); console.log(`[oracle] A-047 探针取证（run-acc5 自证面：空名提交窗）：mutate×${recsP.length} 载荷=${JSON.stringify((recsP.length ? recsP[recsP.length - 1].mkeys : []).slice(0, 6))}`); } // lead 指定铁证面：写名 mutate 与后续清理动作全留底
+  const recsP = (await calls()).slice(n).filter((x) => x.url === "/api/settings/mutate");
+  const plast = recsP.length ? (recsP[recsP.length - 1].mkeys || []) : [];
+  console.log(`[oracle] A-047 探针取证（run-acc6：空名提交窗）：mutate×${seen} 载荷=${JSON.stringify(plast.slice(0, 6))}`); // lead 指定铁证面：违例写 mutate 全留底
+  let probeCleaned = false;
+  if (seen > 0) {
+    // run-acc6 实证修复：名判据两次失真（#1 label 文本误中 bing；#2 空名被渲染为占位「（未命名条目）」非空串）→ 清理改按 probeEid 精确删。entryId 是唯一可靠凭证：temp≡持久 id 幂等性 run-5 已实证。
+    const sN = await ui.state();
+    if (probeEid && sN.ids.includes(probeEid)) {
+      console.log(`[oracle] A-047 清理命中 probeEid=${probeEid} name=${JSON.stringify(sN.names[sN.ids.indexOf(probeEid)])}（run-acc6 entryId 精确删）`);
+      const nC = (await calls()).length;
+      if (await ui.click(`${T.card(probeEid)} [data-role="card-remove"]`)) { await wait(300); await ui.click(`${ROOT} [data-role="confirm-remove"]`); }
+      await waitForAutoSave(nC);
+      probeCleaned = true;
+      cardIds = (await ui.state()).ids;
+    } else {
+      console.log(`[oracle] A-047 清理未命中：probeEid=${probeEid} 不在持久名录=${JSON.stringify(sN.ids)}（宁漏勿误删——名判据已被教育两次；id 若被实现侧重键属另案）`);
+    }
+    await cancelEditor().catch(() => {});
+  }
   const errSel = `${ROOT} [data-role="save-error"][data-state="error"]`;
   const exists = await evaluate(`() => !!document.querySelector('${errSel}')`, 30000);
+  if (!exists && seen > 0) {
+    // run-acc6 分类纠偏（lead 裁决；failPolicy 解释面，断言语义零改动）：SKIP 仅适用前置构造失败（v1 代无 create 编辑器另路已处理）。
+    // 探针流可达 ∧ 空名已落库 = 状态可达且判据未满足 = 违例写入 → FAIL；断言目标缺席为伴随描述，非「不可构造」。
+    const failMsg = `create 校验违例：空名新建被放行落库（探针窗 settings/mutate×${seen}，载荷=${JSON.stringify(plast.slice(0, 6))}，已按 probeEid 清理复位=${probeCleaned}）；目录断言目标 [data-role=save-error][data-state=error] 缺席（无 role=alert 面，错误态样式不可采样）——违例写入判 FAIL，区别于 state-unreachable`;
+    await exec("A-047", theme, async () => { throw new Error(failMsg); });
+    await exec("A-060", theme, async () => { throw new Error(failMsg); });
+    return;
+  }
   if (!exists) {
-    if (seen > 0) {
-      // 校验放行：清理误落库空名卡（cleanup，不落断言数据）
-      const sN = await ui.state();
-      // run-acc5 实证修复：旧判据 names===types(label 文本) 会先命中 idx2 的 Bing 卡（prep 保留种子 label 名「Bing RSS」）——清理误删 bing = B-007 持久面缺 bing 的完整链条。幽灵卡必为尾部新追加探针卡：尾位+名空/label 双条件。
-      const ghost = sN.ids.find((id, i) => i === sN.ids.length - 1 && (!String(sN.names[i] || "").trim() || String(sN.names[i] || "").trim() === sN.types[i]));
-      if (ghost) {
-        console.log(`[oracle] A-047 清理命中 ghost=${ghost} name=${JSON.stringify(sN.names[sN.ids.indexOf(ghost)])}（run-acc5 尾位硬化）`);
-        const nC = (await calls()).length;
-        if (await ui.click(`${T.card(ghost)} [data-role="card-remove"]`)) { await wait(300); await ui.click(`${ROOT} [data-role="confirm-remove"]`); }
-        await waitForAutoSave(nC);
-        cardIds = (await ui.state()).ids;
-      }
-      await cancelEditor().catch(() => {});
-    }
-    const gapMsg = `错误态不可达：空名新建被${seen > 0 ? "放行落库（无 create 校验，已清理复位）" : "拒绝但未渲染 save-error 节点"}；failPolicy state-unreachable=SKIP gap`;
+    const gapMsg = `错误态不可构造：空名新建被拒绝（探针窗零写入、无违例）但未渲染目录目标 save-error 节点；failPolicy state-unreachable=SKIP gap`;
     await exec("A-047", theme, async () => { throw new SkipGap(gapMsg); });
     await exec("A-060", theme, async () => { throw new SkipGap(gapMsg); });
     return;
   }
   await exec("A-047", theme, async () => {
-    if (seen > 0) throw new Error(`校验拒绝前已发出 settings/mutate ×${seen}（客户端校验应零写入）`);
+    if (seen > 0) throw new Error(`校验拒绝前已发出 settings/mutate ×${seen}（客户端校验应零写入；载荷=${JSON.stringify(plast.slice(0, 4))}，已按 probeEid 清理=${probeCleaned}）`);
     return { measured: await checkProps(errSel, [
       { prop: "color", wantProbe: "--dsw-alias-state-error-primary", also: theme === "light" ? "rgb(236, 19, 19)" : "rgb(242, 90, 90)" },
       { prop: "role", attr: true, want: "alert" },
