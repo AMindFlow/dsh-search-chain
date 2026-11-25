@@ -697,8 +697,10 @@ test("内置插件页编辑面（v0.1）：cordis.patch.yml 行声明 entries �
     // dict.entries 指向的 refs 节点 type 上。两种序列化形态等价，宿主消费的是后者。
     const proj = host.module.Config.toJSON();
     const refsChild = (ref) => (typeof ref === "number" ? proj?.refs?.[ref] : ref);
+    // 根节点 = refs[uid]（#43 refs 形态：顶层仅 {uid, refs}，dict 位于根节点内）。
+    const rootNode = proj?.refs?.[proj?.uid];
     const annotated =
-      proj?.properties?.entries?.type === "array" || refsChild(proj?.dict?.entries)?.type === "array";
+      proj?.properties?.entries?.type === "array" || refsChild(rootNode?.dict?.entries)?.type === "array";
     assert.ok(
       annotated,
       "序列化投影的 entries 类型注记须为 array（Config.listConfigs 投影可读面，host-plugin.md Config 节）；" +
