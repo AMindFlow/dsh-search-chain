@@ -209,7 +209,7 @@ const INSTRUMENT = () => {
       const args = (JSON.parse(body) || {}).payload?.args || {};
       if (Array.isArray(args.ops)) {
         const ks = args.ops.slice(0, 10).map((o) => `${(o && o.op) || "?"}:${Array.isArray(o && o.path) ? o.path.join(".") : String((o && o.path) ?? "")}${o && o.op === "set" && (typeof o.value === "string" || typeof o.value === "number" || typeof o.value === "boolean") ? "@" + String(o.value).slice(0, 12) : ""}`.slice(0, 76)); // run-acc4 取证协议2：set 基元值出 @value token（timeoutMs/开关值自证；对象值不入）
-        return { mkeys: ks, rev: /revision/i.test(body) };
+        return { mkeys: ks, rev: /revision/i.test(body), revv: args.expectedRevision ?? args.expected_revision ?? null }; // run-acc7 取证：expectedRevision 序列值（B-007 互换终审输入）
       }
       // 两代兼容兜底：非 ops 封套形态（v1 时代/异常 shape）旧递归提取，且现对数组下钻（旧版仅标 k[] → B-016~019 判据在封套层失明）。
       const st = (args.settings && typeof args.settings === "object") ? args.settings : args;
@@ -766,6 +766,7 @@ async function a025Phase(theme, famObj) {
 
 // ───────── A 执行器（逐条对应 Luna 目录条目） ─────────
 let cardIds = [];
+let exa1Id = null, exa2Id = null, bingId = null; // run-acc7：SET-001/002 的 exa-1/exa-2/bing 是创建顺序身份→id 锚（名判据/位判据各有失真前科）
 let fam = null; // v2：编辑器提交 busy 窗五档采样
 let famDark = null;
 let missingCard = null; // 无凭据观察卡（A-018/A-019 missing 态；观察后删除复位）
@@ -826,12 +827,14 @@ async function finishCreate(name, key) {
   if (editorOpen) {
     if (name !== null && (await setField("name", name)) !== name) throw new Error(`${JSON.stringify(name)} 名称输入失败`);
     if (key && (await setField("key", key)) !== key) throw new Error(`${JSON.stringify(name)} key 输入失败`);
+    const nF12 = (await calls()).length; // run-acc7 取证：create 提交窗（append 位点 token + rev 序列）
     // run-acc4 取证协议3（lead 假说判据）：提交钮点击前的编辑器态快照——val 若已非目标名=SET-008 陈旧草稿回填覆盖坐实；仍为目标名=提交链取证。
     const preSub = await evaluate(`(() => { const f = document.querySelector('${ROOT} [data-role="field"][data-field="name"]'); return f ? { val: String(f.value || "").slice(0, 16), eid: f.getAttribute("data-entry-id") } : null; })()`, 30000);
     console.log(`[oracle] prep 注记：即将提交 ${JSON.stringify(name)} → 提交时刻编辑器=${JSON.stringify(preSub)}`);
     await submitEditor("create");
     // run-acc2 实证：prep 自证面——提交后回读名单快照（B-007 第三条目 "Exa" 异常需证据链）；不判定、只注记，判据权仍在 B-007。
     if (name !== null) { const sn = await ui.state(); console.log(`[oracle] prep 注记：create ${JSON.stringify(name)} 提交后名单=${JSON.stringify(sn.names)} 尾ids=${JSON.stringify(sn.ids.slice(-2))}（run-acc4 id 重键自证面：temp eid vs 持久 id）`); }
+    { const recsF = (await calls()).slice(nF12).filter((x) => x.url === "/api/settings/mutate"); console.log(`[oracle] prep create 提交时间线: ${JSON.stringify(name)} → ${JSON.stringify(recsF.map((x) => ({ mk: (x.mkeys || []).slice(0, 5), revv: x.revv ?? null })))}（run-acc7 取证：append 位点+expectedRevision 序列）`); }
   } else {
     if (!(await implV1())) throw new Error("既无新建编辑器也无全局保存钮——两代契约皆缺席（执行器取数前置失败）");
     const st = await ui.state(); const id = st.ids[st.ids.length - 1];
@@ -1786,6 +1789,9 @@ try {
     cardIds = (await ui.state()).ids;
     if (cardIds.length !== 3) console.log(`[oracle] missing 观察卡清理后卡数=${cardIds.length}（期望 3）`);
   }
+  { const b3 = await ui.state(); const ia = b3.names.indexOf("Oracle Alpha"), ib = b3.names.indexOf("Oracle Beta"), ic = b3.names.indexOf("Bing RSS");
+    exa1Id = ia >= 0 ? b3.ids[ia] : null; exa2Id = ib >= 0 ? b3.ids[ib] : null; bingId = ic >= 0 ? b3.ids[ic] : null;
+    console.log(`[oracle] 主数据 id 快照（创建顺序身份锚，run-acc7）：exa-1=${exa1Id} exa-2=${exa2Id} bing=${bingId}`); }
 
   // 亮色主扫描（default 族；面板保持挂载，分区切换会 unmount，故官方区取证挪到保存之后）
   await shot("our-panel-light.png", ROOT);
@@ -1876,7 +1882,26 @@ try {
   // 暗态（Luna 裁定：直设 body[data-ds-dark-theme]，真实暗色 CSS 状态实证；非宿主主题 UI 切换实证）
   await darkAttr(true);
   await styleSweep("dark");
+  // run-acc7 取数面修复：dark 三态素材断料=v2 化后 tavily 草稿路径废止（L1173 实证）+missing 观察卡已在 light 段清理。
+  // 为 dark 段重建观察卡（无 key 名卡=missing 态，run-acc1 实证语义），用毕按 entryId 精确删（教训：只认 id）。
+  let missingDark = null;
+  await addViaPicker("exa");
+  missingDark = await evaluate(`(() => { const el = document.querySelector('${ROOT} [data-role="field"][data-field="name"]'); return el ? el.getAttribute("data-entry-id") : null; })()`, 30000);
+  await finishCreate("Oracle Missing", null);
+  cardIds = (await ui.state()).ids;
   await dotsPhase("dark", true);
+  if (missingDark) {
+    const nCleanD = (await calls()).length;
+    const stD = await ui.state();
+    if (stD.ids.includes(missingDark)) {
+      if (await ui.click(`${T.card(missingDark)} [data-role="card-remove"]`)) { await wait(300); await ui.click(`${ROOT} [data-role="confirm-remove"]`); }
+      await waitForAutoSave(nCleanD);
+      console.log(`[oracle] dark 观察卡已按 id 清理：${missingDark}`);
+    } else console.log(`[oracle] dark 观察卡清理：eid=${missingDark} 不在名录（无鬼影自证）`);
+    await wait(400);
+    cardIds = (await ui.state()).ids;
+    if (cardIds.length !== 3) console.log(`[oracle] dark 观察卡清理后卡数=${cardIds.length}（期望 3）`);
+  }
   await pickerPhase("dark", false);
   await openEditor(cardIds[0]);
   await editorPhase("dark", false);
@@ -1937,6 +1962,7 @@ try {
     const s = await ui.state();
     if (s.absent) throw new Error("missing element: panel");
     cardIds = s.ids;
+    console.log(`[oracle] B-007 持久序取证（run-acc7）：names=${JSON.stringify(s.names)} ids=${JSON.stringify(s.ids)} 创建序锚=[${exa1Id},${exa2Id},${bingId}]`);
     if (s.ids.length !== 3) {
       const snap = await evaluate(`() => ((document.querySelector('${ROOT}')?.innerText || 'ROOT-ABSENT').replace(/\\s+/g, ' ').slice(0, 180))`, 30000);
       throw new Error(`reload 后条目数 ${s.ids.length} ≠ 3（empty可见=${s.emptyVisible}；面板文本快照：“${snap}”）`);
@@ -1959,16 +1985,20 @@ try {
   await closeEditor();
 
   // B-009 编辑其一，其余不受影响（v2：编辑器提交动作自动落盘，无全局保存步骤）
-  await openEditor(cardIds[0]);
+  await openEditor(exa1Id ?? cardIds[0]); // run-acc7 分支(c)实证修复：run-7 [Beta,Alpha] 下位判把 Beta 改名（[Edited,Alpha] 全吻合）——SET-002 的 exa-1 是创建顺序身份，必须 id 锚
   if ((await setField("name", "Oracle Edited")) !== "Oracle Edited") throw new Error("B-009 改名失败");
   await submitEditor("edit");
   await reloadAndReopen();
   await exec("B-009", "light", async () => {
     const s = await ui.state();
-    if (JSON.stringify(s.names) !== '["Oracle Edited","Oracle Beta","Bing RSS"]') throw new Error(`got ${JSON.stringify(s.names)} 期望 exa-1=Oracle Edited 且 exa-2/bing 保留原名`);
-    if (!s.enabled.every((v) => v === true)) throw new Error(`其余启用态 got ${JSON.stringify(s.enabled)}`);
-    if (JSON.stringify(s.dotStates) !== '["ready","ready","ready"]') throw new Error(`其余徽标 got ${JSON.stringify(s.dotStates)}`);
-    return { measured: `exa-1 改名生效；exa-2/bing 名称/enabled/徽标不变 ${JSON.stringify(s.names)}` };
+    const i1 = s.ids.indexOf(exa1Id ?? cardIds[0]), i2 = exa2Id ? s.ids.indexOf(exa2Id) : 1, i3 = bingId ? s.ids.indexOf(bingId) : 2;
+    if (i1 < 0 || i2 < 0 || i3 < 0) throw new Error(`id 锚定失败：ids=${JSON.stringify(s.ids)} 锚=[${exa1Id},${exa2Id},${bingId}]`);
+    if (s.names[i1] !== "Oracle Edited") throw new Error(`exa-1(id=${exa1Id}@idx${i1}) 改名未生效 got ${JSON.stringify(s.names[i1])}`);
+    if (s.names[i2] !== "Oracle Beta") throw new Error(`exa-2(id=${exa2Id}) 名称被改动 got ${JSON.stringify(s.names[i2])}`);
+    if (s.names[i3] !== "Bing RSS") throw new Error(`bing(id=${bingId}) 名称被改动 got ${JSON.stringify(s.names[i3])}`);
+    if (![i1, i2, i3].every((i) => s.enabled[i] === true)) throw new Error(`启用态 got ${JSON.stringify(s.enabled)}`);
+    if (![i1, i2, i3].every((i) => s.dotStates[i] === "ready")) throw new Error(`徽标 got ${JSON.stringify(s.dotStates)}`);
+    return { measured: `exa-1 改名生效（id 锚定，判据窗不依赖持久序）；exa-2/bing 名称/enabled/徽标不变 ${JSON.stringify(s.names)}（序=${JSON.stringify(s.ids)}）` };
   });
 
   // B-010 关闭第二条（v2：离散动作自动落盘）→ reload：原位 enabled=false 徽标关闭态
