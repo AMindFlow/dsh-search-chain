@@ -377,51 +377,306 @@ globalThis.window?.__ModuleLoader__?.load({
       ["deepseek-agentic-search", "DeepSeek Agentic Search", "不另收搜索次数费用，模型用量仍按 token 计费。"],
     ];
     const PANEL_CSS = `
-      .sc-panel { display: grid; gap: 12px; color: var(--dsw-alias-label-primary, inherit); font-family: inherit; }
-      .sc-title { margin: 4px 0 0; font-size: 24px; line-height: 1.3; font-weight: 700; }
-      .sc-description { margin: 0 0 8px; color: var(--dsw-alias-label-secondary, inherit); font-size: 15px; line-height: 1.6; }
-      .sc-card { box-sizing: border-box; display: flex; width: 100%; min-height: 90px; align-items: center; margin-block: 6px; padding: 20px 24px; border: 0; border-radius: 14px; background: var(--dsw-alias-bg-layer-1, transparent); }
-      .sc-card-row, .sc-card-info, .sc-card-actions { display: flex; align-items: center; }
-      .sc-card-row { justify-content: space-between; gap: 16px; min-width: 0; }
-      .sc-card-info { flex-wrap: wrap; gap: 10px; min-width: 0; }
-      .sc-card-name { color: var(--dsw-alias-label-primary, inherit); font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+      .sc-panel { box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 720px; color: var(--dsw-alias-label-primary, inherit); font-family: inherit; }
+      .sc-title { margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; color: var(--dsw-alias-label-primary); }
+      .sc-description { margin: 0; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-tertiary); }
+      .sc-official-row { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+      .sc-official-row .sc-switch { color: var(--dsw-alias-label-primary); }
+      .sc-official-row .sc-switch-label { font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); }
+      .sc-official-hint { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+      .sc-card-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      .sc-card { box-sizing: border-box; position: relative; border: 0.5px solid var(--dsw-alias-settings-card-stroke); background: var(--dsw-alias-settings-card-fill); border-radius: var(--dsw-radius-xl); padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+      .sc-card::before, .sc-card::after { content: ''; position: absolute; z-index: 1; left: 0; right: 0; height: 4px; }
+      .sc-card::before { top: -4px; }
+      .sc-card::after { bottom: -4px; }
+      .sc-card[data-dragging] { opacity: 0.5; }
+      .sc-card[data-drop-target] { z-index: 1; }
+      .sc-card[data-drop-target='before']::before,
+      .sc-card[data-drop-target='after']::after {
+        height: 12px;
+        background:
+          linear-gradient(55deg, transparent calc(50% - 1px), var(--dsw-alias-state-business-primary) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)) 0 0 / 5px 7px no-repeat,
+          linear-gradient(125deg, transparent calc(50% - 1px), var(--dsw-alias-state-business-primary) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)) 0 5px / 5px 7px no-repeat,
+          linear-gradient(var(--dsw-alias-state-business-primary) 0 0) 4px 5px / calc(100% - 4px) 2px no-repeat;
+      }
+      .sc-card[data-drop-target='before']::before { top: -10px; }
+      .sc-card[data-drop-target='after']::after { bottom: -10px; }
+      .sc-card-drag-preview { background: var(--dsw-alias-bg-module-platform); }
+      .sc-card-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+      .sc-card-info { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+      .sc-card-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+      .sc-card-name { font-size: 14px; line-height: 22px; font-weight: 500; color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; }
       .sc-card-name-placeholder { color: var(--dsw-alias-label-secondary, inherit); }
-      .sc-type-badge { padding: 3px 8px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2, transparent); color: var(--dsw-alias-label-secondary, inherit); font-size: 12px; line-height: 1.4; white-space: nowrap; }
+      .sc-type-badge { flex: none; padding: 1px 6px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-xs); font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
       .sc-type-duplicate { display: none; }
-      .sc-status { display: inline-flex; align-items: center; gap: 7px; color: var(--dsw-alias-label-secondary, inherit); font-size: 14px; font-weight: 400; white-space: nowrap; }
-      .sc-status-dot { display: inline-block; width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; }
-      .sc-card-actions { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-      .sc-button { border: 1px solid var(--dsw-alias-border-l1, currentColor); border-radius: 8px; padding: 8px 14px; color: var(--dsw-alias-label-primary, inherit); background: transparent; cursor: pointer; font: inherit; }
-      .sc-button-secondary:hover { background: var(--dsw-alias-bg-layer-1, transparent); }
-      .sc-button-danger { border: 0; padding: 8px 6px; color: var(--dsw-alias-state-error-primary, inherit); background: transparent; cursor: pointer; font: inherit; }
-      .sc-button-danger:hover { text-decoration: underline; }
-      .sc-drag-handle { border: 0; padding: 8px; color: var(--dsw-alias-label-tertiary, inherit); background: transparent; cursor: grab; font: inherit; }
-      .sc-drag-handle:active { cursor: grabbing; }
-      .sc-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary, inherit); cursor: pointer; white-space: nowrap; }
-      .sc-switch-input { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; }
-      .sc-switch-track { position: relative; display: inline-block; box-sizing: border-box; width: 38px; height: 22px; flex: 0 0 38px; border: 1px solid var(--dsw-alias-border-l1, currentColor); border-radius: 999px; background: var(--dsw-alias-bg-layer-2, transparent); transition: background-color 120ms ease, border-color 120ms ease; }
-      .sc-switch-track::after { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; content: ""; transition: transform 120ms ease; }
-      .sc-switch-input:checked + .sc-switch-track { border-color: var(--dsw-alias-state-success-primary, var(--dsw-alias-brand-primary)); background: var(--dsw-alias-state-success-primary, var(--dsw-alias-brand-primary)); }
-      .sc-switch-input:checked + .sc-switch-track::after { transform: translateX(16px); }
-      .sc-switch-input:focus-visible + .sc-switch-track { outline: 2px solid var(--dsw-alias-brand-primary, currentColor); outline-offset: 2px; }
-      .sc-switch-input:disabled + .sc-switch-track { opacity: .55; }
-      .sc-switch-input:disabled ~ .sc-switch-label { opacity: .55; }
-      .sc-add-button { box-sizing: border-box; width: 100%; min-height: 70px; margin-block: 8px; padding: 18px; border: 1.5px dashed var(--dsw-alias-border-l2, currentColor); border-radius: 14px; color: var(--dsw-alias-label-secondary, inherit); background: transparent; cursor: pointer; font: inherit; text-align: center; }
-      .sc-add-button:hover { background: var(--dsw-alias-bg-layer-1, transparent); }
-      .sc-picker, .sc-dialog { position: relative; z-index: 1; display: grid; gap: 12px; padding: 24px; border-radius: 14px; background: var(--dsw-alias-bg-layer-2, transparent); }
-      .sc-picker { gap: 10px; }
-      .sc-picker-item { display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px 16px; border: 0; border-radius: 10px; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-1, transparent); cursor: pointer; font: inherit; text-align: left; }
-      .sc-picker-item:hover { background: var(--dsw-alias-bg-layer-2, transparent); }
-      .sc-picker-title { font-weight: 600; }
-      .sc-picker-billing { color: var(--dsw-alias-label-secondary, inherit); font-size: 14px; }
-      .sc-field { display: grid; gap: 8px; margin-block: 8px; color: var(--dsw-alias-label-primary, inherit); }
-      .sc-input { box-sizing: border-box; width: 100%; border: 1px solid var(--dsw-alias-border-l1, currentColor); border-radius: 8px; padding: 10px 12px; color: var(--dsw-alias-label-primary, inherit); background: var(--dsw-alias-bg-layer-1, transparent); font: inherit; }
-      .sc-editor-title { margin: 0 0 4px; }
-      .sc-button-primary-small { justify-self: end; border: 0; border-radius: 8px; padding: 9px 18px; color: #fff; background: var(--dsw-alias-brand-primary, currentColor); font-weight: 600; }
-      .sc-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
-      .sc-save-button { justify-self: end; width: auto; border: 0; border-radius: 10px; padding: 10px 28px; color: #fff; background: var(--dsw-alias-brand-primary, currentColor); font-weight: 600; }
-      .sc-status-node { color: var(--dsw-alias-label-secondary, inherit); }
-      .sc-button:disabled, .sc-button-danger:disabled, .sc-drag-handle:disabled, .sc-add-button:disabled, .sc-picker-item:disabled, .sc-button-primary-small:disabled, .sc-save-button:disabled { cursor: not-allowed; opacity: .55; }
+      .sc-status { display: inline-flex; flex: none; align-items: center; gap: 6px; font-size: 13px; line-height: 20px; font-weight: 400; color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+      .sc-status-dot { box-sizing: border-box; display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; corner-shape: round; }
+      .sc-status-dot[data-state="ready"] { background: var(--dsw-alias-state-success-primary); }
+      .sc-status-dot[data-state="missing"] { background: var(--dsw-alias-state-error-primary); }
+      .sc-status-dot[data-state="disabled"] { background: var(--dsw-alias-state-idle-primary); }
+      .sc-button, .sc-button-primary, .sc-button-secondary {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        height: 36px;
+        padding: 0 14px;
+        border: none;
+        border-radius: var(--dsw-radius-md);
+        font: inherit;
+        font-size: 14px;
+        line-height: 22px;
+        cursor: pointer;
+      }
+      .sc-button-primary { background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); }
+      @media (hover: hover) {
+        .sc-button-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
+      }
+      .sc-button-secondary { border: 0.5px solid var(--dsw-alias-border-l3); background: transparent; color: var(--dsw-alias-label-primary); }
+      @media (hover: hover) {
+        .sc-button-secondary:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-solid); }
+      }
+      .sc-button-danger {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 36px;
+        padding: 0 14px;
+        border: none;
+        border-radius: var(--dsw-radius-md);
+        background: transparent;
+        color: var(--dsw-alias-state-error-primary);
+        font: inherit;
+        font-size: 14px;
+        line-height: 22px;
+        cursor: pointer;
+      }
+      @media (hover: hover) {
+        .sc-button-danger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger); }
+      }
+      .sc-card-actions .sc-button-secondary {
+        box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+        gap: 4px; height: 28px; padding: 0 10px;
+        border: 0.5px solid var(--dsw-alias-border-l3);
+        border-radius: var(--dsw-radius-sm);
+        background: transparent; color: var(--dsw-alias-label-primary);
+        font: inherit; font-size: 12px; line-height: 18px; cursor: pointer;
+      }
+      @media (hover: hover) {
+        .sc-card-actions .sc-button-secondary:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-solid); }
+      }
+      .sc-card-actions .sc-button-danger {
+        box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+        height: 28px; padding: 0 10px;
+        border: none; border-radius: var(--dsw-radius-sm);
+        background: transparent; color: var(--dsw-alias-state-error-primary);
+        font: inherit; font-size: 12px; line-height: 18px; text-decoration: none; cursor: pointer;
+      }
+      @media (hover: hover) {
+        .sc-card-actions .sc-button-danger:hover:not(:disabled) {
+          background: var(--dsw-alias-interactive-bg-hover-danger);
+          text-decoration: none;
+        }
+      }
+      .sc-delete-confirm:not(:disabled) {
+        --dsh-button-outline-color: var(--dsw-alias-state-error-primary);
+        color: var(--dsw-alias-state-error-primary);
+      }
+      @media (hover: hover) {
+        .sc-delete-confirm:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger); }
+      }
+      .sc-button-primary-small,
+      .sc-save-button {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        align-self: flex-end;
+        height: 36px;
+        padding: 0 14px;
+        border: none;
+        border-radius: var(--dsw-radius-md);
+        background: var(--dsw-alias-button-primary-fill);
+        color: var(--dsw-alias-label-primary-foreground);
+        font: inherit;
+        font-size: 14px;
+        line-height: 22px;
+        cursor: pointer;
+      }
+      @media (hover: hover) {
+        .sc-button-primary-small:hover:not(:disabled),
+        .sc-save-button:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
+      }
+      .sc-button:disabled, .sc-button-primary:disabled, .sc-button-primary-small:disabled, .sc-button-secondary:disabled,
+      .sc-button-danger:disabled, .sc-save-button:disabled, .sc-add-button:disabled, .sc-drag-handle:disabled,
+      .sc-picker-item:disabled { opacity: 0.4; cursor: default; }
+      .sc-input:disabled { opacity: 0.6; cursor: default; }
+      .sc-button:focus-visible, .sc-button-primary:focus-visible, .sc-button-secondary:focus-visible, .sc-button-danger:focus-visible,
+      .sc-button-primary-small:focus-visible, .sc-save-button:focus-visible, .sc-drag-handle:focus-visible,
+      .sc-add-button:focus-visible, .sc-picker-item:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 var(--dsw-focus-ring-width, 2px) var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+      }
+      .sc-drag-handle {
+        box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+        width: 28px; height: 28px; padding: 0; border: none;
+        border-radius: var(--dsw-radius-sm);
+        background: transparent; color: var(--dsw-alias-label-tertiary);
+        font-family: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+      }
+      .sc-drag-handle:not(:disabled) { cursor: grab; }
+      .sc-drag-handle:active:not(:disabled) { cursor: grabbing; }
+      @media (hover: hover) {
+        .sc-drag-handle:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+      }
+      .sc-switch { position: relative; display: inline-flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); cursor: pointer; white-space: nowrap; }
+      .sc-switch:has(.sc-switch-input:disabled) { cursor: default; }
+      .sc-switch-label { font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-secondary); }
+      .sc-switch-input:disabled ~ .sc-switch-label { opacity: .5; }
+      .sc-hidden-label,
+      .sc-switch-input {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      .sc-switch-track {
+        box-sizing: border-box;
+        position: relative;
+        display: block;
+        flex: 0 0 auto;
+        width: 36px;
+        height: 20px;
+        padding: 2px;
+        border: 0;
+        border-radius: 999px;
+        corner-shape: round;
+        background: var(--dsw-alias-border-l3);
+        cursor: pointer;
+      }
+      .sc-switch-track::after {
+        content: "";
+        display: block;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        corner-shape: round;
+        background: var(--dsw-alias-switch-thumb);
+        transition: transform .12s ease;
+      }
+      .sc-switch-input:checked + .sc-switch-track { background: var(--dsw-alias-brand-primary); }
+      .sc-switch-input:checked + .sc-switch-track::after {
+        background: var(--dsw-alias-label-primary-foreground);
+        transform: translate(16px);
+      }
+      .sc-switch-input:disabled + .sc-switch-track { cursor: default; opacity: .5; }
+      .sc-switch-input:focus-visible + .sc-switch-track {
+        outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+        outline-offset: 2px;
+      }
+      html[data-input-modality='pointer'] .sc-switch-input:focus-visible + .sc-switch-track { outline-color: transparent; }
+      @media (prefers-reduced-motion: reduce) {
+        .sc-switch-track { transition: none; }
+        .sc-switch-track::after { transition: none; }
+      }
+      .sc-add-block { display: flex; flex-direction: column; gap: 12px; }
+      .sc-add-actions { display: flex; }
+      .sc-add-button {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 1 1 0;
+        min-width: 180px;
+        height: 44px;
+        padding: 0 14px;
+        gap: 6px;
+        border: 1px dashed var(--dsw-alias-border-l3);
+        border-radius: var(--dsw-radius-lg);
+        background: transparent;
+        color: var(--dsw-alias-label-primary);
+        font: inherit;
+        font-size: 14px;
+        line-height: 22px;
+        cursor: pointer;
+      }
+      @media (hover: hover) {
+        .sc-add-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+      }
+      .sc-editor, .sc-picker, .sc-dialog {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 14px 16px;
+        border-radius: var(--dsw-radius-lg);
+        background: var(--dsw-alias-bg-module-platform);
+        color: var(--dsw-alias-label-primary);
+      }
+      .sc-editor { gap: 14px; }
+      .sc-card .sc-editor, .sc-card .sc-dialog { background: none; padding: 0; }
+      .sc-picker { gap: 8px; }
+      .sc-picker-item {
+        display: flex;
+        width: 100%;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+        padding: 14px 16px;
+        border: 0;
+        border-radius: var(--dsw-radius-md);
+        background: var(--dsw-alias-bg-layer-1);
+        color: var(--dsw-alias-label-primary);
+        font: inherit;
+        text-align: start;
+        cursor: pointer;
+      }
+      @media (hover: hover) {
+        .sc-picker-item:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-solid); }
+      }
+      .sc-picker-title { font-size: 14px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+      .sc-picker-billing { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+      .sc-editor-title { margin: 0; font-size: 14px; line-height: 22px; font-weight: 500; color: var(--dsw-alias-label-primary); }
+      .sc-editor-actions, .sc-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+      .sc-field { display: flex; flex-direction: column; gap: 6px; margin-block: 0; }
+      .sc-field-label { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-label-secondary); }
+      .sc-error { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-error-primary); }
+      .sc-input {
+        box-sizing: border-box;
+        width: 100%;
+        height: 32px;
+        padding: 0 10px;
+        border: 0.5px solid var(--dsw-alias-border-l4);
+        border-radius: var(--dsw-radius-md);
+        font: inherit;
+        font-size: 14px;
+        line-height: 22px;
+        background: var(--dsw-alias-bg-layer-1);
+        color: var(--dsw-alias-label-primary);
+      }
+      .sc-input::placeholder { color: var(--dsw-alias-label-dimmed); }
+      .sc-input:focus { outline: none; border-color: var(--dsw-alias-state-business-primary); }
+      select.sc-input { max-width: 240px; cursor: pointer; }
+      .sc-select-input {
+        appearance: none;
+        padding-right: 32px;
+        /* Data-URI SVGs cannot resolve CSS variables; #81858C is the caption gray
+           shared by both themes. */
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 12px center;
+        background-size: 12px 12px;
+      }
+      .sc-status-node { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+      .sc-status-node[data-state="saved"] { color: var(--dsw-alias-state-success-primary); }
+      .sc-status-node[data-state="error"] { color: var(--dsw-alias-state-error-primary); }
       @media (max-width: 720px) {
         .sc-card { padding: 18px 16px; }
         .sc-card-row { align-items: flex-start; flex-direction: column; }
@@ -629,11 +884,24 @@ globalThis.window?.__ModuleLoader__?.load({
         if (KEYED_TYPES.includes(e.type) && !e.credentialRef) return "缺少凭据引用";
         return "已就绪";
       };
-      const entryStatusStyle = (e) => ({
-        color: !e.enabled ? theme("state-idle-primary")
-          : KEYED_TYPES.includes(e.type) && !e.credentialRef ? theme("state-warn-primary")
-            : theme("state-success-primary"),
-      });
+      const entryStatusState = (e) => (!e.enabled ? "disabled" : KEYED_TYPES.includes(e.type) && !e.credentialRef ? "missing" : "ready");
+      const dragList = (node) => node?.closest?.(".sc-card-list") ?? null;
+      const clearDragMarks = (node) => {
+        const list = dragList(node);
+        if (!list?.querySelectorAll) return;
+        for (const el of list.querySelectorAll("[data-drop-target],[data-dragging]")) {
+          el.removeAttribute("data-drop-target");
+          el.removeAttribute("data-dragging");
+        }
+      };
+      const markDropTarget = (ev) => {
+        const card = ev.currentTarget;
+        if (!card?.getBoundingClientRect || !card.setAttribute) return;
+        const r = card.getBoundingClientRect();
+        const pos = ev.clientY < r.top + r.height / 2 ? "before" : "after";
+        for (const el of dragList(card)?.querySelectorAll?.("[data-drop-target]") ?? []) if (el !== card) el.removeAttribute("data-drop-target");
+        if (card.getAttribute("data-drop-target") !== pos) card.setAttribute("data-drop-target", pos);
+      };
       const cardNodes = model.draft.entries.map((entry) => {
         const row = CATALOG_UI.find((x) => x[0] === entry.type);
         const displayName = entry.name || "（未命名条目）";
@@ -641,10 +909,11 @@ globalThis.window?.__ModuleLoader__?.load({
         const duplicateTypeLabel = displayName === displayType;
         return React.createElement("article", {
           key: entry.id, "data-role": "card", "data-entry-id": entry.id, className: "sc-card",
-          onDragOver: (ev) => { if (!locked) ev.preventDefault?.(); },
+          onDragOver: (ev) => { if (!locked) { ev.preventDefault?.(); markDropTarget(ev); } },
           onDrop: (ev) => {
             if (locked) return;
             ev.preventDefault?.();
+            clearDragMarks(ev.currentTarget);
             const moving = ev.dataTransfer?.getData?.("text/plain");
             if (!moving || moving === entry.id) return;
             setModel((m) => {
@@ -661,7 +930,7 @@ globalThis.window?.__ModuleLoader__?.load({
               React.createElement("span", { "data-role": "card-name", "data-entry-id": entry.id, className: entry.name ? "sc-card-name" : "sc-card-name sc-card-name-placeholder" }, displayName),
               React.createElement("span", { "data-role": "card-type", "data-entry-id": entry.id, className: duplicateTypeLabel ? "sc-type-duplicate" : "sc-type-badge" }, displayType),
               React.createElement("span", { "data-role": "card-status", "data-entry-id": entry.id, "aria-live": "polite", className: "sc-status" },
-                React.createElement("span", { className: "sc-status-dot", "aria-hidden": "true", style: { backgroundColor: entryStatusStyle(entry).color } }),
+                React.createElement("span", { className: "sc-status-dot", "aria-hidden": "true", "data-state": entryStatusState(entry) }),
                 React.createElement("span", null, entryStatusText(entry)),
               ),
             ),
@@ -677,7 +946,7 @@ globalThis.window?.__ModuleLoader__?.load({
                 React.createElement("span", { className: "sc-switch-label" }, "启用"),
               ),
               React.createElement("button", {
-                className: "sc-button sc-button-secondary", type: "button", "data-role": "card-edit", "data-entry-id": entry.id, disabled: locked,
+                className: "sc-button-secondary", type: "button", "data-role": "card-edit", "data-entry-id": entry.id, disabled: locked,
                 onClick: (ev) => { if (locked) return; restoreFocus.current = ev.currentTarget ?? null; setModel((m) => ({ ...m, editingId: entry.id, status: m.status.kind === "error" ? IDLE : m.status })); },
               }, "编辑"),
               React.createElement("button", {
@@ -688,7 +957,8 @@ globalThis.window?.__ModuleLoader__?.load({
                 className: "sc-drag-handle", type: "button", "data-role": "drag-handle", "data-entry-id": entry.id, disabled: locked,
                 draggable: !locked, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
                 title: "拖动排序；也可按方向键调整位置",
-                onDragStart: (ev) => { if (!locked) ev.dataTransfer?.setData?.("text/plain", entry.id); },
+                onDragStart: (ev) => { if (locked) return; ev.dataTransfer?.setData?.("text/plain", entry.id); ev.currentTarget?.closest?.('[data-role="card"]')?.setAttribute?.("data-dragging", ""); },
+                onDragEnd: (ev) => { clearDragMarks(ev.currentTarget); },
                 onKeyDown: (ev) => {
                   if (locked) return;
                   if (ev.key === "ArrowUp") { ev.preventDefault?.(); moveEntry(entry.id, -1); }
@@ -701,32 +971,31 @@ globalThis.window?.__ModuleLoader__?.load({
       });
       const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
       const statusNode = model.status.kind === "idle" ? null : React.createElement("p", {
-        className: "sc-status-node",
+        className: model.status.kind === "error" ? "sc-status-node sc-error" : "sc-status-node",
         "data-role": model.status.kind === "error" ? "save-error" : "save-status",
+        "data-state": model.status.kind,
         role: model.status.kind === "error" ? "alert" : "status",
-        style: model.status.kind === "error" ? { color: theme("state-error-primary") }
-          : model.status.kind === "saved" ? { color: theme("state-success-primary") } : secondaryTextStyle,
       }, model.status.text, ...(model.status.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`)));
       const editor = editorEntry ? React.createElement("div", {
         role: "dialog", "aria-modal": "true", "aria-labelledby": "sc-editor-title",
         "data-role": "editor", onKeyDown: onDialogKeyDown, className: "sc-dialog sc-editor",
       },
         React.createElement("h4", { id: "sc-editor-title", className: "sc-editor-title" }, `编辑 ${editorEntry.name || editorEntry.type}`),
-        React.createElement("label", { className: "sc-field" }, "名称", React.createElement("input", {
+        React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "名称"), React.createElement("input", {
           className: "sc-input", type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, disabled: locked,
           value: editorEntry.name, onChange: (ev) => updateEntry(editorEntry.id, { name: ev.target.value }), autoFocus: true,
         })),
-        React.createElement("label", { className: "sc-field" }, "凭据引用", React.createElement("input", {
+        React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "凭据引用"), React.createElement("input", {
           className: "sc-input", type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, disabled: locked,
           value: editorEntry.credentialRef ?? "", placeholder: "例如 TAVILY_API_KEY",
           onChange: (ev) => updateEntry(editorEntry.id, { credentialRef: ev.target.value }),
         })),
-        KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { className: "sc-field" }, "API key（仅写入，不会回显）", React.createElement("input", {
+        KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "API key（仅写入，不会回显）"), React.createElement("input", {
           className: "sc-input", type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, disabled: locked,
           value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
           onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, keys: { ...m.keys, [editorEntry.id]: ev.target.value } })); },
         })) : null,
-        React.createElement("button", { className: "sc-button sc-button-primary-small", type: "button", disabled: locked, onClick: closeEditor }, "完成"),
+        React.createElement("div", { className: "sc-editor-actions" }, React.createElement("button", { className: "sc-button sc-button-primary sc-button-primary-small", type: "button", disabled: locked, onClick: closeEditor }, "完成")),
       ) : null;
       const addPicker = model.addOpen ? React.createElement("div", { role: "group", "aria-label": "选择搜索工具", className: "sc-picker" },
         ...CATALOG_UI.map(([type, label, billing]) => React.createElement("button", {
@@ -737,16 +1006,19 @@ globalThis.window?.__ModuleLoader__?.load({
       const confirm = model.confirmId ? React.createElement("div", { role: "alertdialog", "aria-modal": "true", className: "sc-dialog sc-confirm" },
         React.createElement("p", null, "移除该搜索工具？不会删除宿主凭据。"),
         React.createElement("div", { className: "sc-confirm-actions" },
-          React.createElement("button", { className: "sc-button-danger", type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null, draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== model.confirmId) } })); } }, "确认移除"),
+          React.createElement("button", { className: "sc-button-danger sc-delete-confirm", type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null, draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== model.confirmId) } })); } }, "确认移除"),
           React.createElement("button", { className: "sc-button sc-button-secondary", type: "button", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null })); } }, "取消"),
         ),
       ) : null;
-      return React.createElement("section", {
-        className: "sc-panel", "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT,
-        style: { ...primaryTextStyle, fontFamily: "inherit", display: "grid" },
+      return React.createElement("div", { "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT },
+      React.createElement("section", {
+        className: "sc-panel",
+        style: { ...primaryTextStyle, fontFamily: "inherit" },
       },
         React.createElement("style", { "data-sc-style": "panel" }, PANEL_CSS),
         React.createElement("h3", { className: "sc-title" }, SECTION_TITLE),
+        React.createElement("p", { className: "sc-description" }, "搜索工具按列表顺序依次尝试，前一个失败时回退到下一个。"),
+        React.createElement("div", { className: "sc-official-row" },
         React.createElement("label", { className: "sc-switch sc-official-switch" },
           React.createElement("input", {
             className: "sc-switch-input", type: "checkbox", role: "switch", "aria-checked": model.draft.useOfficial,
@@ -757,16 +1029,15 @@ globalThis.window?.__ModuleLoader__?.load({
           React.createElement("span", { className: "sc-switch-track", "aria-hidden": "true" }),
           React.createElement("span", { className: "sc-switch-label" }, "DeepSeek 官方 API 使用官方搜索"),
         ),
-        React.createElement("p", { className: "sc-description", "data-role": "official-hint" }, "仅对 DeepSeek 官方 API 会话生效；关闭后相关会话改用下方工具链。官方搜索不另按次收费，模型用量仍按 token 计费。"),
+        React.createElement("p", { className: "sc-official-hint", "data-role": "official-hint" }, "仅对 DeepSeek 官方 API 会话生效；关闭后相关会话改用下方工具链。官方搜索不另按次收费，模型用量仍按 token 计费。")),
         model.draft.entries.length === 0 ? React.createElement("p", { "data-role": "empty-state", style: secondaryTextStyle }, "还没有配置搜索工具，点击下方「添加搜索工具」添加第一条。") : null,
-        ...cardNodes,
-        addPicker,
-        React.createElement("button", { className: "sc-add-button", type: "button", "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "＋ 添加搜索工具"),
+        cardNodes.length ? React.createElement("div", { className: "sc-card-list" }, ...cardNodes) : null,
+        React.createElement("div", { className: "sc-add-block" }, React.createElement("div", { className: "sc-add-actions" }, React.createElement("button", { className: "sc-add-button", type: "button", "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "＋ 添加搜索工具")), addPicker),
         confirm,
         editor,
-        React.createElement("button", { className: "sc-button sc-save-button", type: "button", "data-role": "save", disabled: model.phase !== "ready" || model.status.kind === "pending", onClick: save }, "保存"),
+        React.createElement("button", { className: "sc-button sc-button-primary sc-save-button", type: "button", "data-role": "save", disabled: model.phase !== "ready" || model.status.kind === "pending", onClick: save }, "保存"),
         statusNode,
-      );
+      ));
     }
 
     /** bundle 页配置组件（第二参，plugins.bundle.config）。只用 useState / useEffect / useRef。 */
