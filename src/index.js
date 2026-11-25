@@ -114,6 +114,11 @@ Object.defineProperty(Config, "~standard", {
       if (result.issues) return result;
       for (const key of CONFIG_OWN_KEYS) {
         if (!(key in input)) delete result.value[key];
+        // schemastery 对非 required 字段放行 null（视为缺省）；旧手写面拒绝 null。写闸保持拒绝，
+        // 否则 null 落盘后读路径 normalizeConfig 必拒（CONFIG_INVALID），形成保存成功即读不出的状态。
+        else if (input[key] === null) {
+          return { issues: [{ message: `${key} 不得为 null（缺省请省略该键）`, path: [key] }] };
+        }
       }
       return result;
     },
