@@ -20,6 +20,12 @@
 const DEFAULT_SOURCE = "user-env";
 
 /**
+ * 凭据引用名语法（R-1）：POSIX 标识符，与 dsh-credentials src/index.ts L19 REF_PATTERN 逐字一致。
+ * 冒号、连字符、点号等一律不合法；record key 的 `<scope>/<id>` 空间与之互斥。
+ */
+export const CREDENTIAL_REF_GRAMMAR = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * @param {{ refs?: Record<string, string | {value: string, source: string}>,
  *           records?: Record<string, string | {kind: "api-key", key?: string, env?: object} | {kind: "grant", payload: unknown}>,
  *           failRefReads?: string[] }} [seed]
@@ -31,6 +37,14 @@ export function createFakeCredentials(seed = {}) {
   const refs = { ...(seed.refs ?? {}) };
   const records = { ...(seed.records ?? {}) };
   const failRefReads = new Set(seed.failRefReads ?? []);
+  // R-1（opt-in，默认关闭以保留既有 "ref:x" 类合成引用）：开启后引用侧与真宿主 credentialRef() 同形——
+  // 不合 POSIX grammar 的引用名抛 TypeError（dsh-credentials src/index.ts L29-34，@0.2.2-rc.5）。
+  const strictRefGrammar = seed.strictRefGrammar === true;
+  const assertRefGrammar = (ref) => {
+    if (strictRefGrammar && !CREDENTIAL_REF_GRAMMAR.test(String(ref))) {
+      throw new TypeError(`[fake-credentials] 引用名不合语法（真宿主 credentialRef 规则）`);
+    }
+  };
   const resolveCalls = [];
   const recordCalls = [];
 
@@ -41,6 +55,7 @@ export function createFakeCredentials(seed = {}) {
 
   async function resolve(ref) {
     resolveCalls.push(ref);
+    assertRefGrammar(ref);
     if (failRefReads.has(ref)) throw new Error(`[fake-credentials] 合成凭据服务故障: ${ref}`);
     if (!Object.hasOwn(refs, ref)) return undefined;
     const hit = toRefHit(refs[ref]);
@@ -53,6 +68,7 @@ export function createFakeCredentials(seed = {}) {
     // —— 引用空间（条目凭据）——
     resolve,
     async describe(ref) {
+      assertRefGrammar(ref);
       const configured = Object.hasOwn(refs, ref) && toRefHit(refs[ref]).value !== "";
       return {
         configured,
@@ -61,6 +77,7 @@ export function createFakeCredentials(seed = {}) {
       };
     },
     async set(ref, value) {
+      assertRefGrammar(ref);
       // 真宿主规则（README）：空串不可存——移除密钥走 unset。
       if (typeof value !== "string" || value === "") {
         throw new Error("[fake-credentials] 空串不可存储（真宿主规则：移除走 unset）");

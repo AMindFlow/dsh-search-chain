@@ -1,4 +1,4 @@
-// WP13 客户端挂载线：Client 产物入口（SET-001 / DSH-001）+ Issue #46 bundle 页配置表单（BCF-001..006）。
+// WP13 客户端挂载线：Client 产物入口（SET-001 / DSH-001）+ Issue #48 设置面板（SET-001..005）+ bundle 页配置表单（BCF-001..006）。
 //
 // 装载链（DSH 0.2.2-rc.5 app.asar 模板，权威）：
 //   本文件顶层经 window.__ModuleLoader__.load({ id, factory }) 自注册；id 恒为包名。
@@ -15,8 +15,8 @@
 // 通道（规格 bundle-config-ui.md [C8]）：
 //   读 = 同源 POST /api/settings/describe（args={}），取 namespaces 中 ns=search-chain 的 user 层与
 //         revision（投影）；缺 revision 即禁止保存。
-//   写 = 同源 POST /api/settings/mutate，args={ns, ops, expectedRevision}（revision 原样回传 describe 值）；
-//         ops 由 contract.toOps 产出，set 值递归剥离明文字段（apiKey 等），不触及既有明文 key。
+//   写 = 同源 POST /api/settings/mutate，args={ns, ops, expectedRevision}；凭据只写 = /api/credentials/set，args={ref,value}；
+//         新 key 先写凭据、再写配置；toOps 对 moved/new entries 整条 set 并递归剥离秘密字段，稳定位置仍字段级 diff（D-1）。
 //   合并/校验 = Component.contract（内联纯函数，与 src/config.js normalizeConfig 全等，对比钉见 test）。
 //
 // 本文件的常量为 src/constants.js 的本地镜像（TOOL_TYPES / 默认超时 / 凭据字段），变更须同步。
@@ -51,9 +51,6 @@ const MANAGED_ENTRY_KEYS = ["id", "type", "name", "enabled", "credentialRef"];
 const MANAGED_TOP_KEYS = ["useOfficialDeepSeekSearch", "timeoutMs"];
 
 const sectionLabel = () => SECTION_TITLE;
-
-/** 编辑指引（P1-1：仅含已证路径——侧栏「插件」→ dsh-search-chain 卡片 → 详情页配置表单；禁「设置→」前缀）。 */
-const EDIT_HINT = "编辑请在侧栏「插件」中打开 dsh-search-chain 卡片，进入详情页的配置表单";
 
 /** 已挂载的 ctx.slots 幂等键；卸载 cleanup 清除。 */
 const mounted = new WeakMap();
@@ -168,9 +165,14 @@ globalThis.window?.__ModuleLoader__?.load({
     function mergeEntry(prior, formEntry) {
       if (!isPlainObject(formEntry)) return formEntry; // 非对象原样交写闸拒绝
       const saved = typeof formEntry.id === "string" ? prior.get(formEntry.id) : undefined;
+      // 草稿包含 effective entry 的完整配置，写 user 层时须 materialize base 条目；
+      // 仍保留 user 原有 secret/未知字段，再由草稿中的受支持值覆盖。
       const next = saved ? { ...saved } : {};
-      for (const k of MANAGED_ENTRY_KEYS) {
-        if (formEntry[k] !== undefined) next[k] = formEntry[k];
+      for (const [k, value] of Object.entries(formEntry)) {
+        if (SECRET_FIELD.test(k)) continue;
+        if (MANAGED_ENTRY_KEYS.includes(k) || k === "proxy" || ["string", "number", "boolean"].includes(typeof value)) {
+          next[k] = value;
+        }
       }
       if (next.credentialRef === "") delete next.credentialRef;
       return next;
@@ -235,9 +237,9 @@ globalThis.window?.__ModuleLoader__?.load({
     }
 
     /**
-     * 产出路径补丁（set/unset），作用于 current 后 ≡ next（剥离明文后）。set 值逐层剥离 SECRET_FIELD。
-     * 既有条目只做字段级 diff；新增条目仅允许追加；删除经 unset 索引。
-     * v0.1 表单只增删改、不重排：保留条目相对顺序变化或中段插入即抛错（重排需整条覆写）。
+     * 产出路径补丁（set/unset），作用于 current 后 ≡ next（剥离明文后）。
+     * 位置不变的条目维持字段级 diff；仅位置变化/新追加条目以整条 set，且 set 值递归剥离秘密键。
+     * 删除通过从尾部 unset 收尾，避免重排引入无关列表覆写（D-1）。
      */
     function toOps(next, current) {
       const ops = [];
@@ -251,7 +253,6 @@ globalThis.window?.__ModuleLoader__?.load({
       for (const key of Object.keys(state)) {
         if (key !== "entries" && !(key in nxt)) emit({ op: "unset", path: [key] });
       }
-      // 管理键恒产出 set（即便值未变，保存总有可观测写入；值相同不改变结果）；未知键仅在变化时产出。
       for (const key of Object.keys(nxt)) {
         if (key === "entries") continue;
         if (MANAGED_TOP_KEYS.includes(key) || !deepEq(state[key], nxt[key])) emit({ op: "set", path: [key], value: nxt[key] });
@@ -266,30 +267,23 @@ globalThis.window?.__ModuleLoader__?.load({
         return ops;
       }
       if (!Array.isArray(state.entries)) emit({ op: "set", path: ["entries"], value: [] });
-      const targetIds = new Set(target.filter(isPlainObject).map((e) => e.id));
-      for (let i = state.entries.length - 1; i >= 0; i--) {
-        const e = state.entries[i];
-        if (!isPlainObject(e) || !targetIds.has(e.id)) emit({ op: "unset", path: ["entries", String(i)] });
-      }
-      let p = 0;
-      for (const t of target) {
-        if (!isPlainObject(t)) throw invalid("entries 含非对象项");
-        const cur = state.entries[p];
-        if (cur !== undefined && isPlainObject(cur) && cur.id === t.id) {
+      for (const t of target) if (!isPlainObject(t)) throw invalid("entries 含非对象项");
+      for (let i = 0; i < target.length; i++) {
+        const t = target[i];
+        const cur = state.entries[i];
+        if (isPlainObject(cur) && cur.id === t.id) {
           for (const k of Object.keys(t)) {
-            if (!deepEq(cur[k], t[k])) emit({ op: "set", path: ["entries", String(p), k], value: t[k] });
+            if (!deepEq(cur[k], t[k])) emit({ op: "set", path: ["entries", String(i), k], value: t[k] });
           }
           for (const k of Object.keys(cur)) {
-            if (!(k in t)) emit({ op: "unset", path: ["entries", String(p), k] });
+            if (!(k in t)) emit({ op: "unset", path: ["entries", String(i), k] });
           }
-          p += 1;
         } else {
-          if (p !== state.entries.length) {
-            throw new Error("条目顺序调整或中段插入 v0.1 不支持（重排需整条覆写）");
-          }
-          emit({ op: "set", path: ["entries", String(p)], value: t });
-          p += 1;
+          emit({ op: "set", path: ["entries", String(i)], value: t });
         }
+      }
+      for (let i = state.entries.length - 1; i >= target.length; i--) {
+        emit({ op: "unset", path: ["entries", String(i)] });
       }
       return ops;
     }
@@ -341,13 +335,25 @@ globalThis.window?.__ModuleLoader__?.load({
     function draftFrom(config) {
       const entries = Array.isArray(config.entries) ? config.entries : [];
       return {
-        entries: entries.map((e) => ({
-          id: String(e.id),
-          type: typeof e.type === "string" ? e.type : TOOL_TYPES[0],
-          name: typeof e.name === "string" ? e.name : "",
-          enabled: e.enabled !== false,
-          credentialRef: typeof e.credentialRef === "string" ? e.credentialRef : "",
-        })),
+        entries: entries.map((e) => {
+          const passthrough = {};
+          if (isPlainObject(e)) {
+            for (const [k, value] of Object.entries(e)) {
+              if (HANDLED_ENTRY_FIELDS.includes(k) || SECRET_FIELD.test(k)) continue;
+              if (["string", "number", "boolean"].includes(typeof value)) passthrough[k] = value;
+            }
+            // proxy is a supported structured field; strip secret-shaped nested keys defensively.
+            if (Object.prototype.hasOwnProperty.call(e, "proxy")) passthrough.proxy = stripSecrets(e.proxy);
+          }
+          return {
+            ...passthrough,
+            id: String(e.id),
+            type: typeof e.type === "string" ? e.type : TOOL_TYPES[0],
+            name: typeof e.name === "string" ? e.name : "",
+            enabled: e.enabled !== false,
+            credentialRef: typeof e.credentialRef === "string" ? e.credentialRef : "",
+          };
+        }),
         useOfficial: config.useOfficialDeepSeekSearch !== false,
         timeoutText: config.timeoutMs === undefined ? "" : String(config.timeoutMs),
       };
@@ -356,14 +362,379 @@ globalThis.window?.__ModuleLoader__?.load({
     const EMPTY_DRAFT = Object.freeze({ entries: [], useOfficial: true, timeoutText: "" });
     const IDLE = Object.freeze({ kind: "idle", text: "", issues: [] });
 
-    /** settings.section 只读指示器（第二参）。 */
-    function SettingsIndicator(_props) {
+    /** settings.section 完整设置面板（第二参）。所有配置读写均经同源 Remote API。 */
+    let entryIdSeq = 0;
+    let credentialRefSeq = 0;
+    const KEYED_TYPES = TOOL_TYPES.filter((type) => type !== "bing");
+    const CATALOG_UI = [
+      ["openai", "OpenAI", "按 OpenAI API 账户用量计费。"],
+      ["tavily", "Tavily", "Basic 查询消耗一个 credit。"],
+      ["exa", "Exa", "费用随 Exa 搜索和内容用量计算。"],
+      ["brave", "Brave", "按 Brave Web Search API 账户用量计费。"],
+      ["bing", "Bing RSS", "公开 RSS 通道，免 key，不产生供应商计费。"],
+      ["gemini", "Gemini", "计费受所选模型和账户影响。"],
+      ["deepseek-search", "DeepSeek Search API", "有结果的成功请求按次计费。"],
+      ["deepseek-agentic-search", "DeepSeek Agentic Search", "不另收搜索次数费用，模型用量仍按 token 计费。"],
+    ];
+    const POSIX_REF = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    const theme = (token, fallback = "inherit") => `var(--dsw-alias-${token}, ${fallback})`;
+    const primaryTextStyle = { color: theme("label-primary") };
+    const secondaryTextStyle = { color: theme("label-secondary") };
+    const cardStyle = {
+      border: `1px solid ${theme("border-l1", "currentColor")}`,
+      borderRadius: "8px",
+      padding: "12px",
+      marginBlock: "8px",
+      color: theme("label-primary"),
+      background: theme("bg-layer-1", "transparent"),
+    };
+    const secondarySurfaceStyle = {
+      border: `1px solid ${theme("border-l1", "currentColor")}`,
+      borderRadius: "8px",
+      padding: "12px",
+      marginBlock: "8px",
+      color: theme("label-primary"),
+      background: theme("bg-layer-2", "transparent"),
+    };
+    const buttonStyle = {
+      border: `1px solid ${theme("border-l1", "currentColor")}`,
+      borderRadius: "6px",
+      padding: "6px 10px",
+      color: theme("label-primary"),
+      background: theme("bg-layer-2", "transparent"),
+      cursor: "pointer",
+      font: "inherit",
+    };
+    const fieldLabelStyle = { display: "grid", gap: "6px", marginBlock: "8px", color: theme("label-primary") };
+    const inputStyle = {
+      border: `1px solid ${theme("border-l1", "currentColor")}`,
+      borderRadius: "6px",
+      padding: "8px 10px",
+      color: theme("label-primary"),
+      background: theme("bg-layer-1", "transparent"),
+      font: "inherit",
+    };
+    const saveButtonStyle = {
+      ...buttonStyle,
+      borderColor: "transparent",
+      background: theme("brand-primary", "#4f46e5"),
+      color: "white",
+      fontWeight: 600,
+    };
+
+    function credentialRpc(method, args) {
+      const body = {
+        type: "client-request",
+        rpcId: `sc-cred-${Date.now().toString(36)}-${++rpcSeq}`,
+        method: `credentials/${method}`,
+        payload: { args },
+      };
+      return fetch(`/api/credentials/${method}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => r.json());
+    }
+
+    function credentialRefFor(entryId) {
+      const safeId = String(entryId).replace(/[^A-Za-z0-9_]/g, "_") || "entry";
+      return `SEARCH_CHAIN_CREDENTIAL_${safeId}_${Date.now().toString(36)}_${++credentialRefSeq}`;
+    }
+
+    function SettingsPanel(_props) {
       if (!React) return null;
-      return React.createElement(
-        "section",
-        { "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT },
-        React.createElement("h3", null, SECTION_TITLE),
-        React.createElement("p", null, EDIT_HINT),
+      // 组件工厂的轻量测试/预览适配：完整 DSH React 提供 hooks；仅 createElement 的宿主探针显示静态标题与添加入口。
+      if (typeof React.useState !== "function" || typeof React.useEffect !== "function" || typeof React.useRef !== "function") {
+        return React.createElement("section", { "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT },
+          React.createElement("h3", null, SECTION_TITLE),
+          React.createElement("p", { "data-role": "empty-state" }, "还没有配置搜索工具。"),
+          React.createElement("button", { type: "button", "data-role": "add-tool" }, "添加搜索工具"),
+        );
+      }
+      const [model, setModel] = React.useState({
+        phase: "loading",
+        base: {},
+        user: {},
+        revision: undefined,
+        draft: { entries: [], useOfficial: true, timeoutText: String(DEFAULT_TIMEOUT_MS) },
+        keys: {},
+        editingId: null,
+        addOpen: false,
+        confirmId: null,
+        status: IDLE,
+      });
+      const alive = React.useRef(true);
+      const restoreFocus = React.useRef(null);
+      const locked = model.status.kind === "pending";
+
+      const load = (keepStatus = false) => {
+        setModel((m) => ({ ...m, phase: "loading" }));
+        let pending;
+        try { pending = rpc("describe", {}); } catch (err) { pending = Promise.reject(err); }
+        Promise.resolve(pending).then((res) => {
+          if (!alive.current) return;
+          const got = unwrap(res);
+          const proj = got.ok ? projectionOf(got.value) : null;
+          if (!proj) {
+            const text = got.ok ? "宿主投影中缺少 search-chain 命名空间" : `读取配置失败：${got.message}`;
+            setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, status: { kind: "error", text, issues: [] } }));
+            return;
+          }
+          const effective = { ...proj.base, ...proj.user };
+          const check = validate(effective);
+          const normalized = check.ok ? check.config : effective;
+          const draft = draftFrom(normalized);
+          setModel((m) => ({
+            ...m,
+            phase: typeof proj.revision === "number" ? "ready" : "unavailable",
+            base: proj.base,
+            user: proj.user,
+            revision: proj.revision,
+            draft,
+            status: keepStatus ? m.status : typeof proj.revision !== "number"
+              ? { kind: "error", text: "宿主投影缺少 revision，禁止保存（请重新打开设置）", issues: [] }
+              : check.ok ? IDLE : { kind: "error", text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) },
+          }));
+        }, (err) => {
+          if (!alive.current) return;
+          setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, status: { kind: "error", text: `读取配置失败：${String((err && err.message) || err)}`, issues: [] } }));
+        });
+      };
+
+      React.useEffect(() => {
+        alive.current = true;
+        load();
+        return () => { alive.current = false; };
+      }, []);
+
+      const updateEntry = (id, patch) => {
+        if (locked) return;
+        setModel((m) => ({
+          ...m,
+          draft: { ...m.draft, entries: m.draft.entries.map((e) => e.id === id ? { ...e, ...patch } : e) },
+          status: m.status.kind === "error" ? IDLE : m.status,
+        }));
+      };
+      const moveEntry = (id, delta) => setModel((m) => {
+        if (locked || m.status.kind === "pending") return m;
+        const from = m.draft.entries.findIndex((e) => e.id === id);
+        const to = from + delta;
+        if (from < 0 || to < 0 || to >= m.draft.entries.length) return m;
+        const entries = [...m.draft.entries];
+        [entries[from], entries[to]] = [entries[to], entries[from]];
+        return { ...m, draft: { ...m.draft, entries } };
+      });
+      const addEntry = (type) => {
+        if (locked) return;
+        const label = CATALOG_UI.find((x) => x[0] === type)?.[1] ?? type;
+        const id = `search_chain_${Date.now().toString(36)}_${++entryIdSeq}`;
+        setModel((m) => ({ ...m, addOpen: false, draft: { ...m.draft, entries: [...m.draft.entries, { id, type, name: label, enabled: true, credentialRef: "" }] } }));
+      };
+      const save = async () => {
+        if (locked || model.status.kind === "pending" || model.phase !== "ready" || typeof model.revision !== "number") return;
+        // 先把本次非空 key 将生成的新引用投影到临时 entries，再校验剩余引用；
+        // 这样迁移旧冒号 ref 时，旧值既不会阻断，也不会进入任何请求体。
+        let entries = model.draft.entries.map((e) => ({ ...e }));
+        const credentialWrites = [];
+        for (let i = 0; i < entries.length; i++) {
+          const value = typeof model.keys[entries[i].id] === "string" ? model.keys[entries[i].id].trim() : "";
+          if (!KEYED_TYPES.includes(entries[i].type) || !value) continue;
+          const ref = credentialRefFor(entries[i].id);
+          entries[i] = { ...entries[i], credentialRef: ref };
+          credentialWrites.push({ ref, value });
+        }
+        const bad = entries.find((e) => e.credentialRef && !POSIX_REF.test(e.credentialRef.trim()));
+        if (bad) {
+          setModel((m) => ({ ...m, status: { kind: "error", text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] } }));
+          return;
+        }
+        setModel((m) => ({ ...m, status: { kind: "pending", text: "保存中…", issues: [] } }));
+        try {
+          for (const { ref, value } of credentialWrites) {
+            const response = await credentialRpc("set", { ref, value });
+            const result = unwrap(response);
+            if (!result.ok) throw new Error(result.message || "凭据服务拒绝写入");
+          }
+          const form = {
+            entries,
+            useOfficialDeepSeekSearch: model.draft.useOfficial,
+            timeoutMs: Number(model.draft.timeoutText),
+          };
+          const merged = merge(form, model.user);
+          const check = validate(Object.assign({}, model.base, merged));
+          if (!check.ok) {
+            setModel((m) => ({ ...m, status: { kind: "error", text: "配置未保存：校验未通过", issues: check.issues.map((i) => i.message) } }));
+            return;
+          }
+          const ops = toOps(merged, model.user);
+          const response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: model.revision });
+          const result = unwrap(response);
+          if (!result.ok) {
+            let message = String(result.message || "宿主拒绝该请求");
+            for (const secret of Object.values(model.keys)) {
+              if (typeof secret === "string" && secret.trim()) message = message.replaceAll(secret.trim(), "[redacted]");
+            }
+            setModel((m) => ({ ...m, status: { kind: "error", text: `保存失败：${message}`, issues: [] } }));
+            return;
+          }
+          setModel((m) => ({
+            ...m,
+            user: merged,
+            draft: { ...m.draft, entries: entries.map((e) => ({ ...e })), timeoutText: String(form.timeoutMs) },
+            keys: {},
+            status: { kind: "saved", text: "已保存", issues: [] },
+          }));
+          load(true);
+        } catch (err) {
+          let message = String((err && err.message) || err || "保存失败");
+          for (const secret of Object.values(model.keys)) {
+            if (typeof secret === "string" && secret.trim()) message = message.replaceAll(secret.trim(), "[redacted]");
+          }
+          setModel((m) => ({ ...m, status: { kind: "error", text: `保存失败：${message}`, issues: [] } }));
+        }
+      };
+      const closeEditor = () => {
+        if (locked) return;
+        setModel((m) => ({ ...m, editingId: null }));
+        const node = restoreFocus.current;
+        if (node && typeof node.focus === "function") Promise.resolve().then(() => node.focus());
+      };
+      const onDialogKeyDown = (ev) => {
+        if (locked) return;
+        if (ev.key === "Escape") { ev.preventDefault?.(); closeEditor(); return; }
+        if (ev.key === "Tab" && ev.currentTarget?.querySelectorAll) {
+          const items = [...ev.currentTarget.querySelectorAll("button, input, select, textarea, [tabindex]:not([tabindex='-1'])")].filter((n) => !n.disabled);
+          if (items.length) {
+            const first = items[0], last = items[items.length - 1], active = ev.currentTarget.ownerDocument?.activeElement;
+            if (ev.shiftKey && active === first) { ev.preventDefault(); last.focus(); }
+            else if (!ev.shiftKey && active === last) { ev.preventDefault(); first.focus(); }
+          }
+        }
+      };
+
+      const entryStatusText = (e) => {
+        if (!e.enabled) return "已关闭";
+        if (KEYED_TYPES.includes(e.type) && !e.credentialRef) return "缺少凭据引用";
+        return "已就绪";
+      };
+      const entryStatusStyle = (e) => ({
+        color: !e.enabled ? theme("state-idle-primary")
+          : KEYED_TYPES.includes(e.type) && !e.credentialRef ? theme("state-warn-primary")
+            : theme("state-success-primary"),
+        fontWeight: 500,
+      });
+      const cardNodes = model.draft.entries.map((entry) => {
+        const row = CATALOG_UI.find((x) => x[0] === entry.type);
+        return React.createElement("article", {
+          key: entry.id, "data-role": "card", "data-entry-id": entry.id,
+          style: cardStyle,
+          onDragOver: (ev) => { if (!locked) ev.preventDefault?.(); },
+          onDrop: (ev) => {
+            if (locked) return;
+            ev.preventDefault?.();
+            const moving = ev.dataTransfer?.getData?.("text/plain");
+            if (!moving || moving === entry.id) return;
+            setModel((m) => {
+              const list = [...m.draft.entries];
+              const from = list.findIndex((e) => e.id === moving), to = list.findIndex((e) => e.id === entry.id);
+              if (from < 0 || to < 0) return m;
+              const [item] = list.splice(from, 1); list.splice(to, 0, item);
+              return { ...m, draft: { ...m.draft, entries: list } };
+            });
+          },
+        },
+          React.createElement("span", { "data-role": "card-name", "data-entry-id": entry.id }, entry.name || "（未命名条目）"),
+          React.createElement("span", { "data-role": "card-type", "data-entry-id": entry.id }, row?.[1] ?? entry.type),
+          React.createElement("span", { "data-role": "card-status", "data-entry-id": entry.id, "aria-live": "polite", style: entryStatusStyle(entry) }, entryStatusText(entry)),
+          React.createElement("label", null,
+            React.createElement("input", {
+              type: "checkbox", role: "switch", "aria-checked": entry.enabled,
+              "aria-label": `启用 ${entry.name || row?.[1] || entry.type}`,
+              "data-role": "enabled-toggle", "data-entry-id": entry.id, checked: entry.enabled, disabled: locked,
+              onChange: (ev) => updateEntry(entry.id, { enabled: Boolean(ev.target.checked) }),
+            }), "启用"),
+          React.createElement("button", {
+            type: "button", "data-role": "card-edit", "data-entry-id": entry.id, disabled: locked,
+            onClick: (ev) => { if (locked) return; restoreFocus.current = ev.currentTarget ?? null; setModel((m) => ({ ...m, editingId: entry.id, status: m.status.kind === "error" ? IDLE : m.status })); },
+          }, "编辑"),
+          React.createElement("button", {
+            type: "button", "data-role": "card-remove", "data-entry-id": entry.id, disabled: locked,
+            onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: entry.id })); },
+          }, "移除"),
+          React.createElement("button", {
+            type: "button", "data-role": "drag-handle", "data-entry-id": entry.id, disabled: locked,
+            draggable: !locked, "aria-label": `拖动排序：${entry.name || row?.[1] || entry.type}`,
+            title: "拖动排序；也可按方向键调整位置",
+            onDragStart: (ev) => { if (!locked) ev.dataTransfer?.setData?.("text/plain", entry.id); },
+            onKeyDown: (ev) => {
+              if (locked) return;
+              if (ev.key === "ArrowUp") { ev.preventDefault?.(); moveEntry(entry.id, -1); }
+              else if (ev.key === "ArrowDown") { ev.preventDefault?.(); moveEntry(entry.id, 1); }
+            },
+          }, "⠿"),
+        );
+      });
+      const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
+      const statusNode = model.status.kind === "idle" ? null : React.createElement("p", {
+        "data-role": model.status.kind === "error" ? "save-error" : "save-status",
+        role: model.status.kind === "error" ? "alert" : "status",
+        style: model.status.kind === "error" ? { color: theme("state-error-primary") }
+          : model.status.kind === "saved" ? { color: theme("state-success-primary") } : secondaryTextStyle,
+      }, model.status.text, ...(model.status.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`)));
+      const editor = editorEntry ? React.createElement("div", {
+        role: "dialog", "aria-modal": "true", "aria-labelledby": "sc-editor-title",
+        "data-role": "editor", onKeyDown: onDialogKeyDown,
+        style: { ...secondarySurfaceStyle, position: "relative", zIndex: 1 },
+      },
+        React.createElement("h4", { id: "sc-editor-title" }, `编辑 ${editorEntry.name || editorEntry.type}`),
+        React.createElement("label", { style: fieldLabelStyle }, "名称", React.createElement("input", {
+          type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
+          value: editorEntry.name, onChange: (ev) => updateEntry(editorEntry.id, { name: ev.target.value }), autoFocus: true,
+        })),
+        React.createElement("label", { style: fieldLabelStyle }, "凭据引用", React.createElement("input", {
+          type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
+          value: editorEntry.credentialRef ?? "", placeholder: "例如 TAVILY_API_KEY",
+          onChange: (ev) => updateEntry(editorEntry.id, { credentialRef: ev.target.value }),
+        })),
+        KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { style: fieldLabelStyle }, "API key（仅写入，不会回显）", React.createElement("input", {
+          type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, style: inputStyle, disabled: locked,
+          value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
+          onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, keys: { ...m.keys, [editorEntry.id]: ev.target.value } })); },
+        })) : null,
+        React.createElement("button", { type: "button", style: buttonStyle, disabled: locked, onClick: closeEditor }, "完成"),
+      ) : null;
+      const addPicker = model.addOpen ? React.createElement("div", { role: "group", "aria-label": "选择搜索工具", style: secondarySurfaceStyle },
+        ...CATALOG_UI.map(([type, label, billing]) => React.createElement("button", {
+          key: type, type: "button", "data-role": "add-type", "data-type": type, style: buttonStyle, disabled: locked,
+          onClick: () => addEntry(type),
+        }, React.createElement("strong", null, label), React.createElement("span", { style: secondaryTextStyle }, ` — ${billing}`))),
+      ) : null;
+      const confirm = model.confirmId ? React.createElement("div", { role: "alertdialog", "aria-modal": "true", style: secondarySurfaceStyle },
+        React.createElement("p", null, "移除该搜索工具？不会删除宿主凭据。"),
+        React.createElement("button", { type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, style: buttonStyle, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null, draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== model.confirmId) } })); } }, "确认移除"),
+        React.createElement("button", { type: "button", style: buttonStyle, disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null })); } }, "取消"),
+      ) : null;
+      return React.createElement("section", {
+        "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT,
+        style: { ...primaryTextStyle, fontFamily: "inherit", display: "grid", gap: "8px" },
+      },
+        React.createElement("h3", { style: { marginBlock: "4px" } }, SECTION_TITLE),
+        React.createElement("label", { style: { display: "flex", alignItems: "center", gap: "8px", color: theme("label-primary") } },
+          React.createElement("input", {
+            type: "checkbox", role: "switch", "aria-checked": model.draft.useOfficial,
+            "aria-label": "DeepSeek 官方 API 使用官方搜索", "data-role": "official-toggle", disabled: locked,
+            checked: model.draft.useOfficial,
+            onChange: (ev) => { if (!locked) setModel((m) => ({ ...m, draft: { ...m.draft, useOfficial: Boolean(ev.target.checked) } })); },
+          }), "DeepSeek 官方 API 使用官方搜索"),
+        React.createElement("p", { "data-role": "official-hint", style: { ...secondaryTextStyle, marginBlock: "0 8px" } }, "仅对 DeepSeek 官方 API 会话生效；关闭后相关会话改用下方工具链。官方搜索不另按次收费，模型用量仍按 token 计费。"),
+        model.draft.entries.length === 0 ? React.createElement("p", { "data-role": "empty-state", style: secondaryTextStyle }, "还没有配置搜索工具，点击下方「添加搜索工具」添加第一条。") : null,
+        ...cardNodes,
+        addPicker,
+        React.createElement("button", { type: "button", style: buttonStyle, "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "添加搜索工具"),
+        confirm,
+        editor,
+        React.createElement("button", { type: "button", style: saveButtonStyle, "data-role": "save", disabled: model.phase !== "ready" || model.status.kind === "pending", onClick: save }, "保存"),
+        statusNode,
       );
     }
 
@@ -680,7 +1051,7 @@ globalThis.window?.__ModuleLoader__?.load({
         const offSection = ctx.slots.inject(SECTION_SLOT, () =>
           ctx.slots.register(
             { name: SECTION_SLOT, id: PROVIDER_ID, order: SECTION_ORDER, label: sectionLabel },
-            SettingsIndicator,
+            SettingsPanel,
           ),
         );
 

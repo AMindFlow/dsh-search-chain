@@ -448,11 +448,18 @@ export function createSearchChain(deps) {
     });
   }
 
-  /** CFG-002 优先级：条目引用 → 进程环境变量 → DSH 托管记录 → 旧版 YAML 顶层（最后兼容）。纯空白等同未提供。 */
+  /** CFG-002 优先级：条目引用 → 进程环境变量 → DSH 托管记录 → 旧版 YAML 顶层。宿主对超语法引用抛 TypeError 时按未设置处理（R-1）。 */
   async function resolveKey(entry, envName) {
     const ref = typeof entry.credentialRef === "string" ? entry.credentialRef.trim() : "";
     if (ref) {
-      const hit = await credentials.resolve(ref);
+      let hit;
+      try {
+        hit = await credentials.resolve(ref);
+      } catch (error) {
+        // dsh-credentials 以 POSIX 标识符校验引用；R-1 约定语法错误只是本层未命中。
+        // 对于合法名的其他凭据服务故障仍保留原有 hard-failure 行为。
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref) || !(error instanceof TypeError)) throw error;
+      }
       const value = typeof hit?.value === "string" ? hit.value.trim() : "";
       if (value !== "") return value;
     }
