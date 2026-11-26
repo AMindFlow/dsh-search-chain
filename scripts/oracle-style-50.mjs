@@ -2359,7 +2359,12 @@ try {
   }
   {
     // B-022/023：未提交草稿（名称+key buffer+timeout）跨分区切换存活；草稿期 storage 泄漏扫描。
-    await openEditor(cardIds[1]);
+    // run-acc11 实证修复（run-10 中断源 mjs:2364）：B-020 系拖拽重排后 cardIds 快照位漂——cardIds[1] 可为 bing 型（编辑器无 key 字段）。
+    // 载体按主数据 id 快照锚定（SET-008 不指定条目，exa 型保证 key 字段在场）；exa-2 优先（exa-1 已改名面隔离）。
+    let target22 = exa2Id;
+    { const st22p = await ui.state(); if (!target22 || !st22p.ids.includes(target22)) target22 = exa1Id ?? cardIds[1]; }
+    console.log(`[oracle] B-022 载体（id 锚定，类型保证 key 字段在场）：${target22}`);
+    await openEditor(target22);
     if ((await setField("name", "Oracle Draft γ")) !== "Oracle Draft γ") throw new Error("B-022 草稿名写入失败");
     { const d = await evaluate(`(() => { const i = document.querySelector('${ROOT} [data-role="field"][data-field="key"]'); if (!i) return false; const pd = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'); pd.set.call(i, ${JSON.stringify(KEY_B)}); i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`, 30000); if (!d) throw new Error("missing element: key 字段（草稿 buffer 前提）"); }
     const tSel2 = await evaluate(`(() => { const sels = ['${ROOT} [data-field="timeoutMs"]', '${ROOT} input[type="number"]']; for (const x of sels) { const el = document.querySelector(x); if (el) return x; } return null; })()`, 30000);
@@ -2390,7 +2395,7 @@ try {
         if (!(ed22.keyBuf > 0)) mis.push("key buffer 未随草稿恢复（内存缓冲丢失，重开后无法直接提交）");
       }
       if (tSel2 && tDraft1 !== "7777" && !/7777|timeout/i.test(String(tSaved))) mis.push(`timeout 草稿既未回填（got ${tDraft1}）也未见经 blur 合法落盘`);
-      const idx22 = st22.ids.indexOf(cardIds[1]);
+      const idx22 = st22.ids.indexOf(target22);
       if (ed22 && (st22.names[idx22] !== "Oracle Draft γ" || st22.dotStates[idx22] !== "ready")) mis.push(`key buffer 直提后读回 name=${st22.names[idx22]} 徽标=${st22.dotStates[idx22]}（期望草稿名持久且凭据完好）`);
       if (mis.length) throw new Error(mis.join("；"));
       return { measured: `载体=设置视图关闭-重开（run-10 实证）后编辑器自动重开：草稿名回填、key buffer 非空且直提成功（${JSON.stringify(st22.names[idx22])} 持久，徽标 ready）；timeout 草稿=${tSel2 ? "存活/合法落盘" : "无输入框(见 B-017 missing)"}；O-1 取证：分区切换 duringPresent=${o1.duringPresent} name 回环 ${JSON.stringify(o1.pre.nameVal)}→${JSON.stringify(o1.post.nameVal)}（未卸载=官方 shell 挂载语义）` };
@@ -2407,7 +2412,8 @@ try {
   }
   {
     // B-024 显式取消：草稿清除 + 编辑器关 + 零写入 + 重挂载不重开。
-    await openEditor(cardIds[0]);
+    // run-acc11 实证修复：载体 id 锚定 exa-1——下方 v1 兼容面回写「Oracle Edited」是 exa-1 现名，位漂时写进 bing 卡即污染。
+    await openEditor(exa1Id ?? cardIds[0]);
     if ((await setField("name", "Oracle Cancel-X")) !== "Oracle Cancel-X") throw new Error("B-024 草稿写入失败");
     const n24 = (await calls()).length;
     const act = await evaluate(`(() => { const b = [...document.querySelectorAll('${ROOT} [data-role="editor"] button, ${ROOT} .sc-editor-actions button')].find((x) => /取消|cancel/i.test(x.textContent || '')); if (!b) return "missing-cancel"; b.click(); const a = document.activeElement; return a ? (a.getAttribute('data-role') || a.tagName) : "none"; })()`, 30000);
@@ -2434,8 +2440,8 @@ try {
     });
   }
   {
-    // B-025 Escape：同取消语义（键盘路径）。
-    await openEditor(cardIds[0]);
+    // B-025 Escape：同取消语义（键盘路径）。run-acc11：载体同 B-024 id 锚定 exa-1（位漂防复发）。
+    await openEditor(exa1Id ?? cardIds[0]);
     if ((await setField("name", "Oracle Esc-δ")) !== "Oracle Esc-δ") throw new Error("B-025 草稿写入失败");
     const n25 = (await calls()).length;
     await pressKey("Escape", "Escape", 27);
@@ -2457,7 +2463,8 @@ try {
   }
   {
     // B-026 外部冲突注入：describe 取 revision → 外部 mutate 推进 rev → 分区往返 → 草稿存活 + 冲突告警、无静默覆盖。
-    await openEditor(cardIds[1]);
+    // run-acc11：载体 id 锚定 exa-2（与 B-022 同族，位漂防复发）。
+    await openEditor(exa2Id ?? cardIds[1]);
     if ((await setField("name", "Oracle Conflict-ε")) !== "Oracle Conflict-ε") throw new Error("B-026 草稿写入失败");
     const inj = await evaluate(`async () => { try {
       const d = await (await fetch('/api/settings/describe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payload: { args: {} } }) })).json();
@@ -2503,7 +2510,8 @@ try {
     // 按 ref↔条目 id 身份配对判「B-003 声明的两条目（exa-1/exa-2）」——各恰一次非空 key 命中；命中 0=空真值不得判 PASS；>1=重复写键违规。
     // 生命周期窗 key 写（B-019 临时卡、B-022 key-buffer 直提延伸面等合法流程）单列取证不静默吞、不计数硬钉；仍受 onlySynthetic+零明文同约束。
     const setDetail = JSON.stringify(setRecs.map((r) => r.cred || "未digest"));
-    const declared22 = cardIds.slice(0, 2).map((id) => String(id).replace(/^search_chain_/, ""));
+    // run-acc11 实证修复：声明条目取主数据 id 快照 exa-1/exa-2——run-10 后拖拽/探针流程使 cardIds 位漂，slice(0,2) 可含 bing 型（无 key 写→tally=0 空真值伪报）。
+    const declared22 = [exa1Id, exa2Id].filter(Boolean).map((id) => String(id).replace(/^search_chain_/, ""));
     const nonEmptyK = setRecs.filter((r) => r.cred && r.cred.empty === false);
     const tallyById = declared22.map((suf) => nonEmptyK.filter((r) => String(r.cred.ref).includes(suf)).length);
     const lifecycleK = nonEmptyK.filter((r) => !declared22.some((suf) => String(r.cred.ref).includes(suf)));
