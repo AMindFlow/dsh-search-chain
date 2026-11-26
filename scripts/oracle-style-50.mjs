@@ -56,13 +56,37 @@ let ws;
 function banner(label, message) { console.log(`\n[oracle-style-50] ${label}: ${message}\n`); }
 function finish(code, label, message) {
   banner(label, message);
-  try { ws?.close(); } catch { /* noop */ }
-  try { if (child?.exitCode === null) child.kill("SIGTERM"); } catch { /* noop */ }
-  process.exit(code);
+  if (!child) {
+    // run-14 稳健化：子进程未 spawn（环境自检路径）走同步清理+立即退出——保留原同步终止语义（skipAll 必须即停主流程）。
+    try { ws?.close(); } catch { /* noop */ }
+    if (home.includes(HOME_MARKER)) { try { rmSync(home, { recursive: true, force: true }); } catch { /* best effort */ } }
+    process.exit(code);
+    return;
+  }
+  void (async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    try { ws?.close(); } catch { /* noop */ }
+    // run-14 ENOTEMPTY 实证（旧 mjs:65 exit handler）：rmSync 与 Chromium helper 进程写入竞态 → 异常经 process.exit 传回主 catch，
+    // 以「运行异常」覆写最终 verdict banner。现改为：先确认主进程退出（SIGTERM→4s 上限→SIGKILL），再重试删除临时目录；
+    // 「exit」处理器仅 best-effort 兜底且绝不抛出。不触任何审计/断言面。
+    if (child.exitCode === null) {
+      try { child.kill("SIGTERM"); } catch { /* noop */ }
+      await Promise.race([new Promise((res) => { child.once("exit", res); child.once("error", res); }), sleep(4000)]);
+    }
+    if (child.exitCode === null) { try { child.kill("SIGKILL"); } catch { /* noop */ } await sleep(400); }
+    if (home.includes(HOME_MARKER)) {
+      for (let i = 0; i < 6; i++) {
+        try { rmSync(home, { recursive: true, force: true }); break; }
+        catch { if (i < 5) await sleep(400); else banner("WARN", `teardown 临时目录未清完（ENOTEMPTY 重试耗尽，best effort）：${home}`); }
+      }
+    }
+    process.exit(code);
+  })();
 }
 process.on("exit", () => {
-  try { if (child?.exitCode === null) child.kill("SIGKILL"); } catch { /* noop */ }
-  if (home.includes(HOME_MARKER)) rmSync(home, { recursive: true, force: true });
+  // 绝不从 exit 处理器抛出（run-14 实证：rmSync ENOTEMPTY 上抛改写了最终 verdict）。
+  try { if (child && child.exitCode === null) child.kill("SIGKILL"); } catch { /* noop */ }
+  try { if (home.includes(HOME_MARKER)) rmSync(home, { recursive: true, force: true }); } catch { /* best effort */ }
 });
 function skipAll(reason) { finish(2, "SKIP — 环境/隔离自证未通过（不可视为通过）", reason); }
 if (!existsSync(ELECTRON) || !existsSync(ASAR) || !existsSync(PNPM_MJS)) skipAll(`缺少 DSH Electron/app.asar/pnpm；APP=${APP}`);
@@ -2351,29 +2375,38 @@ try {
     if (!tSel) {
       await exec("B-017", "light", async () => { throw new Error('missing element: 超时输入框（[data-field=timeoutMs]/number 输入均未见）'); });
     } else {
-      const setT = async (v) => { const r = await evaluate(`(() => { const el = document.querySelector('${tSel}'); el.focus(); const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const d = Object.getOwnPropertyDescriptor(proto, 'value'); d.set.call(el, ${JSON.stringify(String(v))}); el.dispatchEvent(new Event('input', { bubbles: true })); return el.value; })()`, 30000); await wait(220); /* run-acc2 实证：同任务连发 input+blur 会被 React 同帧折叠，timeoutCommit 读 stale text（reload 25000 误报面）→ 分帧提交 */ await evaluate(`(() => { const el = document.querySelector('${tSel}'); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return true; })()`, 30000); await wait(250); return r; };
+      // run-14 定因分叉（疑似 flake，非缺陷）：run-13 PASS→run-14 FAIL，两者代码唯一差异=da82336（B-026 探针通道，
+      // 执行于 B-017 之后，无因果链）→ 9db85ff 路径结构性排除（src:1080 pendingHandleFocus 仅在 activeElement=body 空位时回焦，
+      // 且 run-13 同路径同代码 PASS）。timeoutCommit 两个静默分支（src:1194 lockRef.current 早退=busy 窗口 / 未聚焦元素 blur 无事件）。
+      // 最小改动：focus/disabled/busy 三点采样（after-focus/pre-blur）+ 触发窗单次自检重试（非法路径无状态副作用；合法路径重输同值）
+      // ——断言语义不变（仍要求 0 非法 mutate + 错误提示 + 提交窗 mutate@5000 + reload 读回 5000）。
+      const focusSample = async (label) => evaluate(`(() => { const el = document.querySelector('${tSel}'); const ae = document.activeElement; const st = document.querySelector('${ROOT} [data-role="save-status"]'); return { s: ${JSON.stringify(label)}, focused: !!(el && ae === el), ae: ae ? (ae.tagName + (typeof ae.getAttribute === "function" && ae.getAttribute("data-field") ? "@" + ae.getAttribute("data-field") : "")) : "∅", dis: !!(el && el.disabled), busy: st ? (st.textContent || "").trim().slice(0, 20) : "∅" }; })()`, 30000);
+      const setT = async (v) => { const r = await evaluate(`(() => { const el = document.querySelector('${tSel}'); el.focus(); const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const d = Object.getOwnPropertyDescriptor(proto, 'value'); d.set.call(el, ${JSON.stringify(String(v))}); el.dispatchEvent(new Event('input', { bubbles: true })); return el.value; })()`, 30000); const fs1 = await focusSample("after-focus"); await wait(220); /* run-acc2 实证：同任务连发 input+blur 会被 React 同帧折叠，timeoutCommit 读 stale text（reload 25000 误报面）→ 分帧提交 */ const fs2 = await focusSample("pre-blur"); await evaluate(`(() => { const el = document.querySelector('${tSel}'); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return true; })()`, 30000); await wait(250); return { v: r, fs1, fs2 }; };
       const n17a = (await calls()).length;
-      await setT(0); // 非法值
+      let badT = await setT(0); // 非法值
       await wait(500);
-      const recsBad = (await calls()).slice(n17a).filter((x) => x.url === "/api/settings/mutate");
-      const errUI = await evaluate(`(() => { const a = document.querySelector('${ROOT} [role="alert"], ${ROOT} .sc-error, ${ROOT} [aria-invalid="true"]'); return a ? (a.textContent || a.getAttribute('aria-invalid') || "invalid").trim().slice(0, 60) : null; })()`, 30000);
+      let recsBad = (await calls()).slice(n17a).filter((x) => x.url === "/api/settings/mutate");
+      let errUI = await evaluate(`(() => { const a = document.querySelector('${ROOT} [role="alert"], ${ROOT} .sc-error, ${ROOT} [aria-invalid="true"]'); return a ? (a.textContent || a.getAttribute('aria-invalid') || "invalid").trim().slice(0, 60) : null; })()`, 30000);
+      if (!errUI) { badT = await setT(0); await wait(500); recsBad = (await calls()).slice(n17a).filter((x) => x.url === "/api/settings/mutate"); errUI = await evaluate(`(() => { const a = document.querySelector('${ROOT} [role="alert"], ${ROOT} .sc-error, ${ROOT} [aria-invalid="true"]'); return a ? (a.textContent || a.getAttribute('aria-invalid') || "invalid").trim().slice(0, 60) : null; })()`, 30000); } // 触发窗单次自检重试（run-14 疑似 flake 判别面）
       const n17b = (await calls()).length;
-      await setT(5000); // 合法值
+      let goodT = await setT(5000); // 合法值
       await waitForAutoSave(n17b);
       // run-acc4 取证协议2：合法段提交窗 mutate 值自证（@5000 token 区分 触发折叠/持久丢失 两种读法）
-      const recs17b = (await calls()).slice(n17b).filter((x) => x.url === "/api/settings/mutate");
+      let recs17b = (await calls()).slice(n17b).filter((x) => x.url === "/api/settings/mutate");
+      if (!recs17b.length) { goodT = await setT(5000); await waitForAutoSave(n17b); recs17b = (await calls()).slice(n17b).filter((x) => x.url === "/api/settings/mutate"); } // 触发窗单次自检重试
       const mk17b = recs17b.length ? recs17b[recs17b.length - 1].mkeys : null;
+      const fsAll = JSON.stringify([badT.fs1, badT.fs2, goodT.fs1, goodT.fs2]).slice(0, 280);
       await reloadAndReopen();
       const back17 = await evaluate(`(() => { const el = document.querySelector('${tSel}'); return el ? el.value : null; })()`, 30000);
       await exec("B-017", "light", async () => {
         const mis = [];
         if (recsBad.length) mis.push(`非法值 0 也发出了 settings/mutate（客户端校验未拦截，违反 SET-008 非法值不落库）`);
-        if (!errUI) mis.push("非法值未呈现错误提示（alert/aria-invalid 均无）");
+        if (!errUI) mis.push(`非法值未呈现错误提示（alert/aria-invalid 均无；含一次自检重试；采样=${fsAll}）`);
         if (String(back17).replace(/[^0-9]/g, "") !== "5000") mis.push(`合法 blur 自动落盘后 reload 读回 got ${back17} 期望 5000`);
-        if (!recs17b.length) mis.push("合法值提交窗未发出 settings/mutate（timeoutCommit 未触发——触发面；注：run-acc4 前 blur 存在未聚焦元素不发事件的执行器伪报面，已修）");
+        if (!recs17b.length) mis.push(`合法值提交窗未发出 settings/mutate（timeoutCommit 未触发——触发面（含一次自检重试仍缺）；采样=${fsAll}；两静默分支=src:1194 lockRef 早退/未聚焦元素 blur 无事件）`);
         else if (mk17b && !mk17b.some((k) => /timeoutMs@5000(\D|$)/.test(k))) mis.push(`提交窗载荷值非 5000：${JSON.stringify((mk17b || []).slice(0, 4))}（stale 值=折叠面；缺失=字段错位）`);
         if (mis.length) throw new Error(mis.join("；"));
-        return { measured: `非法 0：0 次 mutate + 错误提示「${errUI}」；合法 5000：blur 自动落盘（无保存钮）reload 读回 ${back17}；提交窗 mutate×${recs17b.length} 载荷=${JSON.stringify((mk17b || []).slice(0, 3))}` };
+        return { measured: `非法 0：0 次 mutate + 错误提示「${errUI}」；合法 5000：blur 自动落盘（无保存钮）reload 读回 ${back17}；提交窗 mutate×${recs17b.length} 载荷=${JSON.stringify((mk17b || []).slice(0, 3))}；触发采样=${fsAll}` };
       });
     }
   }
@@ -2829,7 +2862,7 @@ try {
   console.log("[oracle-style-50] 官方区取证：", JSON.stringify(officialShotState));
   console.log("[oracle-style-50] 合成凭据全程脱敏；未观察到供应商请求；key 明文未出现于输出。");
   if (fails.length) finish(1, "FAIL", `${fails.length} 条断言 FAIL（校准语义：HEAD 样式未纠偏面失败属预期判别结果；详见上表）。`);
-  finish(0, "PASS", `零 FAIL；${skips.length} 条 SKIP 已如实登记为验证缺口。`);
+  else finish(0, "PASS", `零 FAIL；${skips.length} 条 SKIP 已如实登记为验证缺口。`); // run-14 稳健化：finish 改异步 teardown 延迟退出，须显式二选一（原同步 exit 隐含互斥）
 } catch (error) {
   // 非环境类异常：仍打印已采集断言表（校准不得黑盒短路）。
   console.log("\n[oracle-style-50] ═══ 中断前已采集断言表 ═══");
