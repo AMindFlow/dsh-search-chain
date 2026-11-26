@@ -288,10 +288,6 @@ globalThis.window?.__ModuleLoader__?.load({
       return ops;
     }
 
-    function normEntryId(id) {
-      return typeof id === "string" ? id.trim() : String(id ?? "").trim();
-    }
-
     /**
      * 二轮修复（B-007/009）：编辑器绑定守卫——候选列表与「最新持久化列表」只允许在绑定条目一行上不同。
      * 新建：长度 +1、前段逐行相同、新条目恰在末尾；编辑：长度与位置不变、其余行逐行相同。
@@ -300,13 +296,11 @@ globalThis.window?.__ModuleLoader__?.load({
     function singleEntryDiff(user, candidate, boundId) {
       const list = isPlainObject(user) && Array.isArray(user.entries) ? user.entries : [];
       if (!Array.isArray(candidate)) return false;
-      const boundKey = normEntryId(boundId);
-      if (!boundKey) return false;
-      const isBound = (e) => isPlainObject(e) && typeof e.id === "string" && normEntryId(e.id) === boundKey;
+      const isBound = (e) => isPlainObject(e) && e.id === boundId;
       if (candidate.filter(isBound).length !== 1) return false; // 绑定条目须在候选中恰出现一次
       const boundIdx = candidate.findIndex(isBound);
       const curIdx = list.findIndex(isBound);
-      const sameRow = (a, b) => isPlainObject(a) && isPlainObject(b) && normEntryId(a.id) === normEntryId(b.id) && a.type === b.type
+      const sameRow = (a, b) => isPlainObject(a) && isPlainObject(b) && a.id === b.id && a.type === b.type
         && a.name === b.name
         && (a.enabled !== false) === (b.enabled !== false)
         && (a.credentialRef ?? "") === (b.credentialRef ?? "");
@@ -1225,11 +1219,10 @@ globalThis.window?.__ModuleLoader__?.load({
         setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, entries: m.draft.entries.map((e) => (e.id === entryId ? { ...e, enabled: target } : e)) } }));
         commitDiscrete((m) => {
           const list = effectiveEntriesOf(m);
-          const targetId = normEntryId(entryId);
-          const idx = list.findIndex((e) => normEntryId(e && e.id) === targetId);
+          const idx = list.findIndex((e) => e.id === entryId);
           if (idx < 0) return []; // 未提交新条目无持久化变更
           if ((list[idx].enabled !== false) === target) return []; // 意图未变化：无需写（对照有效值）
-          return toOps({ entries: list.map((e, i) => (i === idx ? { ...e, enabled: target } : e)) }, { entries: userEntriesOf(m) });
+          return toOps({ entries: list.map((e) => (e.id === entryId ? { ...e, enabled: target } : e)) }, { entries: userEntriesOf(m) });
         }, null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变）
       };
 
@@ -1252,15 +1245,14 @@ globalThis.window?.__ModuleLoader__?.load({
           draft: { ...m.draft, entries: m.draft.entries.filter((e) => e.id !== entryId) },
         }));
         commitDiscrete((m) => {
-          const targetId = normEntryId(entryId);
           const user = userEntriesOf(m);
-          const uIdx = user.findIndex((e) => normEntryId(e && e.id) === targetId);
+          const uIdx = user.findIndex((e) => e.id === entryId);
           if (uIdx >= 0) return [{ op: "unset", path: ["entries", String(uIdx)] }];
           const list = effectiveEntriesOf(m);
-          const idx = list.findIndex((e) => normEntryId(e && e.id) === targetId);
+          const idx = list.findIndex((e) => e.id === entryId);
           if (idx < 0) return [];
           const hasUserEntries = isPlainObject(m && m.user) && Array.isArray(m.user.entries);
-          return toOps({ entries: list.filter((_, i) => i !== idx) }, hasUserEntries ? { entries: user } : {});
+          return toOps({ entries: list.filter((e) => e.id !== entryId) }, hasUserEntries ? { entries: user } : {});
         }, "已保存设置。");
       };
 
@@ -1273,10 +1265,11 @@ globalThis.window?.__ModuleLoader__?.load({
         commitDiscrete((m) => {
           const user = userEntriesOf(m);
           const list = effectiveEntriesOf(m);
-          const byId = new Map(list.map((e) => [normEntryId(e && e.id), e]));
-          const targetIds = ids.map(normEntryId).filter((id) => byId.has(id));
+          const present = new Set(list.map((e) => e.id));
+          const targetIds = ids.filter((id) => present.has(id));
           if (targetIds.length !== list.length) return []; // 草稿含未提交新条目（不在有效列表）：持久化顺序不受影响
-          if (targetIds.every((id, i) => id === normEntryId(list[i] && list[i].id))) return [];
+          if (targetIds.every((id, i) => id === list[i].id)) return [];
+          const byId = new Map(list.map((e) => [e.id, e]));
           return toOps({ entries: targetIds.map((id) => byId.get(id)) }, { entries: user });
         }, "已保存设置。");
       };
@@ -1313,11 +1306,8 @@ globalThis.window?.__ModuleLoader__?.load({
       // 二轮修复：同时查权威快照——创建提交成功但读回未落定时闭包 user 缺该条目，误判 create 会使重挂校验误报版本冲突。
       // 五轮修复（codex 复审 P1/P2 同根）：继承条目（base 层已持久）同样判为已持久——驱动编辑器编辑/新建
       // 语义、取消时恢复持久值（而非当作新条目删行）、SET-008 缓存记录 mode（edit 而非 create）。
-      const entryIsPersisted = (m, entry) => {
-        const targetId = normEntryId(entry && entry.id);
-        return effectiveEntriesOf(m).some((e) => normEntryId(e && e.id) === targetId)
-          || (latestRef.current && effectiveEntriesOf(latestRef.current).some((e) => normEntryId(e && e.id) === targetId));
-      };
+      const entryIsPersisted = (m, entry) => effectiveEntriesOf(m).some((e) => e.id === entry.id)
+        || (latestRef.current && effectiveEntriesOf(latestRef.current).some((e) => e.id === entry.id));
 
       // 编辑器提交的候选条目列表：按稳定条目 id 合并该条目全部托管字段，
       // 其余条目取持久化快照值；载荷不含其他条目/全局字段草稿（SET-006）。
@@ -1327,13 +1317,11 @@ globalThis.window?.__ModuleLoader__?.load({
       // 新建 → 继承兄弟行全没）。toOps 底仍为 user 层：对空 user 层逐行整条 set = 有效列表整单具化。
       const candidateEntriesFor = (m, entry, credRef) => {
         const list = effectiveEntriesOf(m);
-        const targetId = normEntryId(entry && entry.id);
-        const matched = list.find((e) => normEntryId(e && e.id) === targetId);
-        const patch = { id: matched ? matched.id : targetId, type: entry.type, name: entry.name, enabled: entry.enabled };
+        const patch = { id: entry.id, type: entry.type, name: entry.name, enabled: entry.enabled };
         if (credRef) patch.credentialRef = credRef;
-        if (matched) {
+        if (list.some((e) => e.id === entry.id)) {
           return list.map((e) => {
-            if (normEntryId(e && e.id) !== targetId) return e;
+            if (e.id !== entry.id) return e;
             const out = { ...e, ...patch };
             if (!credRef) delete out.credentialRef;
             return out;
@@ -1439,7 +1427,7 @@ globalThis.window?.__ModuleLoader__?.load({
             if (entryIsPersisted(m, entry)) {
               // 五轮修复（codex 复审 P1/P2 配套）：持久值取有效行——继承条目的取消恢复到 base 值；
               // 旧版 entryIsPersisted 对继承条目误判新建（删行=页内丢失继承条目）且此处查不到持久行。
-              const persisted = effectiveEntriesOf(m).find((e) => normEntryId(e && e.id) === normEntryId(entry.id));
+              const persisted = effectiveEntriesOf(m).find((e) => e.id === entry.id);
               entries = entries.map((e) => (e.id === entry.id
                 ? {
                     ...e,
@@ -1530,7 +1518,7 @@ globalThis.window?.__ModuleLoader__?.load({
       const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
       // V4-1：编辑器就地展开——编辑器树先于卡片节点构建；持久条目渲染进其归属卡片（cardNodes 内），
       // 新建（未持久）条目无外层卡片，编辑器继续置于新建块之后（不入列表，V3-1 判据不变）。
-      const persistedIdSet = new Set(effectiveEntriesOf(model).map((e) => normEntryId(e && e.id)));
+      const persistedIdSet = new Set(effectiveEntriesOf(model).map((e) => e.id));
       // SET-006：提交钮实时校验（在途/只读/缺 revision/校验失败 → 禁用）；新 ref 由受控生成、恒合法，校验用占位 ref 投影。
       const editorIsCreate = editorEntry ? !entryIsPersisted(model, editorEntry) : false;
       const editorBlock = (() => {
@@ -1581,7 +1569,7 @@ globalThis.window?.__ModuleLoader__?.load({
           React.createElement("button", { className: "sc-button sc-button-primary", type: "button", "data-role": "editor-submit", disabled: editorSubmitDisabled, onClick: submitEditor }, submitLabel),
         ),
       ) : null;
-      const cardNodes = model.draft.entries.filter((entry) => persistedIdSet.has(normEntryId(entry.id))).map((entry) => {
+      const cardNodes = model.draft.entries.filter((entry) => persistedIdSet.has(entry.id)).map((entry) => {
         const row = CATALOG_UI.find((x) => x[0] === entry.type);
         const displayName = entry.name || "（未命名条目）";
         const displayType = row?.[1] ?? entry.type;
@@ -1777,7 +1765,7 @@ globalThis.window?.__ModuleLoader__?.load({
         confirm,
         // V4-1：未提交新建条目（幽灵）无外层卡片——编辑器仍置于新建块之后（不入列表，V3-1）；
         // 持久条目的编辑器在其归属卡片内渲染（见 cardNodes），此处零重复。
-        editorEntry && !persistedIdSet.has(normEntryId(editorEntry.id)) ? editor : null,
+        editorEntry && !persistedIdSet.has(editorEntry.id) ? editor : null,
       ));
     }
 
