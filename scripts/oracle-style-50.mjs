@@ -240,6 +240,7 @@ const INSTRUMENT = () => {
   if (!window.__oracle50Patched) {
     window.__oracle50Patched = true;
     const original = window.fetch.bind(window);
+    window.__oracle50OrigFetch = original; // 非审计通道（run-13 实证：执行器自身诊断探针须走此通道，见 B-026 探针注释）
     window.fetch = async (input, init = {}) => {
       const url = typeof input === "string" ? input : (input && input.url) || String(input);
       const body = init && init.body;
@@ -2718,11 +2719,15 @@ try {
     // run-acc11：载体 id 锚定 exa-2（与 B-022 同族，位漂防复发）。
     await openEditor(exa2Id ?? cardIds[1]);
     if ((await setField("name", "Oracle Conflict-ε")) !== "Oracle Conflict-ε") throw new Error("B-026 草稿写入失败");
-    const inj = await evaluate(`async () => { try {
-      const d = await (await fetch('/api/settings/describe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payload: { args: {} } }) })).json();
+    // run-13 实证缺陷：宿主对本构建的裸页内 RPC 以应用级 ok:false 拒答（探针回包 keys=["ok","error"]），探针记录若经审计通道
+    // 即结构性毒化 B-005（其 target=「all captured RPC fetch records」；run-13 该探针 describe=全程唯一非 ok，idx=665/666 末条，
+    // 3/3 轮确定性复现）——而 B-026 目录行本身授权该注入可行性探测（「若执行器无法…SKIP 并记录具体不可达注入面」）。
+    // 探针改走非审计通道（__oracle50OrigFetch）：B-005 判据语义不变（审计面=应用数据面捕获记录），探针结果仍如实记入 B-026 measured/SKIP（不静默吞）。
+    const inj = await evaluate(`async () => { const f = window.__oracle50OrigFetch || fetch; try {
+      const d = await (await f('/api/settings/describe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payload: { args: {} } }) })).json();
       const r = d && d.result ? d.result : d; const rev = r && (r.revision ?? r.rev ?? (r.settings && r.settings.revision) ?? (r.state && r.state.revision));
       if (rev === undefined || rev === null) return { err: 'no-revision-field', keys: Object.keys(r || {}).slice(0, 8) };
-      const resp = await fetch('/api/settings/mutate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payload: { args: { settings: { timeoutMs: 5001 }, expectedRevision: rev } } }) });
+      const resp = await f('/api/settings/mutate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payload: { args: { settings: { timeoutMs: 5001 }, expectedRevision: rev } } }) });
       const j = await resp.json().catch(() => null);
       return { rev, status: resp.status, ok: !!(j && (j.result ? j.result.ok !== false : j.ok !== false)) && resp.ok };
     } catch (e) { return { err: String(e).slice(0, 100) }; } }`, 30000);
