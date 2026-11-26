@@ -54,12 +54,14 @@ const ROOT = '[data-plugin-id="search-chain"]';
 let child;
 let ws;
 function banner(label, message) { console.log(`\n[oracle-style-50] ${label}: ${message}\n`); }
-function finish(code, label, message) {
+function finish(code, label, message, graceful = false) {
   banner(label, message);
-  if (!child) {
-    // run-14 稳健化：子进程未 spawn（环境自检路径）走同步清理+立即退出——保留原同步终止语义（skipAll 必须即停主流程）。
+  if (!graceful || !child) {
+    // 同步终止：默认路径保留原「立即退出」语义——skipAll 环境自检（含 post-spawn 面）必须即停主流程
+    // （run-15 中断实证：200a0cf 曾对 post-spawn skip 亦异步延迟退出，后续代码续行 page=undefined → TypeError，
+    //  exit 1 未定义异常淹没 SKIP 2 语义）；child 未 spawn 时亦无子进程可等。
     try { ws?.close(); } catch { /* noop */ }
-    if (home.includes(HOME_MARKER)) { try { rmSync(home, { recursive: true, force: true }); } catch { /* best effort */ } }
+    try { if (child && child.exitCode === null) child.kill("SIGTERM"); } catch { /* noop */ }
     process.exit(code);
     return;
   }
@@ -2861,12 +2863,12 @@ try {
   console.log("[oracle-style-50] Chromium：", String(chrome).slice(0, 140));
   console.log("[oracle-style-50] 官方区取证：", JSON.stringify(officialShotState));
   console.log("[oracle-style-50] 合成凭据全程脱敏；未观察到供应商请求；key 明文未出现于输出。");
-  if (fails.length) finish(1, "FAIL", `${fails.length} 条断言 FAIL（校准语义：HEAD 样式未纠偏面失败属预期判别结果；详见上表）。`);
-  else finish(0, "PASS", `零 FAIL；${skips.length} 条 SKIP 已如实登记为验证缺口。`); // run-14 稳健化：finish 改异步 teardown 延迟退出，须显式二选一（原同步 exit 隐含互斥）
+  if (fails.length) finish(1, "FAIL", `${fails.length} 条断言 FAIL（校准语义：HEAD 样式未纠偏面失败属预期判别结果；详见上表）。`, true);
+  else finish(0, "PASS", `零 FAIL；${skips.length} 条 SKIP 已如实登记为验证缺口。`, true); // 尾部 verdict 走 graceful 异步 teardown；显式二选一（原同步 exit 隐含互斥）
 } catch (error) {
   // 非环境类异常：仍打印已采集断言表（校准不得黑盒短路）。
   console.log("\n[oracle-style-50] ═══ 中断前已采集断言表 ═══");
   for (const r of results) console.log(`${r.id.padEnd(8)} ${String(r.spec).padEnd(9)} ${r.theme.padEnd(5)} ${r.result.padEnd(4)} 期望: ${r.expected} ｜ 实测: ${r.measured}${r.extra ? ` ｜ ${r.extra}` : ""}`);
   console.log(`[oracle-style-50] 已采集 ${results.length} 行；截图：${shots.join(", ") || "(none)"}`);
-  finish(1, "FAIL", `Oracle 运行异常（非环境类）：${redact(String((error && error.stack) || error)).slice(0, 700)}`);
+  finish(1, "FAIL", `Oracle 运行异常（非环境类）：${redact(String((error && error.stack) || error)).slice(0, 700)}`, true);
 }
