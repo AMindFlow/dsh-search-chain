@@ -711,6 +711,32 @@ async function nativeDragAttempt(cardId) {
     await cdp("Input.setInterceptDrags", { enabled: false }).catch(() => {});
   }
 }
+// run-11 实证缺陷：nativeDragAttempt 的 drop 会提交重排（SET-006 自动落盘，drop 点恒定=列表第 2 张卡 75% 高），
+// dark A-052 位于 B-007 首个 afterReload 之前 → 拖拽持久副作用破坏 B-007「创建顺序」前提（run-11 实测 [Beta,Alpha,Bing]）。
+// 复原用面板自身键盘排序（真实按键通道，B-012/B-021 同通道：drag-handle 聚焦 + ArrowUp/Down 自动落盘），非 DOM 篡改；
+// 目标序未达 → 返回 false（调用方显式 FAIL，不静默）。
+async function restoreOrder(targetIds) {
+  // 选择排序语义：每个外轮把「应位于错位位 k 的条目 target[k]」单步移到 k（不动 k 之前的位），必然收敛、无振荡。
+  for (let iter = 0; iter < 12; iter++) {
+    const s = await ui.state();
+    if (!s.ids || JSON.stringify(s.ids) === JSON.stringify(targetIds)) return true;
+    const cur = s.ids;
+    let k = -1;
+    for (let i = 0; i < Math.min(cur.length, targetIds.length); i++) { if (cur[i] !== targetIds[i]) { k = i; break; } }
+    if (k < 0) return true;
+    const id = targetIds[k]; // 应位于 k 的条目
+    const cIdx = cur.indexOf(id);
+    if (cIdx < 0) return false;
+    const up = cIdx > k;
+    for (let step = 0; step < Math.abs(cIdx - k); step++) {
+      if (!(await focusSel(`${T.card(id)} [data-role="drag-handle"]`))) return false; // 每步重聚焦（React 重渲染把手节点失焦，run-5 探针）
+      await pressKey(up ? "ArrowUp" : "ArrowDown", up ? "ArrowUp" : "ArrowDown", up ? 38 : 40);
+      await wait(450);
+    }
+  }
+  const s = await ui.state();
+  return !!s.ids && JSON.stringify(s.ids) === JSON.stringify(targetIds);
+}
 async function mouseNeutral() { await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: 3, y: 3 }).catch(() => {}); await wait(150); } // 采样前脱 hover（lead 修复项 11）
 const saveSamples = []; // {theme, text, width}（A-032 「width follows label content」采样面）
 async function captureSaveSample(theme, tag) {
@@ -1355,6 +1381,19 @@ async function pickerPhase(theme, doShot) {
 async function editorPhase(theme, doShot) {
   await exec("A-037", theme, async () => {
     const radius = (await probeRadius(["--dsw-radius-lg"]))["--dsw-radius-lg"];
+    // run-11 实证缺陷：目录 note 明确豁免「nested in card variant separately requires background none; padding 0」（V4-1 编辑器入卡），
+    // 原实现只断言主判据 → 编辑器入卡后主判据机械必 FAIL（run-11 双主题：padding 0 + 透明；editor-open.png 截图实证入卡编辑器无灰面=note 变体生效）。
+    // 按 DOM 归属分支，两判据面均不改语义（主判据=非入卡；note 变体=入卡，仅 bg/padding 两项按 note 改写）。
+    const nested = await evaluate(`(() => { const e = document.querySelector('${ROOT} [data-role="editor"]'); return e ? !!e.closest('[data-role="card"]') : null; })()`, 30000);
+    if (nested) {
+      const measured = await checkProps(`${ROOT} [data-role="editor"]`, [
+        { prop: "boxSizing", want: "border-box" }, { prop: "display", want: "flex" }, { prop: "flexDirection", want: "column" },
+        { prop: "gap", want: "14px" }, { prop: "paddingTop", want: "0px" }, { prop: "paddingLeft", want: "0px" },
+        { prop: "borderTopLeftRadius", want: radius },
+        { prop: "backgroundColor", want: "rgba(0, 0, 0, 0)" }, // catalog note：nested in card variant → background none（计算值 transparent）
+      ]);
+      return { measured: `入卡变体（catalog note：background none; padding 0）${measured}` };
+    }
     return { measured: await checkProps(`${ROOT} [data-role="editor"]`, [
       { prop: "boxSizing", want: "border-box" }, { prop: "display", want: "flex" }, { prop: "flexDirection", want: "column" },
       { prop: "gap", want: "14px" }, { prop: "paddingTop", want: "14px" }, { prop: "paddingLeft", want: "16px" },
@@ -1406,9 +1445,12 @@ async function editorPhase(theme, doShot) {
   });
   // ── v2 编辑器动作行断言族（SPC-014/022/017 v2）──
   await exec("A-056", theme, async () => {
+    // run-11 实证缺陷：原面板域 below 扫描（插件面内动作行下全部按钮）与 V4-1 就地展开（B-027：编辑器在列表中部卡内，
+    // 其下恒有后续卡片按钮）机械互斥；目录 A-056 行 property/expected 仅针对动作行自身 → 扫描域收敛到编辑器自身子树
+    // （保留「编辑器内动作行下零残留」检查意图，与目录 note「底部对齐职责由编辑器动作行承担」一致）。
     const geo = await evaluate(`(() => { const a = document.querySelector('${ROOT} .sc-editor-actions'); if (!a) return null;
       const cs = getComputedStyle(a); const bs = [...a.querySelectorAll('button')].map((b) => ({ t: (b.textContent || '').trim(), x: b.getBoundingClientRect().left, prim: /sc-button-primary/.test(b.className || '') }));
-      const panel = a.closest('${ROOT}'); const below = panel ? [...panel.querySelectorAll('button')].filter((b) => b.getBoundingClientRect().top > a.getBoundingClientRect().top + 4 && !a.contains(b)).length : -1;
+      const panel = a.closest('[data-role="editor"]') || a.closest('${ROOT}'); const below = panel ? [...panel.querySelectorAll('button')].filter((b) => b.getBoundingClientRect().top > a.getBoundingClientRect().top + 4 && !a.contains(b)).length : -1;
       return { display: cs.display, jc: cs.justifyContent, gap: cs.gap, bs, below };
     })()`, 30000);
     if (!geo) throw new Error("missing element: .sc-editor-actions");
@@ -1738,8 +1780,16 @@ async function a046confirmPhase(theme = "light") {
     const measured = await checkProps(dangerSel, [
       { prop: "color", wantProbe: "--dsw-alias-state-error-primary", also: theme === "light" ? "rgb(236, 19, 19)" : "rgb(242, 90, 90)" },
     ]);
+    // run-11 实证缺陷（双主题）：getComputedStyle(...).getPropertyValue('--dsh-button-outline-color') 只能读到 token「解析后」值
+    // （Chromium 对 custom property 的计算值=var() 替换后的声明值，run-11 实测 #ec1313/#f25a5a），字面 var() 串机械不可观测
+    // （引号转义/!important/@property 均无效，前期已实证）；目录 A-046 意图=规则级 token 绑定（SPC-023）→ 双通道判定：
+    // (1) custom property 计算值归一化 rgb 后 == token probe 解析值；(2) panel style 规则文本含字面 var() 绑定（绑定机制自证）。
+    const pvErr = await probe(["--dsw-alias-state-error-primary"]);
     const outline = await evaluate(`(() => { const b = document.querySelector('${dangerSel}'); return b ? getComputedStyle(b).getPropertyValue('--dsh-button-outline-color').trim() : null; })()`, 30000);
-    if (outline !== "var(--dsw-alias-state-error-primary)") throw new Error(`danger outline token got ${outline} 期望 var(--dsw-alias-state-error-primary)`);
+    const outlineRgb = await evaluate(`(() => { if (!${JSON.stringify(outline || "")}) return null; const s = document.createElement('span'); s.style.color = ${JSON.stringify(outline)}; document.body.appendChild(s); const c = getComputedStyle(s).color; s.remove(); return c; })()`, 30000);
+    if (outlineRgb !== pvErr["--dsw-alias-state-error-primary"]) throw new Error(`danger outline token got ${outline}（归一 ${outlineRgb}）期望 ${pvErr["--dsw-alias-state-error-primary"]}（--dsw-alias-state-error-primary 解析值）`);
+    const rawCss = await evaluate(`(() => { const s = document.querySelector('${ROOT} style[data-sc-style="panel"]'); return s ? s.textContent : null; })()`, 30000);
+    if (!rawCss || !/--dsh-button-outline-color\s*:\s*var\(\s*--dsw-alias-state-error-primary\s*\)/.test(rawCss)) throw new Error("panel style 规则缺 --dsh-button-outline-color: var(--dsw-alias-state-error-primary) 绑定（SPC-023 绑定机制）");
     const wantHover = theme === "light" ? "rgba(236, 19, 19, 0.05)" : "rgba(242, 90, 90, 0.15)";
     const pv = await probe(["--dsw-alias-interactive-bg-hover-danger"]);
     const hovered = await tryHover(dangerSel);
@@ -2164,10 +2214,13 @@ try {
   { const n2 = (await calls()).length; await evaluate(`(() => { document.querySelector('${OFFICIAL_TOGGLE}').click(); return true; })()`, 30000); if (!(await waitForAutoSave(n2))) throw new Error("官方开关复原未落定"); }
   await shot("our-panel-dark.png", ROOT);
   await exec("A-052", "dark", async () => {
+    const pre = (await ui.state()).ids;
     const opacity = await nativeDragAttempt(cardIds[0]);
     if (opacity === null) throw new SkipGap("native drag unreachable in Electron（A-053 dark 规则文本面已必做执行）");
     if (opacity !== "0.5") throw new Error(`data-dragging 透明度 got ${opacity} 期望 0.5`);
-    return { measured: "拖动中 data-dragging 卡 opacity=0.5（暗态实机可达）" };
+    const restored = await restoreOrder(pre); // run-11 实证缺陷：drop 持久副作用须在 B-007 首个 afterReload 前复原（创建顺序前提）；复原通道=面板键盘排序
+    if (!restored) throw new Error(`A-052 拖拽副作用序复原失败：got ${(await ui.state()).ids} 期望 ${pre}（复原通道=面板键盘排序）`);
+    return { measured: `拖动中 data-dragging 卡 opacity=0.5（暗态实机可达）；drop 副作用序已复原 ${JSON.stringify(pre)}（键盘排序通道，B-007 前提保全）` };
   });
   await exec("A-053", "dark", async () => ({ measured: await a053RuleScan() }));
   await darkAttr(false);
@@ -2446,10 +2499,13 @@ try {
 
   // dragAttempt：原生 HTML5 拖拽尝试（A-052 运行时 + B-013；不可达→SKIP 记 gap，不得伪装）
   await exec("A-052", "light", async () => {
+    const pre = (await ui.state()).ids;
     const opacity = await nativeDragAttempt(cardIds[0]);
     if (opacity === null) throw new SkipGap("native drag unreachable in Electron（规则文本面由 A-053 必测覆盖）");
     if (opacity !== "0.5") throw new Error(`data-dragging 透明度 got ${opacity} 期望 0.5`);
-    return { measured: "拖动中 data-dragging 卡 opacity=0.5（原生拖拽实机可达）" };
+    const restored = await restoreOrder(pre); // run-11 实证缺陷：同 dark 面——消除 drop 持久副作用，保持后续 B-013/B-020（before/after 相对判据）起点为目录预期序
+    if (!restored) throw new Error(`A-052 拖拽副作用序复原失败：got ${(await ui.state()).ids} 期望 ${pre}（复原通道=面板键盘排序）`);
+    return { measured: `拖动中 data-dragging 卡 opacity=0.5（原生拖拽实机可达）；drop 副作用序已复原 ${JSON.stringify(pre)}（键盘排序通道）` };
   });
   await exec("A-053", "light", async () => ({ measured: await a053RuleScan() }));
   await exec("B-013", "light", async () => {
