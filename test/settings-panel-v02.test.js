@@ -1954,3 +1954,78 @@ async function loadBundleContract(tag) {
   assert.ok(contract && typeof contract.merge === "function" && typeof contract.toOps === "function", "组件须挂 Component.contract = { merge, validate, toOps }");
   return contract;
 }
+
+// Issue #55 regression: persisted ids are trimmed by normalization, so every UI action
+// must continue to address that persisted row by its normalized identity.
+const paddedIdState = () => makeSettingsState({
+  user: {
+    entries: [
+      { id: " tavily-a ", type: "tavily", name: "Tavily 空白 ID", enabled: true, credentialRef: "TAVILY_KEY_A" },
+      { id: "exa-b", type: "exa", name: "Exa 备用", enabled: true },
+      { id: "bing-c", type: "bing", name: "Bing 公开", enabled: true },
+    ],
+    useOfficialDeepSeekSearch: true,
+    timeoutMs: 25000,
+  },
+});
+
+test("#55 空白持久 id：卡片可见且编辑器按规范化 id 回填原草稿", async () => {
+  const state = paddedIdState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("issue55-visible-edit");
+    assert.deepEqual(cardOrder(tree), ["tavily-a", "exa-b", "bing-c"], "前后空白的持久 id 不得令卡片隐藏");
+    let edited = await step(view, tree, ROLE.edit, { entryId: "tavily-a" });
+    assert.equal(one(edited, ROLE.field, { field: "name" }).props.value, "Tavily 空白 ID", "编辑草稿须回填正确条目");
+    edited = await act(view, () => fire(one(edited, ROLE.field, { field: "name" }), "onChange", { target: { value: "Tavily 编辑已保存" } }));
+    edited = await step(view, edited, ROLE.editorSubmit);
+    assert.equal(state.user.entries[0].name, "Tavily 编辑已保存", "编辑提交须命中空白持久 id 的原条目");
+    assert.equal(state.user.entries[0].id, " tavily-a ", "编辑不得改写原持久 id");
+    assert.equal(fetchStub.mutates().length, 1, "编辑保存恰好一次 mutate");
+  });
+});
+
+test("#55 空白持久 id：启用开关可用并把关闭状态持久化到原条目", async () => {
+  const state = paddedIdState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("issue55-toggle");
+    const changed = await setEnabled(view, tree, "tavily-a", false);
+    assert.equal(one(changed, ROLE.enabled, { entryId: "tavily-a" }).props.checked, false);
+    assert.equal(fetchStub.mutates().length, 1, "开关操作恰好一次 mutate");
+    assert.equal(state.user.entries[0].id, " tavily-a ", "写回不得改写原持久 id");
+    assert.equal(state.user.entries[0].enabled, false, "mutate 应落到空白 id 所属条目");
+  });
+});
+
+test("#55 空白持久 id：删除仍经确认路径并持久化", async () => {
+  const state = paddedIdState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("issue55-remove");
+    let next = await step(view, tree, ROLE.remove, { entryId: "tavily-a" });
+    one(next, ROLE.confirmRemove, { entryId: "tavily-a" });
+    assert.equal(fetchStub.mutates().length, 0, "删除确认前零写入");
+    next = await step(view, next, ROLE.confirmRemove, { entryId: "tavily-a" });
+    assert.deepEqual(state.user.entries.map((entry) => entry.id), ["exa-b", "bing-c"], "确认后只删除目标原条目");
+    assert.equal(fetchStub.mutates().length, 1, "确认删除恰好一次 mutate");
+    assert.deepEqual(cardOrder(next), ["exa-b", "bing-c"]);
+  });
+});
+
+test("#55 正常 id 反面：可见、编辑、停用、删除与重排行为保持原契约", async () => {
+  const state = makeSettingsState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("issue55-normal-ids");
+    assert.deepEqual(cardOrder(tree), ["tavily-a", "exa-b", "bing-c"]);
+    let next = await setName(view, tree, "exa-b", "Exa 正常 ID");
+    next = await step(view, next, ROLE.editorSubmit);
+    assert.equal(state.user.entries[1].name, "Exa 正常 ID");
+    next = await setEnabled(view, next, "exa-b", false);
+    assert.equal(state.user.entries[1].enabled, false);
+    next = await moveWithKey(view, next, "bing-c", "ArrowUp");
+    assert.deepEqual(cardOrder(next), ["tavily-a", "bing-c", "exa-b"]);
+    next = await step(view, next, ROLE.remove, { entryId: "exa-b" });
+    next = await step(view, next, ROLE.confirmRemove, { entryId: "exa-b" });
+    assert.deepEqual(state.user.entries.map((entry) => entry.id), ["tavily-a", "bing-c"]);
+    assert.deepEqual(cardOrder(next), ["tavily-a", "bing-c"]);
+    assert.equal(fetchStub.mutates().length, 4, "编辑、停用、重排、删除各自维持一次离散写入");
+  });
+});
