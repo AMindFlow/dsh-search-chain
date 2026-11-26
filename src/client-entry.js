@@ -514,7 +514,7 @@ globalThis.window?.__ModuleLoader__?.load({
       .sc-official-row .sc-switch-label { font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); }
       .sc-official-hint { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
       .sc-card-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-      .sc-card { box-sizing: border-box; position: relative; border: 0.5px solid var(--dsw-alias-settings-card-stroke); background: var(--dsw-alias-settings-card-fill); border-radius: var(--dsw-radius-xl); padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+      .sc-card { box-sizing: border-box; position: relative; border: 0.5px solid var(--dsw-alias-settings-card-stroke); background: var(--dsw-alias-settings-card-fill); border-radius: var(--dsw-radius-xl); padding: 12px 14px 12px 10px; display: flex; flex-direction: column; gap: 12px; } /* v3 用户反馈（V3-2）：左内衬 14→10px，把手左靠（定值 12px 14px 12px 10px） */
       .sc-card::before, .sc-card::after { content: ''; position: absolute; z-index: 1; left: 0; right: 0; height: 4px; }
       .sc-card::before { top: -4px; }
       .sc-card::after { bottom: -4px; }
@@ -532,7 +532,7 @@ globalThis.window?.__ModuleLoader__?.load({
       .sc-card[data-drop-target='after']::after { bottom: -10px; }
       .sc-card-drag-preview { background: var(--dsw-alias-bg-module-platform); }
       .sc-card-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-      .sc-card-info { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+      .sc-card-info { display: inline-flex; align-items: center; gap: 4px; min-width: 0; } /* v3 用户反馈（V3-2）：info 间隙 6→4px（名称随把手左靠，定值 4px） */
       .sc-card-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
       .sc-card-name { font-size: 14px; line-height: 22px; font-weight: 500; color: var(--dsw-alias-label-primary); overflow-wrap: anywhere; }
       .sc-card-name-placeholder { color: var(--dsw-alias-label-secondary, inherit); }
@@ -631,7 +631,7 @@ globalThis.window?.__ModuleLoader__?.load({
       /* R3：display 用 flex 而非 inline-flex（flex 子项被块级化，视觉等价；且禁 display 隐藏机制审查按字面匹配）。 */
       .sc-drag-handle {
         box-sizing: border-box; display: flex; align-items: center; justify-content: center;
-        width: 28px; height: 28px; padding: 0; border: none;
+        width: 21px; height: 28px; padding: 0; border: none; /* v3 用户反馈（V3-2）：把手宽 28→21px（−25%），纵向触控区 28px 不减；字形经 flex 双轴居中，21px 内仍居中 */
         border-radius: var(--dsw-radius-sm);
         background: transparent; color: var(--dsw-alias-label-tertiary);
         font-family: inherit; font-size: 14px; line-height: 1; cursor: pointer;
@@ -911,12 +911,10 @@ globalThis.window?.__ModuleLoader__?.load({
             entries: draft.entries.map((e) => (e.id === m.editingId ? { ...e, name: prev.name, credentialRef: prev.credentialRef, enabled: prev.enabled } : e)),
           };
         }
-        // 二轮修复（B-012 世界分叉族）：在编条目不在新投影中（未提交新建条目在后继提交读回后）→
-        // 连同在编字段重追加到尾部——页内视图不得丢失在编状态（该条目仍不入持久层，提交时走 create 分支）。
-        return {
-          ...draft,
-          entries: [...draft.entries, { ...prev, name: prev.name, credentialRef: prev.credentialRef, enabled: prev.enabled }],
-        };
+        // v3 用户反馈（V3-1 无占位行）：v2「未提交新建重追加尾部」分支废止——在编新建条目（不在新投影中）
+        // 不再由本函数重追加。幽灵行的存续改由 SET-008 全量复原（draftCacheApply create 分支，重挂自动重开
+        // 编辑器）+ 列表渲染按持久视图过滤（无占位行）承载：复原语义=编辑器字段复原+自动重开，不进列表。
+        return draft;
       };
 
       // ─────────────────────── SET-008：跨分区草稿保全（模块级缓存读写与重挂校验） ───────────────────────
@@ -1141,7 +1139,9 @@ globalThis.window?.__ModuleLoader__?.load({
           }
           // (d) 乐观更新权威快照（读回失败时下一提交仍可按 op 后状态起算；读回最终为权威）。
           try { latestRef.current = { ...snap, user: applyOpsToLayer(snap.user, ops) }; } catch { /* 失败由读回纠正 */ }
-          setModel((m) => ({ ...m, busy: false, savedNotice: { text: successText } }));
+          // v3 用户反馈（V3-3 开关免提示）：successText 为 null 时不设 savedNotice（开关状态呈现即反馈）；
+          // 编辑器保存/超时/删除/重排维持成功文案（SET-007 槽位规范不变，仅收敛触发集）。
+          setModel((m) => ({ ...m, busy: false, savedNotice: successText ? { text: successText } : null }));
           selfCommitPending = true; // SET-008：自身成功提交 → 读回后把存活草稿记录的 baseRevision 自对齐
           await load(true); // (d) 单写者：本次读回必须在队列内下一提交构建 ops 前落定
           return true;
@@ -1169,7 +1169,7 @@ globalThis.window?.__ModuleLoader__?.load({
         const target = Boolean(ev.target && ev.target.checked);
         if (lockRef.current) return;
         setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, useOfficial: target } }));
-        commitDiscrete((m) => (effectiveOfficialOf(m) === target ? [] : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }]), "已保存设置。");
+        commitDiscrete((m) => (effectiveOfficialOf(m) === target ? [] : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }]), null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变）
       };
 
       // 超时输入：失焦/回车 且 值有变化且合法 才提交（仅 timeoutMs 键）；成功后清 __global__ 草稿记录（SET-008）。
@@ -1209,7 +1209,7 @@ globalThis.window?.__ModuleLoader__?.load({
           if (idx < 0) return []; // 未提交新条目无持久化变更
           if ((list[idx].enabled !== false) === target) return []; // 意图未变化：无需写（对照有效值）
           return toOps({ entries: list.map((e) => (e.id === entryId ? { ...e, enabled: target } : e)) }, { entries: userEntriesOf(m) });
-        }, "已保存设置。");
+        }, null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变）
       };
 
       // 移除确认：清草稿（含 SET-008 缓存记录：条目已不存在，其草稿作废）+ 落盘 unset（仅该条目键）。
@@ -1476,7 +1476,11 @@ globalThis.window?.__ModuleLoader__?.load({
         for (const el of dragList(card)?.querySelectorAll?.("[data-drop-target]") ?? []) if (el !== card) el.removeAttribute("data-drop-target");
         if (card.getAttribute("data-drop-target") !== pos) card.setAttribute("data-drop-target", pos);
       };
-      const cardNodes = model.draft.entries.map((entry) => {
+      // v3 用户反馈（V3-1 无占位行）：未提交新建条目（幽灵）只存在于编辑器——列表恒等于已持久条目
+      // 视图（有效持久列表）。草稿仍保留幽灵行（编辑器取值/提交候选/SET-008 缓存链不改），渲染按
+      // 持久 id 过滤：打开新建/后台读回/O-6 重开任何时机，页内列表都不出现占位行。
+      const persistedIdSet = new Set(effectiveEntriesOf(model).map((e) => e.id));
+      const cardNodes = model.draft.entries.filter((entry) => persistedIdSet.has(entry.id)).map((entry) => {
         const row = CATALOG_UI.find((x) => x[0] === entry.type);
         const displayName = entry.name || "（未命名条目）";
         const displayType = row?.[1] ?? entry.type;
@@ -1588,7 +1592,9 @@ globalThis.window?.__ModuleLoader__?.load({
       })();
       const editorProblem = model.editorError || editorBlock;
       const editorSubmitDisabled = model.busy || model.editorBusy || model.phase !== "ready" || typeof model.revision !== "number" || !!editorBlock;
-      const submitLabel = model.editorBusy ? (editorIsCreate ? "创建中…" : "保存中…") : (editorIsCreate ? "创建工具" : "保存");
+      // v3 用户反馈（V3-1 文案统一）：提交钮编辑/新建一律「取消|保存」，busy「保存中…」——
+      // 废止「创建工具/创建中…」（任何编辑器动作标签中不得出现）。
+      const submitLabel = model.editorBusy ? "保存中…" : "保存";
       const editor = editorEntry ? React.createElement("div", {
         role: "dialog", "aria-modal": "true", "aria-labelledby": "sc-editor-title",
         "data-role": "editor", onKeyDown: onDialogKeyDown, className: "sc-dialog sc-editor",
@@ -1670,7 +1676,9 @@ globalThis.window?.__ModuleLoader__?.load({
           }),
           React.createElement("p", { className: "sc-official-hint" }, "单个工具请求的最长等待；超过后回退到列表中下一个工具。"),
         ),
-        model.draft.entries.length === 0 ? React.createElement("p", { "data-role": "empty-state", style: secondaryTextStyle }, "还没有配置搜索工具，点击下方「添加搜索工具」添加第一条。") : null,
+        // v3 用户反馈（V3-1 无占位行）：空状态判据=已持久条目视图（有效列表）——新建编辑器开启期间
+        // 草稿含幽灵行，但持久视图仍空 → 空状态与新建编辑器同屏呈现（列表恒等于持久视图）。
+        effectiveEntriesOf(model).length === 0 ? React.createElement("p", { "data-role": "empty-state", style: secondaryTextStyle }, "还没有配置搜索工具，点击下方「添加搜索工具」添加第一条。") : null,
         cardNodes.length ? React.createElement("div", { className: "sc-card-list" }, ...cardNodes) : null,
         React.createElement("div", { className: "sc-add-block" }, React.createElement("div", { className: "sc-add-actions" }, React.createElement("button", { className: "sc-add-button", type: "button", "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "＋ 添加搜索工具")), addPicker),
         confirm,

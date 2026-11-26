@@ -263,11 +263,11 @@ test("SET-002 添加：选择 tavily 后新条目追加到末尾、启用，保�
   await withEnv(state, async ({ fetchStub }) => {
     const { view, tree } = await openPanel("add");
     let t = await addType(view, tree, "tavily");
-    const order = cardOrder(t);
-    assert.equal(order.length, 4, "添加后须有 4 张卡片");
-    const newId = order[3];
-    assert.ok(!fixtureEntries().some((e) => e.id === newId), "新条目须有新的稳定 id");
-    assert.equal(one(t, ROLE.enabled, { entryId: newId }).props.checked, true, "新条目须默认启用");
+    // v3 用户反馈（V3-1 无占位行）：未提交新建不入列——列表恒等于持久视图（3 条），新条目只在编辑器。
+    assert.equal(cardOrder(t).length, 3, "未提交新建不入列（V3-1）：列表恒等于持久视图");
+    assert.ok(one(t, ROLE.editor), "新建编辑器须在场（幽灵仅存在于编辑器）");
+    const newId = one(t, ROLE.field, { field: "name" }).props["data-entry-id"];
+    assert.ok(!fixtureEntries().some((e) => e.id === newId), "新条目须有新的稳定 id（编辑器绑定）");
     // O-8（#51）：SET-006 条目级保存——新条目须经其编辑器提交落盘（无全局保存钮）。
     t = await step(view, t, ROLE.editorSubmit);
     const saved = stateEntries(state);
@@ -353,9 +353,8 @@ test("SET-002 需 key 的类型编辑器均含 key 输入框（D-2C：KEYED_TYPE
     await withEnv(makeSettingsState(), async () => {
       const { view, tree } = await openPanel(`keyed-${type}`);
       const added = await addType(view, tree, type);
-      const newId = cardOrder(added).at(-1);
-      const ed = await step(view, added, ROLE.edit, { entryId: newId });
-      assert.equal(byRole(ed, ROLE.field, { field: "key" }).length, 1, `类型 ${type} 的编辑器须恰一个 key 输入框（D-2C）`);
+      // v3 用户反馈（V3-1）：新建编辑器开启后即呈现（幽灵不入列，无需再点卡片编辑钮）。
+      assert.equal(byRole(added, ROLE.field, { field: "key" }).length, 1, `类型 ${type} 的编辑器须恰一个 key 输入框（D-2C）`);
     });
   }
 });
@@ -367,6 +366,7 @@ test("SET-002 停用：关闭 exa-b 后位置与配置保留；保存后重开�
     // O-8（#51）：SET-006——启用开关 onChange 即离散落盘，无全局保存步。
     const t = await setEnabled(view, tree, "exa-b", false);
     assert.deepEqual(cardOrder(t), idsOf(fixtureEntries()), "停用不得改变卡片位置");
+    assert.equal(byRole(t, ROLE.saveStatus).length, 0, "V3-3 开关免提示：启用开关动作不得发 savedNotice（开关状态呈现即反馈）");
     const reopened = await openPanel("disable-reopen");
     assert.deepEqual(cardOrder(reopened.tree), idsOf(fixtureEntries()), "重开后位置保持");
     assert.equal(one(reopened.tree, ROLE.enabled, { entryId: "exa-b" }).props.checked, false, "重开后 exa-b 须仍为关闭");
@@ -626,8 +626,8 @@ test("P0 无 host 通道（D-2C）：带 key 保存经 credentials/set，面板�
   await withEnv(makeSettingsState(), async ({ hostStub, fetchStub }) => {
     const { view, tree } = await openPanel("no-host");
     const added = await addType(view, tree, "exa");
-    const newId = cardOrder(added).at(-1);
-    let t = await editEntry(view, added, newId, { key: SYNTH_KEY });
+    // v3 用户反馈（V3-1）：幽灵不入列——key 直接写入已开启的新建编辑器（编辑器绑定该新条目）。
+    let t = await act(view, () => fire(one(added, ROLE.field, { field: "key" }), "onChange", { target: { value: SYNTH_KEY } }));
     t = await step(view, t, ROLE.editorSubmit); // O-8（#51）：SET-006 条目级提交
     assert.equal(hostStub.calls.length, 0, "带 key 保存亦不得调用 host.call（D-2C：静态 ctx 无 host 服务）");
     assert.equal(fetchStub.credentialSets().length, 1, "带 key 保存须经 credentials/set（D-2C）");
@@ -945,9 +945,10 @@ test("SET-005 持久化：关闭开关并保存后，ops 含 useOfficialDeepSeek
     const before = fixtureEntries();
     const { view, tree } = await openPanel("official-save");
     // O-8（#51）：SET-006——顶部官方开关 onChange 即离散落盘（无全局保存步），mutate[0] 已含该键。
-    await act(view, () =>
+    const afterToggle = await act(view, () =>
       fire(one(tree, ROLE.officialToggle), "onChange", { target: { checked: false, value: false } }),
     );
+    assert.equal(byRole(afterToggle, ROLE.saveStatus).length, 0, "V3-3 开关免提示：官方开关动作不得发 savedNotice（开关状态呈现即反馈）");
     const ops = opsOf(fetchStub.mutates()[0]);
     assert.ok(
       ops.some((o) => o.op === "set" && o.path.join(".") === "useOfficialDeepSeekSearch" && o.value === false),
@@ -999,13 +1000,13 @@ test("SET-006(#51) 取消/Esc（O-5）：零写、清该条目字段草稿与 ke
     assert.equal(one(t, ROLE.field, { field: "credentialRef" }).props.value, "", "exa-b 无持久化引用：取消后不得残留草稿引用");
     // 新建条目：填名 + key 后 Esc → 新条目移出列表，key 缓冲清零
     t = await addType(view, t, "brave");
-    assert.equal(cardOrder(t).length, 4, "选类型后新条目出现在列表末尾");
+    assert.equal(cardOrder(t).length, 3, "选类型后未提交新建不入列（V3-1）：列表仍为持久 3 条");
     t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "Brave 草稿" } }));
     t = await act(view, () => fire(one(t, ROLE.field, { field: "key" }), "onChange", { target: { value: SYNTH_KEY } }));
     t = await act(view, () => fire(one(t, ROLE.editor), "onKeyDown", { key: "Escape", preventDefault() {} }));
     assert.equal(fetchStub.mutates().length, 0, "Escape 不得写（O-5）");
     assert.equal(byRole(t, ROLE.editor).length, 0, "Escape 后编辑器关闭");
-    assert.equal(cardOrder(t).length, 3, "取消后新建条目须移出草稿列表");
+    assert.equal(cardOrder(t).length, 3, "取消后列表不变（V3-1：新建本就不入列；幽灵随取消移出草稿）");
     assert.deepEqual(leaksIn(t, SYNTH_KEY), [], "取消后明文 key 缓冲须清零（零残留明文）");
   });
 });
@@ -1264,7 +1265,8 @@ test("二轮(B-012) 键盘重排×未提交新建草稿并存：重排 op 自最
     const { view, tree } = await openPanel("b012-phantom-reorder");
     // 新建 brave（未提交）：草稿尾部多一条幽灵条目（持久层仍 3 条），编辑器打开。
     let t = await addType(view, tree, "brave");
-    assert.equal(cardOrder(t).length, 4, "新建条目在草稿尾部（幽灵态）");
+    assert.equal(cardOrder(t).length, 3, "未提交新建不入列（V3-1）：列表恒等于持久视图");
+    assert.ok(one(t, ROLE.editor), "新建编辑器须在场（幽灵仅存在于编辑器）");
     assert.equal(stateEntries(state).length, 3, "持久层仍 3 条（新建未提交）");
     const n0 = fetchStub.mutates().length;
     // 键盘上移 bing-c 两次（2 号位 → 0 号位）。旧实现：闭包 user/草稿成员漂移时 commitReorder
@@ -1282,10 +1284,10 @@ test("二轮(B-012) 键盘重排×未提交新建草稿并存：重排 op 自最
     assert.equal(byId["bing-c"].name, "Bing 公开", "条目名恒随自身 id（B-007 名错乱回归面）");
     assert.equal(byId["tavily-a"].name, "Tavily 主", "tavily-a 名未受重排影响");
     assert.equal(byId["exa-b"].name, "Exa 备用", "exa-b 名未受重排影响");
+    // v3 用户反馈（V3-1 无占位行）：世界分叉回归面改为「列表恒等于持久视图」——重排读回后页内视图
+    // 恰为持久 3 条（未提交新建不入列）；幽灵仅存于编辑器（在编状态不得从页内视图丢失）。
     const order = cardOrder(t);
-    assert.equal(order.length, 4, "页内视图仍 4 条（3 持久 + 1 未提交新建）");
-    assert.deepEqual(order.slice(0, 3), ["bing-c", "tavily-a", "exa-b"], "页内视图顺序与持久投影一致（世界分叉回归面）");
-    assert.ok(order[3].startsWith("search_chain_"), "未提交新建条目仍在尾部（不入持久层）");
+    assert.deepEqual(order, ["bing-c", "tavily-a", "exa-b"], "页内视图=持久投影 3 条（V3-1：未提交新建不入列，世界分叉回归面）");
     assert.equal(byRole(t, ROLE.editor).length, 1, "在编新建编辑器不得被重排读回关闭（在编状态不得从页内视图丢失）");
   });
 });
@@ -1486,7 +1488,8 @@ test("五轮(codex P1) 继承列表遮蔽：改名继承条目/继承世界新�
       const { view, tree } = await openPanel("r5-inherited-create");
       const n0 = fetchStub.mutates().length;
       let t = await addType(view, tree, "bing");
-      assert.equal(cardOrder(t).length, 4, "草稿 4 条（3 继承 + 1 新建幽灵）");
+      assert.equal(cardOrder(t).length, 3, "未提交新建不入列（V3-1）：列表恒等于继承持久视图（3 条）");
+      assert.ok(one(t, ROLE.editor), "新建编辑器须在场（幽灵仅存在于编辑器）");
       t = await step(view, t, ROLE.editorSubmit); // 名称预填 "Bing RSS"（非空，过名称门）
       assert.equal(fetchStub.mutates().length, n0 + 1, "继承世界新建必须落盘一次");
       const ids = idsOf(state.user.entries);
@@ -1595,6 +1598,17 @@ test("五轮(codex P2) SET-008 全语义草稿复原：编辑 A 未提交→开 
     assert.equal(fetchStub.mutates().length, n0 + 2, "A 的再保存落盘一次");
     assert.equal(stateEntries(state).find((e) => e.id === "tavily-a").name, "Tavily 草稿A", "A 的未提交草稿未丢失");
     assert.equal(stateEntries(state).find((e) => e.id === "exa-b").name, "Exa 草稿B", "B 的持久值未受 A 提交影响（他行零改动）");
+    // create 面（v3 用户反馈 V3-1 + SET-008 复原语义）：开新建编辑器（幽灵）→ 启用开关触发离散落盘
+    // → keepStatus 后台读回 → 列表无该行（幽灵不入列）+ 编辑器字段复原 + 编辑器在场；取消收尾。
+    t = await addType(view, t, "brave");
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "Brave 草稿" } }));
+    t = await setEnabled(view, t, "exa-b", false);
+    assert.equal(fetchStub.mutates().length, n0 + 3, "开关落盘一次（触发 keepStatus 后台读回，此时缓存仅剩新建记录）");
+    assert.deepEqual(cardOrder(t), ["tavily-a", "exa-b", "bing-c"], "读回后列表无新建幽灵行（V3-1：列表恒等于持久视图）");
+    assert.ok(one(t, ROLE.editor), "新建编辑器仍在场（读回不关闭在编新建）");
+    assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "Brave 草稿", "新建的未提交字段复原（SET-008 复原语义=编辑器字段复原+自动重开，不是列表占位行）");
+    t = await step(view, t, ROLE.editorCancel);
+    assert.equal(byRole(t, ROLE.editor).length, 0, "取消后编辑器关闭（幽灵与缓存记录清除）");
     assert.equal(byRole(t, ROLE.saveError).length, 0, "全程零节级错误（自身提交不得制造假版本冲突）");
   });
 });
