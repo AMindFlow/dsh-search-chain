@@ -2779,7 +2779,11 @@ try {
     const rpc = all.filter((x) => /^\/api\/(settings|credentials)\//.test(x.url));
     const bad = rpc.filter((x) => !appOk(x));
     if (!rpc.length) throw new Error("未捕获任何 describe/mutate/credentials 记录");
-    if (bad.length) throw new Error(`${bad.length}/${rpc.length} 条 RPC 非应用级 ok（含 ${bad.slice(0, 2).map((x) => { let d = ""; try { const rr = (x.response && (x.response.result || x.response)) || {}; d = String(JSON.stringify(rr.error ?? rr.errorCode ?? rr.message ?? rr.detail ?? Object.keys(rr).slice(0, 6)) || ""); } catch { /* */ } d = (d.includes(KEY_A) || d.includes(KEY_B)) ? "<脱敏:含合成key>" : d.replace(/sk-[A-Za-z0-9_-]{4,}/g, "sk-***").slice(0, 90); return `${x.url}@${x.status ?? x.error ?? "reject"} err=${d || "无"}`; }).join(" ｜ ")}）`);
+    if (bad.length) {
+      // run-11/run-12 复现取证：bad 记录附定位面（在全部 RPC 中的序号 + 前后条 url），用于判定瞬态落点（warmup/teardown 窗口）；判据本身不变（任一非 ok 即字面 FAIL）。
+      const loc = bad.map((x) => { const i = all.indexOf(x); return `idx=${i}/${all.length} 前条=${i > 0 ? all[i - 1].url : "(首条)"} 后条=${i + 1 < all.length ? all[i + 1].url : "(末条)"}`; }).join("；");
+      throw new Error(`${bad.length}/${rpc.length} 条 RPC 非应用级 ok（含 ${bad.slice(0, 2).map((x) => { let d = ""; try { const rr = (x.response && (x.response.result || x.response)) || {}; d = String(JSON.stringify(rr.error ?? rr.errorCode ?? rr.message ?? rr.detail ?? Object.keys(rr).slice(0, 6)) || ""); } catch { /* */ } d = (d.includes(KEY_A) || d.includes(KEY_B)) ? "<脱敏:含合成key>" : d.replace(/sk-[A-Za-z0-9_-]{4,}/g, "sk-***").slice(0, 90); return `${x.url}@${x.status ?? x.error ?? "reject"} err=${d || "无"}`; }).join(" ｜ ")}）；定位面=${loc}`);
+    }
     return { measured: `${rpc.length} 条 describe/mutate/credentials/set 全应用级 ok=true（双信封兼容）` };
   });
   await exec("B-006", "light", async () => {
