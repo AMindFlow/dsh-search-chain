@@ -623,7 +623,7 @@ globalThis.window?.__ModuleLoader__?.load({
       .sc-picker-item:disabled { opacity: 0.4; cursor: default; }
       .sc-input:disabled { opacity: 0.6; cursor: default; }
       .sc-button:focus-visible, .sc-button-primary:focus-visible, .sc-button-secondary:focus-visible, .sc-button-danger:focus-visible,
-      .sc-drag-handle:focus-visible,
+      .sc-confirm-close:focus-visible, .sc-drag-handle:focus-visible,
       .sc-add-button:focus-visible, .sc-picker-item:focus-visible {
         outline: none;
         box-shadow: 0 0 0 var(--dsw-focus-ring-width, 2px) var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
@@ -742,6 +742,14 @@ globalThis.window?.__ModuleLoader__?.load({
       }
       .sc-editor { gap: 14px; }
       .sc-card .sc-editor, .sc-card .sc-dialog { background: none; padding: 0; }
+      /* V4-2：删除确认模态（居中遮罩 alertdialog；×/取消/Escape 关闭均零变更；旧内联 sc-confirm 表单废止）。
+         表面双主题固定近白（A-068：不透明近白、圆角>0、视口中心）；危险钮沿用 SPC-023 outline token（A-046）。 */
+      .sc-confirm-backdrop { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(15, 16, 19, 0.45); }
+      .sc-confirm { position: relative; width: min(380px, calc(100vw - 32px)); background: #ffffff; color: #1f2329; border-radius: var(--dsw-radius-panel, 12px); padding: 20px 20px 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28); outline: none; }
+      .sc-confirm-close { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--dsw-radius-sm); background: transparent; color: #596069; font-size: 18px; line-height: 1; cursor: pointer; }
+      @media (hover: hover) { .sc-confirm-close:hover:not(:disabled) { background: rgba(31, 35, 41, 0.08); color: #1f2329; } }
+      .sc-confirm-title { margin: 0 24px 0 0; font-size: 15px; line-height: 22px; font-weight: 600; color: #1f2329; }
+      .sc-confirm-desc { margin: 0; font-size: 13px; line-height: 20px; color: #454c55; }
       .sc-picker { gap: 8px; }
       .sc-picker-item {
         display: flex;
@@ -869,6 +877,12 @@ globalThis.window?.__ModuleLoader__?.load({
       });
       const alive = React.useRef(true);
       const restoreFocus = React.useRef(null);
+      // V4-2：删除模态——触发移除按钮（关闭时焦点回归）与弹窗容器节点（打开时焦点入框）；
+      // confirmRef 渲染期镜像模态开启态（编辑器 Escape 处理器据此让位顶层模态）。
+      const removeTriggerRef = React.useRef(null);
+      const confirmDialogRef = React.useRef(null);
+      const confirmRef = React.useRef(null);
+      confirmRef.current = model.confirmId;
       // 事件处理器经本 ref 读最新在途标志（避免 async 提交间的陈旧闭包）；渲染期镜像。
       const lockRef = React.useRef(false);
       lockRef.current = model.busy || model.editorBusy;
@@ -1433,10 +1447,28 @@ globalThis.window?.__ModuleLoader__?.load({
       };
       const onDialogKeyDown = (ev) => {
         if (ev.key === "Escape") {
+          if (confirmRef.current) return; // V4-2：删除模态开启时 Escape 属顶层模态（document 后备路径消费），编辑器不动
           ev.preventDefault?.();
           cancelEditor(); // O-5：Escape ≡ 点击取消（同清草稿、同焦点回退）
           return;
         }
+        if (ev.key === "Tab" && ev.currentTarget?.querySelectorAll) {
+          const items = [...ev.currentTarget.querySelectorAll("button, input, select, textarea, [tabindex]:not([tabindex='-1'])")].filter((n) => !n.disabled);
+          if (items.length) {
+            const first = items[0], last = items[items.length - 1], active = ev.currentTarget.ownerDocument?.activeElement;
+            if (ev.shiftKey && active === first) { ev.preventDefault(); last.focus(); }
+            else if (!ev.shiftKey && active === last) { ev.preventDefault(); first.focus(); }
+          }
+        }
+      };
+      // ─────────────── V4-2：删除确认模态（居中 alertdialog，替代旧内联确认） ───────────────
+      // 关闭路径（×/取消/Escape）均只清 confirmId——零数据变更（SET-002 无写路径）；
+      // 确认走既有 confirmRemoveClick（条目级 unset 单键提交 + SET-007「已保存设置。」，语义不变）。
+      const closeConfirm = () => {
+        setModel((m) => (m.confirmId ? { ...m, confirmId: null } : m));
+      };
+      const onConfirmKeyDown = (ev) => {
+        if (ev.key === "Escape") { ev.preventDefault?.(); closeConfirm(); return; }
         if (ev.key === "Tab" && ev.currentTarget?.querySelectorAll) {
           const items = [...ev.currentTarget.querySelectorAll("button, input, select, textarea, [tabindex]:not([tabindex='-1'])")].filter((n) => !n.disabled);
           if (items.length) {
@@ -1479,7 +1511,60 @@ globalThis.window?.__ModuleLoader__?.load({
       // v3 用户反馈（V3-1 无占位行）：未提交新建条目（幽灵）只存在于编辑器——列表恒等于已持久条目
       // 视图（有效持久列表）。草稿仍保留幽灵行（编辑器取值/提交候选/SET-008 缓存链不改），渲染按
       // 持久 id 过滤：打开新建/后台读回/O-6 重开任何时机，页内列表都不出现占位行。
+      const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
+      // V4-1：编辑器就地展开——编辑器树先于卡片节点构建；持久条目渲染进其归属卡片（cardNodes 内），
+      // 新建（未持久）条目无外层卡片，编辑器继续置于新建块之后（不入列表，V3-1 判据不变）。
       const persistedIdSet = new Set(effectiveEntriesOf(model).map((e) => e.id));
+      // SET-006：提交钮实时校验（在途/只读/缺 revision/校验失败 → 禁用）；新 ref 由受控生成、恒合法，校验用占位 ref 投影。
+      const editorIsCreate = editorEntry ? !entryIsPersisted(model, editorEntry) : false;
+      const editorBlock = (() => {
+        if (!editorEntry) return null;
+        // 四轮修复（B-007/009/019 污染源）：名称门实时呈现——空名/纯空白名即时禁用提交钮并在动作行
+        // 上方 role=alert 报错（SPC-023「新建=完整校验」/SPC-030），不必等提交才暴露。
+        const nameProblem = entryNameGate(editorEntry.name);
+        if (nameProblem) return { text: nameProblem, issues: [] };
+        const keyVal = (typeof model.keys[editorEntry.id] === "string" ? model.keys[editorEntry.id] : "").trim();
+        const writesKey = keyVal !== "" && KEYED_TYPES.includes(editorEntry.type);
+        const credRef = (editorEntry.credentialRef ?? "").trim();
+        if (!writesKey && credRef && !POSIX_REF.test(credRef)) {
+          return { text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] };
+        }
+        const check = validate({ ...model.base, ...{ ...model.user, entries: candidateEntriesFor(model, editorEntry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef) } });
+        if (!check.ok) return { text: "无法提交：配置校验未通过", issues: check.issues.map((i) => i.message) };
+        return null;
+      })();
+      const editorProblem = model.editorError || editorBlock;
+      const editorSubmitDisabled = model.busy || model.editorBusy || model.phase !== "ready" || typeof model.revision !== "number" || !!editorBlock;
+      // v3 用户反馈（V3-1 文案统一）：提交钮编辑/新建一律「取消|保存」，busy「保存中…」——
+      // 废止「创建工具/创建中…」（任何编辑器动作标签中不得出现）。
+      const submitLabel = model.editorBusy ? "保存中…" : "保存";
+      const editor = editorEntry ? React.createElement("div", {
+        role: "dialog", "aria-modal": "true", "aria-labelledby": "sc-editor-title",
+        "data-role": "editor", onKeyDown: onDialogKeyDown, className: "sc-dialog sc-editor",
+      },
+        React.createElement("h4", { id: "sc-editor-title", className: "sc-editor-title" }, `${editorIsCreate ? "新建" : "编辑"} ${editorEntry.name || editorEntry.type}`),
+        React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "名称"), React.createElement("input", {
+          className: "sc-input", type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, disabled: locked,
+          value: editorEntry.name ?? "", onChange: (ev) => updateEditorField(editorEntry.id, "name", ev.target.value), autoFocus: true,
+        })),
+        React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "凭据引用"), React.createElement("input", {
+          className: "sc-input", type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, disabled: locked,
+          value: editorEntry.credentialRef ?? "", placeholder: "例如 TAVILY_API_KEY",
+          onChange: (ev) => updateEditorField(editorEntry.id, "credentialRef", ev.target.value),
+        })),
+        KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "API key（仅写入，不会回显）"), React.createElement("input", {
+          className: "sc-input", type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, disabled: locked,
+          value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
+          onChange: (ev) => updateKey(editorEntry.id, ev.target.value),
+        })) : null,
+        editorProblem ? React.createElement("p", {
+          className: "sc-status-node", "data-role": "save-error", "data-state": "error", role: "alert",
+        }, editorProblem.text, ...(editorProblem.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`))) : null,
+        React.createElement("div", { className: "sc-editor-actions" },
+          React.createElement("button", { className: "sc-button sc-button-secondary", type: "button", "data-role": "editor-cancel", disabled: model.editorBusy, onClick: cancelEditor }, "取消"),
+          React.createElement("button", { className: "sc-button sc-button-primary", type: "button", "data-role": "editor-submit", disabled: editorSubmitDisabled, onClick: submitEditor }, submitLabel),
+        ),
+      ) : null;
       const cardNodes = model.draft.entries.filter((entry) => persistedIdSet.has(entry.id)).map((entry) => {
         const row = CATALOG_UI.find((x) => x[0] === entry.type);
         const displayName = entry.name || "（未命名条目）";
@@ -1555,13 +1640,14 @@ globalThis.window?.__ModuleLoader__?.load({
               }, "编辑"),
               React.createElement("button", {
                 className: "sc-button-danger", type: "button", "data-role": "card-remove", "data-entry-id": entry.id, disabled: locked,
-                onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: entry.id })); },
+                onClick: (ev) => { if (!locked) { removeTriggerRef.current = ev.currentTarget ?? null; setModel((m) => ({ ...m, confirmId: entry.id })); } },
               }, "移除"),
             ),
           ),
+            // V4-1：编辑器归属其卡片（卡片直接子节点、条目行 nextElementSibling）；目标切换时唯一编辑器整体移动，无尾部残影。
+            entry.id === model.editingId ? editor : null,
         );
       });
-      const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
       // 二轮修复（B-017）：超时输入非法态——非空且非正整数 → aria-invalid（与节级 alert 双通道）。
       const timeoutDraftText = String(model.draft.timeoutText ?? "").trim();
       const timeoutInvalid = timeoutDraftText !== "" && (!Number.isSafeInteger(Number(timeoutDraftText)) || Number(timeoutDraftText) <= 0);
@@ -1572,69 +1658,60 @@ globalThis.window?.__ModuleLoader__?.load({
       const sectionErrorNode = model.sectionError ? React.createElement("p", {
         className: "sc-status-node", "data-role": "save-error", "data-state": "error", role: "alert",
       }, model.sectionError.text, ...(model.sectionError.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`))) : null;
-      // SET-006：提交钮实时校验（在途/只读/缺 revision/校验失败 → 禁用）；新 ref 由受控生成、恒合法，校验用占位 ref 投影。
-      const editorIsCreate = editorEntry ? !entryIsPersisted(model, editorEntry) : false;
-      const editorBlock = (() => {
-        if (!editorEntry) return null;
-        // 四轮修复（B-007/009/019 污染源）：名称门实时呈现——空名/纯空白名即时禁用提交钮并在动作行
-        // 上方 role=alert 报错（SPC-023「新建=完整校验」/SPC-030），不必等提交才暴露。
-        const nameProblem = entryNameGate(editorEntry.name);
-        if (nameProblem) return { text: nameProblem, issues: [] };
-        const keyVal = (typeof model.keys[editorEntry.id] === "string" ? model.keys[editorEntry.id] : "").trim();
-        const writesKey = keyVal !== "" && KEYED_TYPES.includes(editorEntry.type);
-        const credRef = (editorEntry.credentialRef ?? "").trim();
-        if (!writesKey && credRef && !POSIX_REF.test(credRef)) {
-          return { text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] };
-        }
-        const check = validate({ ...model.base, ...{ ...model.user, entries: candidateEntriesFor(model, editorEntry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef) } });
-        if (!check.ok) return { text: "无法提交：配置校验未通过", issues: check.issues.map((i) => i.message) };
-        return null;
-      })();
-      const editorProblem = model.editorError || editorBlock;
-      const editorSubmitDisabled = model.busy || model.editorBusy || model.phase !== "ready" || typeof model.revision !== "number" || !!editorBlock;
-      // v3 用户反馈（V3-1 文案统一）：提交钮编辑/新建一律「取消|保存」，busy「保存中…」——
-      // 废止「创建工具/创建中…」（任何编辑器动作标签中不得出现）。
-      const submitLabel = model.editorBusy ? "保存中…" : "保存";
-      const editor = editorEntry ? React.createElement("div", {
-        role: "dialog", "aria-modal": "true", "aria-labelledby": "sc-editor-title",
-        "data-role": "editor", onKeyDown: onDialogKeyDown, className: "sc-dialog sc-editor",
-      },
-        React.createElement("h4", { id: "sc-editor-title", className: "sc-editor-title" }, `${editorIsCreate ? "新建" : "编辑"} ${editorEntry.name || editorEntry.type}`),
-        React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "名称"), React.createElement("input", {
-          className: "sc-input", type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, disabled: locked,
-          value: editorEntry.name ?? "", onChange: (ev) => updateEditorField(editorEntry.id, "name", ev.target.value), autoFocus: true,
-        })),
-        React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "凭据引用"), React.createElement("input", {
-          className: "sc-input", type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, disabled: locked,
-          value: editorEntry.credentialRef ?? "", placeholder: "例如 TAVILY_API_KEY",
-          onChange: (ev) => updateEditorField(editorEntry.id, "credentialRef", ev.target.value),
-        })),
-        KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "API key（仅写入，不会回显）"), React.createElement("input", {
-          className: "sc-input", type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, disabled: locked,
-          value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
-          onChange: (ev) => updateKey(editorEntry.id, ev.target.value),
-        })) : null,
-        editorProblem ? React.createElement("p", {
-          className: "sc-status-node", "data-role": "save-error", "data-state": "error", role: "alert",
-        }, editorProblem.text, ...(editorProblem.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`))) : null,
-        React.createElement("div", { className: "sc-editor-actions" },
-          React.createElement("button", { className: "sc-button sc-button-secondary", type: "button", "data-role": "editor-cancel", disabled: model.editorBusy, onClick: cancelEditor }, "取消"),
-          React.createElement("button", { className: "sc-button sc-button-primary", type: "button", "data-role": "editor-submit", disabled: editorSubmitDisabled, onClick: submitEditor }, submitLabel),
-        ),
-      ) : null;
       const addPicker = model.addOpen ? React.createElement("div", { role: "group", "aria-label": "选择搜索工具", className: "sc-picker" },
         ...CATALOG_UI.map(([type, label, billing]) => React.createElement("button", {
           key: type, className: "sc-picker-item", type: "button", "data-role": "add-type", "data-type": type, disabled: locked,
           onClick: (ev) => addEntry(type, ev.currentTarget ?? null),
         }, React.createElement("strong", { className: "sc-picker-title" }, label), React.createElement("span", { className: "sc-picker-billing" }, billing))),
       ) : null;
-      const confirm = model.confirmId ? React.createElement("div", { role: "alertdialog", "aria-modal": "true", className: "sc-dialog sc-confirm" },
-        React.createElement("p", null, "移除该搜索工具？不会删除宿主凭据。"),
-        React.createElement("div", { className: "sc-confirm-actions" },
-          React.createElement("button", { className: "sc-button-danger sc-delete-confirm", type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId, disabled: locked, onClick: () => confirmRemoveClick(model.confirmId) }, "确认移除"),
-          React.createElement("button", { className: "sc-button sc-button-secondary", type: "button", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, confirmId: null })); } }, "取消"),
-        ),
-      ) : null;
+      // V4-2：删除确认模态（取代旧内联确认）——居中遮罩 alertdialog，标题/正文按规格精确文案，
+      // 右上 ×、取消（secondary）、危险「删除 {名称}」（SPC-023 outline token，保留 confirm-remove 锚点）。
+      const confirm = model.confirmId ? (() => {
+        const cEntry = model.draft.entries.find((e) => e.id === model.confirmId);
+        if (!cEntry) return null;
+        const cRow = CATALOG_UI.find((x) => x[0] === cEntry.type);
+        const cName = cEntry.name || (cRow?.[1] ?? cEntry.type) || "条目";
+        return React.createElement("div", { className: "sc-confirm-backdrop" },
+          React.createElement("div", {
+            role: "alertdialog", "aria-modal": "true", "aria-labelledby": "sc-confirm-title", "aria-describedby": "sc-confirm-desc",
+            className: "sc-dialog sc-confirm", tabIndex: -1, ref: confirmDialogRef, onKeyDown: onConfirmKeyDown,
+          },
+            React.createElement("h2", { id: "sc-confirm-title", className: "sc-confirm-title" }, `删除 ${cName}?`),
+            React.createElement("p", { id: "sc-confirm-desc", className: "sc-confirm-desc" }, `删除 ${cName} 会移除其配置；其使用的凭证（如有）由其他位置管理，将会保留。`),
+            React.createElement("button", { className: "sc-confirm-close", type: "button", "aria-label": "关闭", onClick: closeConfirm }, "×"),
+            React.createElement("div", { className: "sc-confirm-actions" },
+              React.createElement("button", { className: "sc-button sc-button-secondary", type: "button", disabled: locked, onClick: closeConfirm }, "取消"),
+              React.createElement("button", {
+                className: "sc-button-danger sc-delete-confirm", type: "button", "data-role": "confirm-remove", "data-entry-id": model.confirmId,
+                disabled: locked, onClick: () => confirmRemoveClick(model.confirmId),
+              }, `删除 ${cName}`),
+            ),
+          ),
+        );
+      })() : null;
+      // V4-2：模态焦点与键盘后备——打开时焦点入弹窗容器（真实 Tab 首轮即落在框内控件）；
+      // Escape 走 document 级后备（覆盖焦点不在框内的场景）；关闭后焦点回归触发移除钮。
+      React.useEffect(() => {
+        if (!model.confirmId) return undefined;
+        const el = confirmDialogRef.current;
+        if (el && typeof el.focus === "function") el.focus({ preventScroll: true });
+        return undefined;
+      }, [model.confirmId]);
+      React.useEffect(() => {
+        if (!model.confirmId) return undefined;
+        const onDocKey = (ev) => {
+          if (ev.key === "Escape") { ev.stopPropagation?.(); setModel((m) => (m.confirmId ? { ...m, confirmId: null } : m)); }
+        };
+        document.addEventListener("keydown", onDocKey);
+        return () => document.removeEventListener("keydown", onDocKey);
+      }, [model.confirmId]);
+      React.useEffect(() => {
+        if (model.confirmId) return undefined;
+        const t = removeTriggerRef.current;
+        removeTriggerRef.current = null;
+        if (t && typeof t.focus === "function") Promise.resolve().then(() => { if (typeof document !== "undefined" && document.contains(t)) t.focus(); });
+        return undefined;
+      }, [model.confirmId]);
       return React.createElement("div", { "data-plugin-id": PROVIDER_ID, "data-slot": SECTION_SLOT },
       React.createElement("section", {
         className: "sc-panel",
@@ -1682,8 +1759,9 @@ globalThis.window?.__ModuleLoader__?.load({
         cardNodes.length ? React.createElement("div", { className: "sc-card-list" }, ...cardNodes) : null,
         React.createElement("div", { className: "sc-add-block" }, React.createElement("div", { className: "sc-add-actions" }, React.createElement("button", { className: "sc-add-button", type: "button", "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "＋ 添加搜索工具")), addPicker),
         confirm,
-        // SET-006：全局保存钮删除——所有落盘走条目级提交或离散动作（O-8 迁移面）。
-        editor,
+        // V4-1：未提交新建条目（幽灵）无外层卡片——编辑器仍置于新建块之后（不入列表，V3-1）；
+        // 持久条目的编辑器在其归属卡片内渲染（见 cardNodes），此处零重复。
+        editorEntry && !persistedIdSet.has(editorEntry.id) ? editor : null,
       ));
     }
 
