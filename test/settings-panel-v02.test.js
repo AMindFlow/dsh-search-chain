@@ -391,6 +391,215 @@ test("SET-002 移除：需二次确认才移除；确认后该条消失，其余
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
+// V4 用户反馈（Issue #50）：编辑器就地展开（V4-1）+ 删除确认模态（V4-2）
+// 迁移面（docs/specs/draft/settings-panel-v4-feedback.md §实现迁移面）：卡片归属/相邻/互斥/关闭、
+// 模态文案+role、×/取消/Escape 三条零变更关闭路径、删除持久化。
+// 像素级 token 与几何面（A-046/A-068/B-027…B-032）由 scripts/oracle-style-50.mjs 真机验收，此处只钉渲染树可观察面。
+// ────────────────────────────────────────────────────────────────────────────────────────
+
+/** 找到 target 节点在渲染树中的父节点（不存在返回 null）。 */
+function parentNodeOf(tree, target) {
+  let found = null;
+  const visit = (n, parent) => {
+    if (found !== null || n === null || n === undefined || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) visit(c, parent); return; }
+    if (n === target) { found = parent; return; }
+    visit(n.children, n);
+  };
+  visit(tree, null);
+  return found;
+}
+
+/** 当前树上的 alertdialog（删除模态）节点。 */
+function modalNode(tree) {
+  const all = allNodes(tree);
+  return all.find((n) => n.props && n.props.role === "alertdialog") ?? null;
+}
+
+/** 节点自身可见文本（仅 children 文本叶子；不含 aria-label 等 props——用于按钮文本精确匹配）。 */
+function leafText(node) {
+  const out = [];
+  const visit = (n) => {
+    if (n === null || n === undefined || typeof n === "boolean") return;
+    if (typeof n === "string" || typeof n === "number") { out.push(String(n)); return; }
+    if (Array.isArray(n)) { n.forEach(visit); return; }
+    visit(n.children);
+  };
+  visit(node);
+  return out.join("");
+}
+
+/** 收集子树内全部按钮节点。 */
+function buttonsUnder(node) {
+  const acc = [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (n.type === "button") acc.push(n);
+    (n.children || []).forEach(walk);
+  };
+  walk(node);
+  return acc;
+}
+
+test("V4-1 就地展开：编辑首条后编辑器是其归属卡片的直接子节点、条目行（.sc-card-row）的下一兄弟；卡序不变、列表尾部/卡片外无编辑器", async () => {
+  await withEnv(makeSettingsState(), async () => {
+    const { view, tree } = await openPanel("v4-inline-open");
+    const t = await step(view, tree, ROLE.edit, { entryId: "tavily-a" });
+    assert.equal(byRole(t, ROLE.editor).length, 1, "编辑器恰一个");
+    const ed = one(t, ROLE.editor);
+    const card = one(t, ROLE.card, { entryId: "tavily-a" });
+    assert.equal(parentNodeOf(t, ed), card, "编辑器须是归属卡片的直接子节点");
+    const kids = card.children.filter((c) => c !== null && c !== undefined);
+    const rowIdx = kids.findIndex((c) => c.props && c.props.className === "sc-card-row");
+    assert.equal(rowIdx, 0, "卡片首个子节点须为条目行 .sc-card-row");
+    assert.equal(kids[rowIdx + 1], ed, "编辑器须紧随条目行（DOM nextElementSibling 语义）");
+    assert.deepEqual(cardOrder(t), idsOf(fixtureEntries()), "展开不得改变卡片顺序");
+    for (const e of byRole(t, ROLE.editor)) {
+      const p = parentNodeOf(t, e);
+      assert.ok(p && p.props && p.props["data-role"] === ROLE.card, "编辑器不得游离于卡片外/列表尾部");
+    }
+  });
+});
+
+test("V4-1 切换互斥：从首条切到第二条，唯一编辑器整体移入新卡片；旧卡片无编辑器残留、卡序不变", async () => {
+  await withEnv(makeSettingsState(), async () => {
+    const { view, tree } = await openPanel("v4-inline-switch");
+    let t = await step(view, tree, ROLE.edit, { entryId: "tavily-a" });
+    assert.equal(parentNodeOf(t, one(t, ROLE.editor)).props["data-entry-id"], "tavily-a", "前置：编辑器在首条卡片");
+    t = await step(view, t, ROLE.edit, { entryId: "exa-b" });
+    assert.equal(byRole(t, ROLE.editor).length, 1, "切换后仍恰一个编辑器（不得复制/残留）");
+    const ed = one(t, ROLE.editor);
+    const card = one(t, ROLE.card, { entryId: "exa-b" });
+    assert.equal(parentNodeOf(t, ed), card, "编辑器须移入新目标卡片（直接子节点）");
+    const kids = card.children.filter((c) => c !== null && c !== undefined);
+    const rowIdx = kids.findIndex((c) => c.props && c.props.className === "sc-card-row");
+    assert.equal(kids[rowIdx + 1], ed, "移动后仍为条目行的下一兄弟");
+    const oldCard = one(t, ROLE.card, { entryId: "tavily-a" });
+    assert.equal(oldCard.children.filter((c) => c && c.props && c.props["data-role"] === ROLE.editor).length, 0, "旧卡片不得残留编辑器");
+    assert.deepEqual(cardOrder(t), idsOf(fixtureEntries()), "切换编辑不得改变卡片顺序");
+  });
+});
+
+test("V4-1 新建（幽灵）仍不入列：新建编辑器不属于任何卡片（列表尾部呈现），持久卡片零编辑器", async () => {
+  await withEnv(makeSettingsState(), async () => {
+    const { view, tree } = await openPanel("v4-ghost-editor");
+    const t = await addType(view, tree, "brave");
+    assert.equal(byRole(t, ROLE.editor).length, 1, "新建编辑器在场");
+    assert.equal(cardOrder(t).length, 3, "幽灵不入列（V3-1）");
+    const p = parentNodeOf(t, one(t, ROLE.editor));
+    assert.ok(!p || !p.props || p.props["data-role"] !== ROLE.card, "新建编辑器不得属于任何卡片");
+    for (const card of byRole(t, ROLE.card)) {
+      assert.equal(card.children.filter((c) => c && c.props && c.props["data-role"] === ROLE.editor).length, 0, "持久卡片不得含新建编辑器");
+    }
+  });
+});
+
+test("V4-2 模态契约：移除点击后呈 alertdialog（aria-modal、标题「删除 {名称}?」、正文逐字、右上 ×、取消 secondary、危险「删除 {名称}」带 confirm-remove 锚点）；旧内联文案废止", async () => {
+  await withEnv(makeSettingsState(), async () => {
+    const { view, tree } = await openPanel("v4-modal-contract");
+    const t = await step(view, tree, ROLE.remove, { entryId: "exa-b" });
+    const dlg = modalNode(t);
+    assert.ok(dlg, "须有 alertdialog");
+    assert.equal(dlg.props["aria-modal"], "true", "aria-modal=true");
+    const byId = (id) => dlg.children.find((c) => c && c.props && c.props.id === id);
+    const titleId = dlg.props["aria-labelledby"], descId = dlg.props["aria-describedby"];
+    assert.ok(titleId && descId, "须有 aria-labelledby/aria-describedby");
+    assert.equal(textOf(byId(titleId)), "删除 Exa 备用?", "标题须逐字「删除 {名称}?」");
+    assert.equal(
+      textOf(byId(descId)),
+      "删除 Exa 备用 会移除其配置；其使用的凭证（如有）由其他位置管理，将会保留。",
+      "正文须逐字（含凭证保留声明）",
+    );
+    const allBtns = buttonsUnder(dlg);
+    const close = allBtns.find((b) => leafText(b) === "×");
+    const cancel = allBtns.find((b) => leafText(b) === "取消");
+    const danger = allBtns.find((b) => b.props["data-role"] === ROLE.confirmRemove);
+    assert.ok(close, "须有右上 ×（文本恰为 ×）");
+    assert.ok(cancel && /secondary/i.test(cancel.props.className || ""), "取消须为 secondary 变体");
+    assert.ok(danger, "须有 confirm-remove 危险钮");
+    assert.equal(leafText(danger), "删除 Exa 备用", "危险钮文本须逐字「删除 {名称}」");
+    assert.ok(/danger/i.test(danger.props.className || ""), "危险钮须带 danger 类");
+    assert.equal(danger.props["data-entry-id"], "exa-b", "危险钮须携带目标条目 id");
+    const flatText = textOf(dlg);
+    assert.ok(!flatText.includes("移除该搜索工具"), "旧内联确认文案不得残留");
+    assert.ok(!flatText.includes("确认移除"), "旧「确认移除」按钮文案不得残留");
+    void byId;
+  });
+});
+
+test("V4-2 关闭零变更（×）：× 关闭模态后卡片完整、零 mutate", async () => {
+  await withEnv(makeSettingsState(), async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("v4-close-x");
+    let t = await step(view, tree, ROLE.remove, { entryId: "exa-b" });
+    const dlg = modalNode(t);
+    const close = buttonsUnder(dlg).find((b) => leafText(b) === "×");
+    assert.ok(close, "模态须有 × 按钮");
+    t = await act(view, () => fire(close, "onClick"));
+    assert.equal(modalNode(t), null, "× 须关闭模态");
+    assert.deepEqual(cardOrder(t), idsOf(fixtureEntries()), "× 关闭不得删除任何条目");
+    assert.equal(fetchStub.mutates().length, 0, "× 关闭不得产生 settings/mutate");
+  });
+});
+
+test("V4-2 关闭零变更（取消）：取消关闭模态后卡片完整、零 mutate", async () => {
+  await withEnv(makeSettingsState(), async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("v4-close-cancel");
+    let t = await step(view, tree, ROLE.remove, { entryId: "exa-b" });
+    const dlg = modalNode(t);
+    const cancel = buttonsUnder(dlg).find((b) => leafText(b) === "取消");
+    assert.ok(cancel, "模态须有取消按钮");
+    t = await act(view, () => fire(cancel, "onClick"));
+    assert.equal(modalNode(t), null, "取消须关闭模态");
+    assert.deepEqual(cardOrder(t), idsOf(fixtureEntries()), "取消不得删除任何条目");
+    assert.equal(fetchStub.mutates().length, 0, "取消不得产生 settings/mutate");
+  });
+});
+
+test("V4-2 关闭零变更（Escape）：弹窗键位 Escape 关闭模态后卡片完整、零 mutate", async () => {
+  await withEnv(makeSettingsState(), async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("v4-close-escape");
+    let t = await step(view, tree, ROLE.remove, { entryId: "exa-b" });
+    const dlg = modalNode(t);
+    t = await act(view, () => fire(dlg, "onKeyDown", { key: "Escape", preventDefault() {} }));
+    assert.equal(modalNode(t), null, "Escape 须关闭模态");
+    assert.deepEqual(cardOrder(t), idsOf(fixtureEntries()), "Escape 关闭不得删除任何条目");
+    assert.equal(fetchStub.mutates().length, 0, "Escape 关闭不得产生 settings/mutate");
+  });
+});
+
+test("V4-2 危险确认删除持久化：模态危险钮确认 → 恰一次 mutate（仅该条目 unset 语义）、目标消失且其余完整、savedNotice「已保存设置。」", async () => {
+  const state = makeSettingsState();
+  await withEnv(state, async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("v4-confirm-delete");
+    let t = await step(view, tree, ROLE.remove, { entryId: "exa-b" });
+    const dlg = modalNode(t);
+    const n0 = fetchStub.mutates().length;
+    t = await step(view, t, ROLE.confirmRemove, { entryId: "exa-b" });
+    assert.equal(fetchStub.mutates().length, n0 + 1, "确认删除须产生恰一次 settings/mutate");
+    const ops = opsOf(fetchStub.mutates().at(-1));
+    assert.ok(ops.length >= 1 && ops.every((op) => /entries/.test(JSON.stringify(op.path))), "删除载荷须指向条目键（entries 路径）");
+    assert.deepEqual(idsOf(stateEntries(state)), ["tavily-a", "bing-c"], "目标条目须移除、其余保留（即时持久）");
+    assert.equal(modalNode(t), null, "确认后模态须关闭");
+    assert.match(textOf(one(t, ROLE.saveStatus)), /^已保存设置。$/, "离散删除 savedNotice 须为「已保存设置。」（SET-007）");
+  });
+});
+
+test("V4-2 Escape 让位：编辑器在编且模态开启时，编辑器侧 Escape 不得取消编辑器（顶层模态优先）；零 mutate", async () => {
+  await withEnv(makeSettingsState(), async ({ fetchStub }) => {
+    const { view, tree } = await openPanel("v4-escape-priority");
+    let t = await step(view, tree, ROLE.edit, { entryId: "tavily-a" });
+    t = await act(view, () => fire(one(t, ROLE.field, { field: "name" }), "onChange", { target: { value: "Tavily 草稿", checked: "Tavily 草稿" } }));
+    t = await step(view, t, ROLE.remove, { entryId: "exa-b" });
+    assert.ok(modalNode(t), "前置：模态已开启");
+    t = await act(view, () => fire(one(t, ROLE.editor), "onKeyDown", { key: "Escape", preventDefault() {} }));
+    assert.equal(byRole(t, ROLE.editor).length, 1, "模态开启时编辑器侧 Escape 不得取消编辑器（焦点/键盘优先权归顶层模态）");
+    assert.equal(one(t, ROLE.field, { field: "name" }).props.value, "Tavily 草稿", "在编字段草稿不得被误清");
+    assert.equal(fetchStub.mutates().length, 0, "全程零 mutate");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────
 // 第 3 组 · SET-003 拖动与键盘排序；reorder 编码（D-1）
 // ────────────────────────────────────────────────────────────────────────────────────────
 
