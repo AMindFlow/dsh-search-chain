@@ -1856,6 +1856,71 @@ test("五轮补充(codex 同族残留收口，lead (z) 点头) timeoutCommit 有
   });
 });
 
+test("六轮(codex P2) 末位继承条目删除：显式持久化 user.entries=[]（恰一条 mutate、reload 不复活、非继承路径不变）", async () => {
+  const onlyEntry = { id: "base-only", type: "bing", name: "继承单条", enabled: true };
+  // (a) 纯继承单条目（user={} 缺失 entries）：确认删除必须产出 set entries=[] 并落盘
+  {
+    const state = makeSettingsState({
+      user: {},
+      base: { entries: [clone(onlyEntry)], useOfficialDeepSeekSearch: true, timeoutMs: 25000 },
+    });
+    await withEnv(state, async ({ fetchStub }) => {
+      const { view, tree } = await openPanel("r6-inh-last-remove");
+      assert.deepEqual(cardOrder(tree), ["base-only"], "前置：继承单条在卡片列表可见");
+      const n0 = fetchStub.mutates().length;
+      let t = await step(view, tree, ROLE.remove, { entryId: "base-only" });
+      t = await step(view, t, ROLE.confirmRemove, { entryId: "base-only" });
+      const ms = fetchStub.mutates().slice(n0);
+      assert.equal(ms.length, 1, "末位继承条目删除必须恰产生一条 mutate（旧版 toOps([], []) 零操作）");
+      assert.deepEqual(opsOf(ms[0]), [{ op: "set", path: ["entries"], value: [] }], "必须显式落盘 user.entries = []（不得退化为空操作或 unset）");
+      assert.ok(Array.isArray(state.user.entries) && state.user.entries.length === 0, "user 层 entries 必须显式落为空数组 []");
+      assert.deepEqual({ ...state.base, ...state.user }.entries, [], "合并生效配置 entries 必须为空数组（不再参与搜索）");
+      assert.deepEqual(cardOrder(t), [], "删除后卡片列表为空");
+      one(t, ROLE.empty);
+      assert.equal(textOf(one(t, ROLE.saveStatus)), "已保存设置。", "离散删除成功提示不变");
+      // reload 读回不复活
+      const reopened = await openPanel("r6-inh-last-remove-reopen");
+      assert.deepEqual(cardOrder(reopened.tree), [], "reload 重开面板后继承条目不得复活");
+      one(reopened.tree, ROLE.empty);
+    });
+  }
+  // (b) user 含其他键但缺失 entries（如仅设 timeoutMs）时删除末位继承条目：只写 entries=[]，保留既有 user 键
+  {
+    const state = makeSettingsState({
+      user: { timeoutMs: 30000 },
+      base: { entries: [clone(onlyEntry)], useOfficialDeepSeekSearch: true, timeoutMs: 25000 },
+    });
+    await withEnv(state, async ({ fetchStub }) => {
+      const { view, tree } = await openPanel("r6-inh-last-remove-with-other-keys");
+      let t = await step(view, tree, ROLE.remove, { entryId: "base-only" });
+      t = await step(view, t, ROLE.confirmRemove, { entryId: "base-only" });
+      const ms = fetchStub.mutates();
+      assert.equal(ms.length, 1, "恰一条 mutate");
+      assert.deepEqual(opsOf(ms[0]), [{ op: "set", path: ["entries"], value: [] }], "载荷仅 set entries=[]");
+      assert.deepEqual(state.user, { timeoutMs: 30000, entries: [] }, "保留 user 层其他键且显式落盘 entries=[]");
+      assert.deepEqual(cardOrder(t), [], "页内视图为空");
+    });
+  }
+  // (c) 非继承单条目（user 层已有 entries=[onlyEntry]）：保持既有 D-1 单行 unset 路径不变
+  {
+    const state = makeSettingsState({
+      user: { entries: [clone(onlyEntry)], useOfficialDeepSeekSearch: true, timeoutMs: 25000 },
+      base: {},
+    });
+    await withEnv(state, async ({ fetchStub }) => {
+      const { view, tree } = await openPanel("r6-user-last-remove");
+      let t = await step(view, tree, ROLE.remove, { entryId: "base-only" });
+      t = await step(view, t, ROLE.confirmRemove, { entryId: "base-only" });
+      const ms = fetchStub.mutates();
+      assert.equal(ms.length, 1, "非继承单条删除恰一条 mutate");
+      assert.deepEqual(opsOf(ms[0]), [{ op: "unset", path: ["entries", "0"] }], "非继承路径保持 D-1 unset entries.0 语义不变");
+      assert.deepEqual(state.user.entries, [], "user 层 entries 为 []");
+      const reopened = await openPanel("r6-user-last-remove-reopen");
+      assert.deepEqual(cardOrder(reopened.tree), [], "reload 后不复活");
+    });
+  }
+});
+
 // ────────────────────────────────────────────────────────────────────────────────────────
 // 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
 // ────────────────────────────────────────────────────────────────────────────────────────

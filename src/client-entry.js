@@ -1230,6 +1230,9 @@ globalThis.window?.__ModuleLoader__?.load({
       // 五轮修复（codex 复审 P2）：继承条目的移除同样落盘——user 层行按原路径单行 unset（载荷不变）；
       // 继承行（base 层）则把移除后的有效列表整单具化进 user 层（遮蔽 base，该行从有效视图消失）；
       // 旧版对继承行 idx===-1 静默零 ops（页内删卡后读回条目复活=数据不一致）。
+      // 六轮修复（codex P2）：当 base 仅剩单条且 user.entries 缺失时，不能把缺失传成 { entries: [] } 给 toOps，
+      // 否则 toOps({ entries: [] }, { entries: [] }) 产出零 ops；须以实际 user 层（缺失传 {}）起算，显式写入
+      // user.entries = []（{ op: "set", path: ["entries"], value: [] }）遮蔽 base。
       const confirmRemoveClick = (entryId) => {
         if (lockRef.current) return;
         draftCache.delete(entryId);
@@ -1248,7 +1251,8 @@ globalThis.window?.__ModuleLoader__?.load({
           const list = effectiveEntriesOf(m);
           const idx = list.findIndex((e) => e.id === entryId);
           if (idx < 0) return [];
-          return toOps({ entries: list.filter((e) => e.id !== entryId) }, { entries: user });
+          const hasUserEntries = isPlainObject(m && m.user) && Array.isArray(m.user.entries);
+          return toOps({ entries: list.filter((e) => e.id !== entryId) }, hasUserEntries ? { entries: user } : {});
         }, "已保存设置。");
       };
 
