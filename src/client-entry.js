@@ -1755,7 +1755,7 @@ globalThis.window?.__ModuleLoader__?.load({
             onBlur: timeoutCommit,
             onKeyDown: (ev) => { if (ev.key === "Enter") { ev.preventDefault?.(); timeoutCommit(ev); } }, // 二轮修复：回车提交同样取实时 DOM 值
           }),
-          React.createElement("p", { className: "sc-official-hint" }, "单个工具请求的最长等待；超过后回退到列表中下一个工具。"),
+          React.createElement("p", { className: "sc-official-hint" }, "单次搜索的共享总预算；按剩余时间与剩余启用工具数均分给各次尝试，单条超时或失败后在剩余总预算内回退到下一个工具。"),
         ),
         // v3 用户反馈（V3-1 无占位行）：空状态判据=已持久条目视图（有效列表）——新建编辑器开启期间
         // 草稿含幽灵行，但持久视图仍空 → 空状态与新建编辑器同屏呈现（列表恒等于持久视图）。

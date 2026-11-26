@@ -1921,6 +1921,22 @@ test("六轮(codex P2) 末位继承条目删除：显式持久化 user.entries=[
   }
 });
 
+test("六轮(codex P2) 超时提示文案：如实描述单次搜索共享总预算与剩余时间均分语义（12/18 提示档样式不变）", async () => {
+  await withEnv(makeSettingsState(), async () => {
+    const { tree } = await openPanel("r6-timeout-hint");
+    const timeoutRow = one(tree, ROLE.timeout);
+    const hintNode = allNodes(timeoutRow).find(
+      (n) => n.type === "p" && typeof n.props?.className === "string" && n.props.className.includes("sc-official-hint"),
+    );
+    assert.ok(hintNode, "超时行须保留 sc-official-hint 提示节点（12/18 提示档样式不变）");
+    const hint = textOf(hintNode);
+    for (const re of [/单次搜索/, /共享总预算/, /剩余/, /均分/, /启用工具/, /回退/]) {
+      assert.match(hint, re, `超时提示须包含关键语义 ${re}`);
+    }
+    assert.doesNotMatch(hint, /单个工具请求/, "不得再承诺「单个工具请求」独占超时");
+  });
+});
+
 // ────────────────────────────────────────────────────────────────────────────────────────
 // 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
 // ────────────────────────────────────────────────────────────────────────────────────────
