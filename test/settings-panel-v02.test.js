@@ -54,7 +54,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  BUNDLE_SLOT,
   ROLE,
   SECTION_ID,
   SECTION_ORDER,
@@ -679,7 +678,7 @@ test("SET-003 保存后读回：移动两次后保存恰一次 mutate，宿主�
 });
 
 test("SET-003 toOps 契约扩展：重排不得抛错；经权威 reducer 应用后得到合并后的目标顺序", async () => {
-  const contract = await loadBundleContract("contract-reorder");
+  const contract = await loadSectionContract("contract-reorder");
   const current = { entries: fixtureEntries(), useOfficialDeepSeekSearch: true, timeoutMs: 25000 };
   const target = [fixtureEntries()[2], fixtureEntries()[0], fixtureEntries()[1]];
   const merged = contract.merge({ entries: target, useOfficialDeepSeekSearch: true, timeoutMs: 25000 }, clone(current));
@@ -694,7 +693,7 @@ test("SET-003 toOps 契约扩展：重排不得抛错；经权威 reducer 应用
 });
 
 test("SET-003 D-1 编码：重排的 ops 只触及位置变化的下标，且 set 值不含秘密键", async () => {
-  const contract = await loadBundleContract("encoding");
+  const contract = await loadSectionContract("encoding");
   const current = { entries: fixtureEntries(), useOfficialDeepSeekSearch: true, timeoutMs: 25000 };
   const target = [fixtureEntries()[0], fixtureEntries()[2], fixtureEntries()[1]]; // 仅 1、2 下标交换
   const merged = contract.merge({ entries: target, useOfficialDeepSeekSearch: true, timeoutMs: 25000 }, clone(current));
@@ -708,7 +707,7 @@ test("SET-003 D-1 编码：重排的 ops 只触及位置变化的下标，且 se
 });
 
 test("SET-003 D-1 代价（钉）：下标变化的条目残留的内联 apiKey 随重排被剥离；未移动条目的残留键保持不动", async () => {
-  const contract = await loadBundleContract("residual");
+  const contract = await loadSectionContract("residual");
   const entries = fixtureEntries();
   entries[0].apiKey = SYNTH_KEY; // 未移动（下标 0 保持）
   entries[1].apiKey = SYNTH_KEY; // 移动（下标 1 与 2 交换）
@@ -722,7 +721,7 @@ test("SET-003 D-1 代价（钉）：下标变化的条目残留的内联 apiKey 
 });
 
 test("SET-003 字段级 diff 守卫：仅改名（无重排）时 ops 只触及该条目的 name 字段，不整体改写列表或条目", async () => {
-  const contract = await loadBundleContract("field-diff");
+  const contract = await loadSectionContract("field-diff");
   const current = { entries: fixtureEntries(), useOfficialDeepSeekSearch: true, timeoutMs: 25000 };
   const target = fixtureEntries();
   target[1].name = "Exa 改名";
@@ -1970,18 +1969,23 @@ test("六轮(codex P2) 超时提示文案：如实描述单次搜索共享总预
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────
-// 辅助：bundle 页 contract（merge/toOps 内联纯函数，BCF-004）
+// 辅助：设置区 contract（merge/toOps 内联纯函数；#80 后配置入口唯一，bundle 槽反回归钉）
 // ────────────────────────────────────────────────────────────────────────────────────────
 
-async function loadBundleContract(tag) {
+async function loadSectionContract(tag) {
   const regs = await importSelfRegister(tag);
   assert.equal(regs.length, 1, "自注册须恰 1 次");
   const { React } = (await import("./helpers/settings-panel-v02.js")).makeHookReact();
   const product = regs[0].factory((spec) => (spec === "react" ? React : undefined));
   const h = makeLiveCtx();
   product.apply(h.ctx);
-  const rec = h.mountSlot(BUNDLE_SLOT);
-  assert.ok(rec, `须经 ${BUNDLE_SLOT} 登记 bundle 配置区（BCF-001）`);
+  // #80 反回归钉：详情页 bundle 配置入口已退役，任何时点不得再注入 plugins.bundle.config。
+  assert.ok(
+    h.injects.every((x) => x.name !== "plugins.bundle.config"),
+    "#80：配置入口唯一归设置页，不得注入 plugins.bundle.config 槽",
+  );
+  const rec = h.mountSlot(SECTION_SLOT);
+  assert.ok(rec, `须经 ${SECTION_SLOT} 登记「网页搜索链」设置区（SET-001）`);
   const contract = rec.Component.contract;
   assert.ok(contract && typeof contract.merge === "function" && typeof contract.toOps === "function", "组件须挂 Component.contract = { merge, validate, toOps }");
   return contract;

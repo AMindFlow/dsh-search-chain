@@ -1,7 +1,7 @@
 // Issue #48 v0.2 设置面板 oracle 共享替身（仅测试用，不属于实现）。
 //
 // 零 DOM、零真实网络、零真实定时器：fetch、host.call 与 console 均为记录型替身；渲染用 fake hook-React
-// （白名单 hook，同 client-bundle-config.test.js 惯例）。本文件只钉可观察行为，不钉实现内部结构。
+// （白名单 hook 惯例承自已退役的 bundle 配置测试）。本文件只钉可观察行为，不钉实现内部结构。
 //
 // ─── 测试侧约定（实现须满足；规格未定义 DOM 契约，见交付报告「规格缺口」）────────────────
 //   C-1 渲染树 = React.createElement 产物 { type, props, children }。
@@ -11,7 +11,7 @@
 //       开关的当前值 = props.checked（boolean）。
 //   C-4 宿主 host 半通道：闭包符号 host（runtime builtin：host.call(method, args?)）。
 //       静态 ctx 无 host 服务（[C3]）；本替身以 globalThis.host 模拟并记录调用，面板操作零调用。
-//   C-5 settings RPC（bundle-config-ui.md [C8]）：请求 envelope
+//   C-5 settings RPC（通道钉承自历史 bundle-config-ui [C8]，规格退役后由本 helper 与 settings-ui.md 继续承担）
 //       { type:"client-request", method, rpcId, payload:{ args } }；
 //       describe 的 args 恰为 {}；mutate 的 args 为 { ns:"search-chain", ops, expectedRevision }。
 //       回包 { ok, result:{ namespaces:[{ ns, revision, base, user }] } } 或 { ok:false, error:{ code } }。
@@ -24,7 +24,6 @@ import assert from "node:assert/strict";
 
 export const PACKAGE_ID = "dsh-search-chain";
 export const SECTION_SLOT = "settings.section";
-export const BUNDLE_SLOT = "plugins.bundle.config";
 export const SECTION_ID = "search-chain";
 export const SECTION_ORDER = 30;
 export const SECTION_TITLE = "网页搜索链";
