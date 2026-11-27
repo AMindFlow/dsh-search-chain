@@ -38,5 +38,5 @@
 
 ## 设计决定
 
-- 传输使用插件自己的 undici dispatcher。直连用独立 `Agent`，固定代理用 `ProxyAgent`。PAC 实现复用能够隔离求值和中止的现成实现。 [undici ProxyAgent](https://github.com/nodejs/undici/blob/main/docs/docs/api/ProxyAgent.md)
+- 传输使用插件自己的 dispatcher（装配面注入，[A4 接缝](../../../src/transport.js)：条目路由标记经注入 fetch 的 `init.route` 传递）。口径出入注（实现落地，Issue #61）：直连与 PAC 判定直连维持宿主 `globalThis.fetch` 出站，不另建独立 undici `Agent`；固定代理与 PAC 命中代理用 undici `ProxyAgent`，按 `proxyUrl` 缓存复用（同址共用连接池），卸载时 `closeAll` 释放。`ProxyAgent` 以 `proxyTunnel: true` 建隧（明文 http 目标亦走 CONNECT，行为统一、代理控制面只见 CONNECT），代理 URL 携带 `user:pass` 时凭据只用于 CONNECT 的 `Proxy-Authorization`，不入日志与错误文本。undici 8 形态：dispatcher 是 `RequestInit` 的 undici 特定项，经 `init` 传入。本条决策来源为 Issue #61 用户指令（本版本交付可用代理）；原「直连用独立 `Agent`」口径自此作废。PAC 实现复用能够隔离求值和中止的现成实现。 [undici ProxyAgent](https://github.com/nodejs/undici/blob/main/docs/docs/api/ProxyAgent.md)
 - 设置值使用宿主设置表单；凭据复用 dsh 托管服务。只有为旧版项兼容且托管读取无法提供对应层时，才用现成 YAML 解析器只读 `$DSH_HOME/.credentials.yaml`。
