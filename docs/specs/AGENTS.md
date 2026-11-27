@@ -18,6 +18,7 @@
 | dsh 注册、安装与回退 | [dsh-integration.md](draft/dsh-integration.md) |
 | 搜索配置区域与交互 | [settings-ui.md](draft/settings-ui.md) |
 | 配置、凭据、代理与直连 | [config-network.md](draft/config-network.md) |
+| 配置写闸对齐读闸 | [config-write-gate.md](draft/config-write-gate.md) |
 | 首期工具目录 | [providers.md](draft/providers.md) |
 | OpenAI 搜索适配 | [openai.md](draft/openai.md) |
 | Tavily 搜索适配 | [tavily.md](draft/tavily.md) |
