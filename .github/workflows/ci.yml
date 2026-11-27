@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# 同一 PR/分支的 push 与 PR 事件共用一个跑位：后到者取消在跑者。
+# T10-1 堆帽竞态实测：两个 test job 同 runner 并行时 RSS 兜底闸会先于 V8 OOM 落地（三次复现，均重跑即绿）。
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: test
