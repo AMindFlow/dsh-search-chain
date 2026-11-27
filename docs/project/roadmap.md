@@ -14,4 +14,5 @@ Gemini 展示验证与其余适配器开发可以并行。Bing RSS 已用公开�
 ## 状态
 
 - **v0.1.0 已发布（2026-11-27）**：前三阶段完成，验收记录见 [releases/v0.1.0.md](releases/v0.1.0.md)。DSH-004 热重载与发布验收经真机 oracle（run-31）与官方 profile 实装验收；GMI-002 展示验证在真机 run 系列完成。
-- 后续：#64（OS 级 worker 配额）、#45（配置写入不变量差集）、市场索引发布渠道（参照 dsh-auto-retitle gist 模式）、R8 用量提示。
+- **#64 进行中（PR 候选，darwin OS 级隔离已实现）**：`src/transport.js` 已按 [pac-worker-os-sandbox.md](../specs/draft/pac-worker-os-sandbox.md) 为 PAC worker 落地 macOS `sandbox-exec` 最小权限包裹（能力探测+缓存、禁止写盘/联网/fork、保留继承 IPC 与 PID 语义，不可用/嵌套沙箱回退直 spawn；明确不做 `RLIMIT_AS`），待 PR 复核与宿主 Electron 运行时最终验收。
+- 后续：#45（配置写入不变量差集）、市场索引发布渠道（参照 dsh-auto-retitle gist 模式）、R8 用量提示。
