@@ -51,6 +51,19 @@
 - **来源** 用户实测反馈 + Issue #56 评论。
 - **验收** 打开新增表单，观测下拉框全部 8 个选项 `textContent` 均等于对应纯厂商名且不含「（」「计费」；观测 `.sc-billing-hint`（`data-role="billing-hint"`）存在且等于当前选中厂商（默认 `openai`）的 `billing` 原文；切换厂商（如 `exa` → `bing` 及遍历全部 keyed/bing 类型）后，观测 `.sc-billing-hint` 文本实时联动更新为对应厂商 `billing` 原文；切换去编辑任一已持久条目，观测编辑器内不存在 `.sc-billing-hint`。
 
+## V5-7 代理配置暴露
+
+- **要求** 编辑器（新建与编辑两条路径都显示）在既有表单字段之后新增高级折叠区：`<details class="sc-advanced">`，`<summary>` 文本「网络代理（高级）」；区内含 label「代理」+ 输入框（`class="sc-input"`、`data-role="proxy-field"`、`data-field="proxy"`、`data-entry-id`=当前编辑条目 id）+ 一行小字说明「留空=直连；填 http(s)://host:port；PAC 填 pac:http(s)://…」。三态语义：输入值以 `pac:` 开头 → 存 `{ pac: 去前缀后 URL }`；其余非空 → 存 URL 字符串；留空 = 直连（删除字段）。**只写不回显**（CFG-002 类 key 政策，含认证参数）：条目已持久 proxy 时，输入框 `value` 必须为空字符串、`placeholder="已配置（输入新值覆盖，清空并提交=删除）"`、元素带 `data-configured="true"`；未配置时 `placeholder="留空=直连"`。任何渲染路径不得把 proxy 值（含 user:pass）写进 DOM 文本或属性。提交语义：输入未被触碰 → 条目原 proxy 字段原样保留（undefined 保留 undefined、原值保留原值）；触碰后空串 → 提交时删除该条目 proxy 字段；触碰后非空 → 按上述形态写入。`normalizeProxy`（`src/client-entry.js` 内联纯函数面）是唯一校验权威，错误文案原样透出到既有保存错误面（编辑器动作行上方 `role=alert`）。keyless 条目（bing）同样可配代理，与 `editorCredInputs` 凭据逻辑正交（上轮 P2 修复语义保持）。保存成功后折叠区随编辑器关闭收起；再次进入编辑器回到「未触碰 + 已配置态」placeholder。
+- **来源** 用户 2026-11-26 指令（本版本交付可用代理）+ Issue #58（#57 后续：面板暴露条目级代理配置，CFG-001 UI 缺口）；范围钉：本单只做面板暴露三态输入与只写不回显，出站实现由 #61 承接。
+- **验收** `test/settings-panel-proxy-ui.test.js` 八用例（GPT-6 Luna 惯例替身，复用 `test/helpers/settings-panel-v02.js`）：a) 新建与编辑两条路径的编辑器都存在高级区与 proxy 字段（初始未触碰 + 未配置态 placeholder「留空=直连」）；b) 新建填 `http://127.0.0.1:8192` 保存 → 持久条目 `.proxy` 为该字符串（恰一次 mutate）；c) 编辑填 `pac:http://x/y.pac` 保存 → 条目 `.proxy` 为 `{ pac: "http://x/y.pac" }`；d) 编辑已含 proxy 的条目 → 输入框 `value===""`、`data-configured=="true"`、placeholder 含「已配置」，且渲染树（文本与全部 props 字符串）不含该 URL 文本；e) 不触碰输入直接保存 → proxy 原值原样保留；f) 触碰并清空提交 → 条目无 proxy 字段；g) 非法值（如 `127.0.0.1:8192` 缺协议）→ 保存报错含 normalizeProxy 文案（「必须是绝对 HTTP(S) URL」）且不落配置（零 mutate、原值不变）；h) bing 条目配 proxy 保存 → 持久条目有 proxy、无 `credentialRef`/`key` 字段。
+
+设计决定：
+
+- 代理输入明文缓冲为模型级 `proxyTexts`（entryId → 文本），与 `model.keys` 同生命周期（仅触碰后建档；成功提交/显式取消清除；后台读回与切换条目不清）；不进 SET-008 草稿缓存（缓存记录 shape 不变）。
+- 提交候选经 `candidateEntriesFor` 新增 proxyIntent 第三语义（null=原样保留 / {proxy}=覆盖 / {removeProxy}=删除）；与 `editorCredInputs` 正交。绑定守卫 `singleEntryDiff` 的 `sameRow` 判据不变（proxy 不参与行身份比对）。
+- 实时校验门 `editorBlock` 同样纳入触碰后的代理值（与名称门/凭据门同判据）；非法值期间提交钮禁用，提交时兜底同判据，错误经既有保存错误面原样透出。
+- 说明行使用专用类 `.sc-proxy-hint`（不复用 `.sc-billing-hint`）——V5-6 判据钉「编辑路径零 `.sc-billing-hint` 节点」，专用类实现零迁移。
+
 ## §目录影响清单（转 Luna 勘定）
 
 - **废止**：风格锁定 SPC-025 目标面（内嵌类型 picker `.sc-picker` / `.sc-picker-item` / title / billing 及其 CSS）与一切「点添加 → 点 picker 项」形态的判据步骤；picker 控件与 CSS 随 V5-2 移除。
