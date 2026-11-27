@@ -13,8 +13,10 @@
 // 常量本地镜像（同步义务）：与 test/helpers/contract.js 中 CONFIG_CODES.PAC_* 与 ENTRY_CODES 同步，
 // 修改任一值须同时修改 contract.js 并在同一 PR 说明。
 
-import { execFile, spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { carriesPassthroughCode, readBoundedText } from "./constants.js";
 
 const PAC_CODES = Object.freeze({
@@ -33,11 +35,13 @@ const ENTRY_PROXY_CODE = "ENTRY_PROXY";
  */
 const PAC_EVAL_WALL_LIMIT_MS = 2000;
 /**
- * 两层内存边界（工单 12b 裁定）：
+ * 两层内存边界与 OS 级最小权限沙箱（工单 12b + #64）：
  * 1) 脚本可控堆内存 = 24 MiB 硬限（--max-old-space-size=24，V8 即时 SIGABRT）。
  * 2) PAC_WORKER_RSS_LIMIT_KIB = 144 * 1024 = 进程 RSS 兜底闸。
- * 串行链 + URL 结果缓存下 PAC 求值本就罕见事件；Electron-as-node 底座物理下限 ~64 MiB，
- * OS 级配额 #64 承接更紧上界。
+ * 3) darwin 平台经能力探测通过后以 /usr/bin/sandbox-exec -p <profile> 包裹 worker（#64，
+ *    禁 file-write* / network* / process-fork，仅放行 execPath realpath 执行、最小读/映射面与继承 IPC）；
+ *    探测失败或非 darwin 回退现状直 spawn。明确不做 RLIMIT_AS / ulimit -v（V8 指针压缩启动即需
+ *    mmap 数 GiB 虚存，见 docs/specs/draft/pac-worker-os-sandbox.md）。
  */
 const PAC_WORKER_HEAP_LIMIT_MB = 24;
 /**
@@ -50,6 +54,257 @@ const PAC_WORKER_HEAP_LIMIT_MB = 24;
 const PAC_WORKER_RSS_LIMIT_KIB = 144 * 1024;
 const PAC_WORKER_RSS_POLL_MS = 25;
 const PAC_WORKER_PATH = fileURLToPath(new URL("./pac-eval-worker.js", import.meta.url));
+const SANDBOX_EXEC_PATH = "/usr/bin/sandbox-exec";
+const PAC_SANDBOX_PROBE_TIMEOUT_MS = 2000;
+const pacSandboxProbeCache = new Map();
+
+function hasUnsafeSbplChars(value) {
+  return typeof value !== "string" || value.length === 0 || /[\0\r\n]/.test(value);
+}
+
+function escapeSbplString(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function collectAncestorPaths(targetPath, outSet) {
+  let current = path.resolve(targetPath);
+  for (;;) {
+    outSet.add(current);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+}
+
+function collectPathAndSymlinkAncestors(targetPath, outSet, realpathFn = realpathSync) {
+  const resolved = path.resolve(targetPath);
+  collectAncestorPaths(resolved, outSet);
+  const root = path.parse(resolved).root;
+  const rel = resolved.slice(root.length);
+  const parts = rel.split(path.sep).filter(Boolean);
+  let prefix = root;
+  for (const part of parts) {
+    prefix = path.join(prefix, part);
+    try {
+      const realPrefix = realpathFn(prefix);
+      collectAncestorPaths(realPrefix, outSet);
+    } catch {
+      // 中间路径尚未存在或无法解析时交由外层 realpath 决定是否回退
+    }
+  }
+}
+
+/**
+ * 构造 macOS Seatbelt（sandbox-exec）最小权限 profile（#64，OSB-002）。
+ * 返回 null 表示路径异常或无法解析 realpath，调用方应回退直 spawn。
+ */
+export function buildPacSandboxProfile({
+  execPath = process.execPath,
+  workerPath = PAC_WORKER_PATH,
+  cwd,
+  realpathFn = realpathSync,
+  existsFn = existsSync,
+} = {}) {
+  if (hasUnsafeSbplChars(execPath) || hasUnsafeSbplChars(workerPath)) return null;
+  let execRealpath;
+  let workerRealpath;
+  try {
+    execRealpath = realpathFn(execPath);
+    workerRealpath = realpathFn(workerPath);
+  } catch {
+    return null;
+  }
+  if (hasUnsafeSbplChars(execRealpath) || hasUnsafeSbplChars(workerRealpath)) return null;
+
+  const packageRootRealpath = path.dirname(path.dirname(workerRealpath));
+  if (hasUnsafeSbplChars(packageRootRealpath)) return null;
+
+  const metadataPaths = new Set(["/", "/private", "/private/var", "/private/var/db"]);
+  collectPathAndSymlinkAncestors(execPath, metadataPaths, realpathFn);
+  collectAncestorPaths(execRealpath, metadataPaths);
+  collectPathAndSymlinkAncestors(workerPath, metadataPaths, realpathFn);
+  collectAncestorPaths(workerRealpath, metadataPaths);
+  collectAncestorPaths(packageRootRealpath, metadataPaths);
+  if (typeof cwd === "string" && cwd.length > 0 && !hasUnsafeSbplChars(cwd)) {
+    collectPathAndSymlinkAncestors(cwd, metadataPaths, realpathFn);
+  }
+
+  let frameworksRealpath = null;
+  const execDir = path.dirname(execRealpath);
+  const contentsDir = path.dirname(execDir);
+  if (path.basename(execDir) === "MacOS" && path.basename(contentsDir) === "Contents") {
+    const candidate = path.join(contentsDir, "Frameworks");
+    try {
+      if (existsFn(candidate)) {
+        const realFrameworks = realpathFn(candidate);
+        if (!hasUnsafeSbplChars(realFrameworks)) {
+          frameworksRealpath = realFrameworks;
+          collectPathAndSymlinkAncestors(candidate, metadataPaths, realpathFn);
+          collectAncestorPaths(realFrameworks, metadataPaths);
+        }
+      }
+    } catch {
+      frameworksRealpath = null;
+    }
+  }
+
+  const metadataLiterals = [...metadataPaths]
+    .sort()
+    .map((p) => `  (literal "${escapeSbplString(p)}")`)
+    .join("\n");
+
+  const readSubpaths = [
+    packageRootRealpath,
+    ...(frameworksRealpath ? [frameworksRealpath] : []),
+    "/usr/lib",
+    "/usr/share",
+    "/System/Library",
+    "/System/Cryptexes",
+    "/System/Volumes/Preboot/Cryptexes",
+    "/Library/Apple",
+    "/private/var/db",
+    "/dev",
+  ]
+    .map((p) => `  (subpath "${escapeSbplString(p)}")`)
+    .join("\n");
+
+  const mapExecSubpaths = [
+    ...(frameworksRealpath ? [frameworksRealpath] : []),
+    "/usr/lib",
+    "/System/Library",
+    "/System/Cryptexes",
+    "/System/Volumes/Preboot/Cryptexes",
+    "/Library/Apple",
+  ]
+    .map((p) => `  (subpath "${escapeSbplString(p)}")`)
+    .join("\n");
+
+  const profile = [
+    "(version 1)",
+    "(deny default)",
+    "(deny file-write*)",
+    "(deny network*)",
+    "(deny process-fork)",
+    `(allow process-exec (literal "${escapeSbplString(execRealpath)}"))`,
+    "(allow file-read-metadata",
+    metadataLiterals,
+    '  (subpath "/usr/lib")',
+    '  (subpath "/usr/share")',
+    '  (subpath "/System/Library")',
+    '  (subpath "/System/Cryptexes")',
+    '  (subpath "/System/Volumes/Preboot/Cryptexes")',
+    '  (subpath "/Library/Apple")',
+    '  (subpath "/private/var/db")',
+    '  (subpath "/dev")',
+    ")",
+    "(allow file-read*",
+    '  (literal "/")',
+    `  (literal "${escapeSbplString(execRealpath)}")`,
+    readSubpaths,
+    ")",
+    "(allow file-map-executable",
+    `  (literal "${escapeSbplString(execRealpath)}")`,
+    mapExecSubpaths,
+    ")",
+    "(allow dynamic-code-generation)",
+    "(allow sysctl-read)",
+    "(allow mach-lookup",
+    '  (global-name "com.apple.system.logger")',
+    '  (global-name "com.apple.system.notification_center")',
+    '  (global-name "com.apple.CoreServices.coreservicesd")',
+    ")",
+  ].join("\n");
+
+  return { profile, execRealpath, workerRealpath, packageRootRealpath, frameworksRealpath };
+}
+
+function safeCwd() {
+  try {
+    return process.cwd();
+  } catch {
+    return undefined;
+  }
+}
+
+function defaultProbeSandbox({ sandboxExecPath, profile, execRealpath, workerPath }) {
+  if (!existsSync(sandboxExecPath)) return false;
+  const workerHref = pathToFileURL(workerPath).href;
+  const probeCode = `import vm from "node:vm"; import ${JSON.stringify(workerHref)}; if (vm.runInNewContext("1+1") !== 2) process.exit(2); process.exit(0);`;
+  try {
+    execFileSync(
+      sandboxExecPath,
+      [
+        "-p",
+        profile,
+        execRealpath,
+        `--max-old-space-size=${PAC_WORKER_HEAP_LIMIT_MB}`,
+        "--input-type=module",
+        "-e",
+        probeCode,
+      ],
+      {
+        stdio: "ignore",
+        env: { ELECTRON_RUN_AS_NODE: "1" },
+        timeout: PAC_SANDBOX_PROBE_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+      },
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolvePacWorkerSpawnSpec(sandboxOpt) {
+  const platform = sandboxOpt?.platform ?? process.platform;
+  const execPath = sandboxOpt?.execPath ?? process.execPath;
+  const workerPath = sandboxOpt?.workerPath ?? PAC_WORKER_PATH;
+  const sandboxExecPath = sandboxOpt?.sandboxExecPath ?? SANDBOX_EXEC_PATH;
+  const cache = sandboxOpt?.cache ?? pacSandboxProbeCache;
+  const probeFn = sandboxOpt?.probe ?? defaultProbeSandbox;
+
+  const direct = {
+    command: execPath,
+    args: [`--max-old-space-size=${PAC_WORKER_HEAP_LIMIT_MB}`, workerPath],
+    sandboxed: false,
+  };
+
+  if (platform !== "darwin") return direct;
+
+  const built = buildPacSandboxProfile({
+    execPath,
+    workerPath,
+    cwd: safeCwd(),
+  });
+  if (!built) return direct;
+
+  const cacheKey = `${platform}\0${sandboxExecPath}\0${built.execRealpath}\0${built.workerRealpath}`;
+  let supported = cache.get(cacheKey);
+  if (supported === undefined) {
+    try {
+      supported = Boolean(
+        probeFn({
+          sandboxExecPath,
+          profile: built.profile,
+          execRealpath: built.execRealpath,
+          workerPath,
+          workerRealpath: built.workerRealpath,
+        }),
+      );
+    } catch {
+      supported = false;
+    }
+    cache.set(cacheKey, supported);
+  }
+
+  if (!supported) return direct;
+
+  return {
+    command: sandboxExecPath,
+    args: ["-p", built.profile, built.execRealpath, `--max-old-space-size=${PAC_WORKER_HEAP_LIMIT_MB}`, workerPath],
+    sandboxed: true,
+  };
+}
 
 /**
  * 模块级全局在飞闸（跨 transport 共享）：共用单一并发槽位排队等待，未取得槽位前不得 spawn 新 worker。
@@ -263,7 +518,7 @@ function pickPacRoute(directive) {
  * @returns {{ fetch: (url: string, init?: object) => Promise<any>, close: () => void, closeAll: () => void }}
  */
 export function createEntryTransport(entry, deps = {}) {
-  const { fetch: fetchFn, clock, log, spawnProcess = spawn } = deps;
+  const { fetch: fetchFn, clock, log, spawnProcess = spawn, sandbox: sandboxOpt } = deps;
   if (typeof fetchFn !== "function") throw new TypeError("createEntryTransport 需要注入 fetch");
 
   const label = describeEntry(entry);
@@ -371,7 +626,8 @@ export function createEntryTransport(entry, deps = {}) {
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
 
       try {
-        child = spawnProcess(process.execPath, [`--max-old-space-size=${PAC_WORKER_HEAP_LIMIT_MB}`, PAC_WORKER_PATH], {
+        const spawnSpec = resolvePacWorkerSpawnSpec(sandboxOpt);
+        child = spawnProcess(spawnSpec.command, spawnSpec.args, {
           stdio: ["ignore", "ignore", "ignore", "ipc"],
           env: { ELECTRON_RUN_AS_NODE: "1" },
           cwd: undefined,
