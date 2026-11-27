@@ -3,7 +3,11 @@
 // 生产装配（WP6）：搜索链由 search.js 的 createSearchChain 接线（适配器见 src/backends/*，传输见 transport.js）；
 // 设置面板（WP12）不在本文件内实现。
 import { createRequire } from "node:module";
-import { CONFIG_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID, TOOL_TYPES } from "./constants.js";
+// Issue #61：代理出站 dispatcher 由 undici 承载（规格 config-network.md 运输段「插件自己的 undici dispatcher」，
+// 本版本交付可用代理：直连维持 globalThis.fetch，代理路由经 ProxyAgent 隧道；直连不另建 undici Agent 的
+// 口径出入在规格文中注明，决策来源 = Issue #61 用户指令）。
+import { fetch as undiciFetch, ProxyAgent } from "undici";
+import { CONFIG_CODES, ENTRY_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID, TOOL_TYPES } from "./constants.js";
 import { ConfigError, readConfig } from "./config.js";
 import { createLazyHostOfficial } from "./official.js";
 import { createSearchChain } from "./search.js";
@@ -143,16 +147,81 @@ const SYSTEM_CLOCK = Object.freeze({
 const NOOP_LOG = () => {};
 
 /**
- * 生产出站 fetch（零依赖，全局 fetch）。直连路由照常出站；需要代理/PAC 命中代理的路由需要
- * 分发器实现（本插件零依赖，不引入 undici），故此类路由以 PROXY_UNSUPPORTED 显式失败、零出站，
- * 绝不静默改走直连（CFG-001）。代理错误码透传由 transport/后端协同面处理，本函数只负责失败不放行。
+ * 创建生产出站 fetch（Issue #61：装配面代理出站落地，PROXY_UNSUPPORTED 退役）。
+ * 路由标记 init.route 由 src/transport.js 产出（A4 接缝），此处只按 route.kind 选 dispatcher：
+ *  - kind=direct（含 PAC 判定直连）→ globalThis.fetch 照常出站（本版本决策：直连不另建 undici
+ *    Agent，维持宿主全局 fetch 的既有连接与行为；规格运输段的口径出入已在 config-network.md 注明）；
+ *  - kind=proxy/https-proxy（含 PAC 命中代理）→ undici fetch + ProxyAgent 隧道出站（proxyTunnel 强制
+ *    CONNECT，明文 http 目标亦走隧道：行为统一、代理控制面只见 CONNECT）；ProxyAgent 按 proxyUrl
+ *    缓存复用（多条目共用同一代理地址即共用一个连接池），不得静默改走直连（CFG-001）。
+ *    undici 8 形态：dispatcher 经 init 传入（RequestInit 的 undici 特定项）；代理 URL 带 user:pass 时
+ *    ProxyAgent 自动以 Proxy-Authorization: Basic 用于 CONNECT 控制面（凭据不进入日志/错误文本，
+ *    endpointOf 脱敏）。
+ * 代理连接故障不经本函数归因：undici 的原始错误交回 transport.mapFetchError，按 ENTRY_PROXY 阶段码
+ * 落定（FB-005 区分代理/直连），链按 FB-001 降级下一条。
+ * 生命周期：closeAll 释放全部代理连接池（CFG-004 卸载不残留连接），幂等、单 agent 失败不阻塞其余。
+ * closeAll 与在途搜索协调（PR #62 P2，codex 复审 discussion_r4709786331）：closeAll 只关闭当时已
+ * 存在的 ProxyAgent；若在途搜索（await 凭据/准备降级条目）其后到达 fetchFn，agentFor 会在已清空/
+ * 已关闭的池上再造新 agent——唯一一次卸载清理已完成，该连接池永不被管理。故 closeAll 同步置 closed
+ * 位（置位先于遍历关闭，幂等）；closed 后代理路由 fetch 在选择 dispatcher 前显式拒绝（agentFor 不
+ * 再可达），拒绝错误复用既有 ENTRY_PROXY 阶段码经 mapFetchError 的 carriesPassthroughCode 透传
+ * （不新增公开码）；direct 路由维持放行——globalThis.fetch 无插件自有连接池，无池残留/清理问题，
+ * 仅代理路由（插件自有 agent 池）是拒绝对象。
+ * 测试观察面（P2 断言）：返回值携带 non-enumerable 只读 agentCount（池内 agent 数 = map size）。
+ * @returns {Function & { closeAll: () => Promise<void>, readonly agentCount: number }} fetch(url, init)；init 形状同 transport 注入
  */
-function productionFetch(url, init = {}) {
-  const { route, ...rest } = init ?? {};
-  if (route && route.kind !== "direct") {
-    return Promise.reject(Object.assign(new Error("代理路由暂不可用"), { code: "PROXY_UNSUPPORTED" }));
+export function createProductionFetch() {
+  const proxyAgents = new Map(); // proxyUrl → undici ProxyAgent（按地址缓存复用）
+  // P2（discussion_r4709786331）：卸载协调位。closeAll 同步置位后，任何其后到达的代理路由 fetch
+  // 在选择 dispatcher 前被拒绝，卸载后不得再有新建 agent 逃逸于关闭之外。
+  let closed = false;
+  function agentFor(proxyUrl) {
+    let agent = proxyAgents.get(proxyUrl);
+    if (!agent) {
+      // proxyTunnel:true 强制 CONNECT 隧道（含明文 http 目标），使 http/https 目标出站行为一致、
+      // 代理控制面只见 CONNECT（供应商 key 只随隧道内转发请求出现，绝不进 CONNECT 头）——
+      // Issue #61 判据「本地 CONNECT fixture 数到真实隧道请求」所要求的行为。
+      agent = new ProxyAgent({ uri: proxyUrl, proxyTunnel: true });
+      proxyAgents.set(proxyUrl, agent);
+    }
+    return agent;
   }
-  return globalThis.fetch(url, rest);
+  const fetchFn = (url, init = {}) => {
+    const { route, ...rest } = init ?? {};
+    if (route && (route.kind === "proxy" || route.kind === "https-proxy")) {
+      // P2（discussion_r4709786331）：closed 后代理路由在选择 dispatcher（agentFor）前显式拒绝——
+      // 不得在已清空/已关闭的池上再造新 agent 逃逸于管理之外。CFG-001 红线：绝不静默改走直连。
+      if (closed) {
+        const err = new Error("插件已卸载，代理出站不可用");
+        // 复用既有 ENTRY_PROXY 阶段码（不新增公开码）：mapFetchError 经 carriesPassthroughCode
+        // 原样透传，链按 FB-005 归代理阶段（attempts 原码 ENTRY_PROXY）。
+        err.code = ENTRY_CODES.PROXY;
+        return Promise.reject(err);
+      }
+      // undici 8：dispatcher 是 RequestInit 的 undici 特定项（经 init 传入；旧版第三参形态已移除，
+      // 第三参会被静默忽略并退回直连全局 dispatcher——不得回归）。
+      return undiciFetch(url, { ...rest, dispatcher: agentFor(route.proxyUrl) });
+    }
+    // closed 后 direct 路由维持放行（决策）：globalThis.fetch 是宿主全局出站，无插件自有连接池，
+    // 不存在池残留/无人管理问题；插件自有资源仅代理路由的 ProxyAgent 池，故卸载后仅代理路由拒绝。
+    return globalThis.fetch(url, rest);
+  };
+  fetchFn.closeAll = async () => {
+    if (closed) return; // 幂等：重复调用安全（唯一一次卸载清理只完成一次，不二次遍历已关闭 agent）。
+    closed = true;
+    const agents = [...proxyAgents.values()];
+    proxyAgents.clear(); // 先清空池：其后 agentFor 不再可能从池命中，代理路由 fetch 亦已被 closed 位拒绝。
+    // agent.close 等待其在途请求结算后关闭池（在途请求沿用原配置完成或取消，不随卸载中断）；
+    // 单 agent 失败不阻塞其余（CFG-004）。
+    await Promise.all(agents.map((agent) => agent.close().catch(() => {})));
+  };
+  // 测试观察面（P2 断言，non-enumerable 不污染函数自身）：当前池内 agent 数（map size）。
+  Object.defineProperty(fetchFn, "agentCount", {
+    configurable: true,
+    enumerable: false,
+    get: () => proxyAgents.size,
+  });
+  return fetchFn;
 }
 
 /** 宿主凭据服务（ctx.get("credentials")）：服务缺失时解析即失败（条目级 CREDENTIALS），不静默视作无 key。 */
@@ -260,9 +329,10 @@ export function createSearchProvider(deps) {
 }
 
 /**
- * bundle 入口。在 ctx.effect 内注册 provider；cleanup 反注册并释放链（DSH-001）。
+ * bundle 入口。在 ctx.effect 内注册 provider；cleanup 反注册并释放链与代理出站连接池（DSH-001/CFG-004）。
  * testDeps 仅供测试注入（A4/A8）：{ chain, official, officialRouteId, routeOf, clock, fetch, log }。
- * 生产调用只有两参：链为 createSearchChain 生产接线，clock 为系统时钟，fetch 为全局 fetch（直连）。
+ * 生产调用只有两参：链为 createSearchChain 生产接线，clock 为系统时钟，fetch 为 createProductionFetch
+ * 的生产出站（直连 globalThis.fetch + 代理 undici ProxyAgent，Issue #61）。
  */
 /**
  * 配置端口（readConfig / writeConfig 的 settings 参数），纯接线、可单独测试。
@@ -280,7 +350,8 @@ export function createSettingsPort(ctx) {
 export function apply(ctx, _loadSnapshot, testDeps = {}) {
   // 测试注入面（A4/A8）：clock / fetch / log 缺省即生产实现；生产调用只有两参。
   const clock = testDeps.clock ?? SYSTEM_CLOCK;
-  const fetchFn = testDeps.fetch ?? productionFetch;
+  // 每装载实例一份生产出站（代理连接池随本实例释放，不跨实例共享，CFG-004）。
+  const fetchFn = testDeps.fetch ?? createProductionFetch();
   const log = testDeps.log ?? NOOP_LOG;
   const settings = createSettingsPort(ctx);
   // getConfig(raw)：raw 缺省时自读（链独立使用的默认行为）；传入 raw 时只从该份活配置规范化，不再读宿主。
@@ -304,6 +375,8 @@ export function apply(ctx, _loadSnapshot, testDeps = {}) {
       } finally {
         provider.release();
       }
+      // CFG-004：卸载随释放代理出站连接池（closeAll 幂等；测试替身 fetch 无 closeAll 时安全跳过）。
+      return fetchFn.closeAll?.();
     };
   });
 }
