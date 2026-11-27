@@ -4,7 +4,7 @@
 //  - 每个已保存条目对应一个 transport，只负责该条目的路由（直连 / 固定代理 / PAC），不改宿主或全局代理。
 //  - 路由结果以 init.route 标记交给注入的 fetch（A4 接缝），真正的出站 dispatcher 由装配层提供。
 //  - PAC：仅在该条目真正出站时下载（直连 GET，保留查询参数）；成功脚本缓存到本 transport，释放即失效；
-//    每次求值在隔离的 vm 上下文中进行，只暴露 FindProxyForURL 所需的参数和标准助手。
+//    每次未命中结果缓存的求值在可独立终止的短命子进程内进行，子进程内保留隔离 vm 上下文与标准助手。
 //  - 取消：signal 已中止或在途中止时以 AbortError 落定，不再向注入 fetch 发出新请求。
 //  - 错误与日志只含条目名、代理 host:port、PAC host:port 与脱敏原因码，绝不含 key、代理认证、
 //    带认证参数的 URL 或原始报错响应体（CFG-003）。
@@ -13,7 +13,8 @@
 // 常量本地镜像（同步义务）：与 test/helpers/contract.js 中 CONFIG_CODES.PAC_* 与 ENTRY_CODES 同步，
 // 修改任一值须同时修改 contract.js 并在同一 PR 说明。
 
-import vm from "node:vm";
+import { execFile, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { carriesPassthroughCode, readBoundedText } from "./constants.js";
 
 const PAC_CODES = Object.freeze({
@@ -26,8 +27,95 @@ const CONFIG_INVALID = "CONFIG_INVALID";
 const ENTRY_NETWORK_CODE = "ENTRY_NETWORK";
 const ENTRY_PROXY_CODE = "ENTRY_PROXY";
 
-/** 同步 PAC 求值的 CPU 护栏（防止死循环卡住进程）。这不是等待时长，不属于 FB-003 的预算。 */
-const PAC_EVAL_CPU_LIMIT_MS = 500;
+/**
+ * 子进程 PAC 求值的墙上时钟上限（毫秒，≈ spawn 开销 + 子进程内三段各 500ms 护栏 + IPC 余量）。
+ * 这不是等待时长，不属于 FB-003 的预算。
+ */
+const PAC_EVAL_WALL_LIMIT_MS = 2000;
+/**
+ * 两层内存边界（工单 12b 裁定）：
+ * 1) 脚本可控堆内存 = 24 MiB 硬限（--max-old-space-size=24，V8 即时 SIGABRT）。
+ * 2) PAC_WORKER_RSS_LIMIT_KIB = 144 * 1024 = 进程 RSS 兜底闸。
+ * 串行链 + URL 结果缓存下 PAC 求值本就罕见事件；Electron-as-node 底座物理下限 ~64 MiB，
+ * OS 级配额 #64 承接更紧上界。
+ */
+const PAC_WORKER_HEAP_LIMIT_MB = 24;
+/**
+ * 进程 RSS 兜底闸（144 MiB，RSS 是唯一真值口径）：
+ * 三运行时实测 worker 底座 RSS 40~63.5 MiB（Electron-as-node 更肥，物理下限 ~64 MiB），
+ * 24 MiB 堆 OOM 自爆前瞬时峰值 96~124 MiB；96 MiB 级阈值会抢杀 V8 自检路径（T10-1）。
+ * 144 MiB 覆盖「底座 + 堆自爆峰值 + 采样超射」，仍远低于 256 MiB 级外部内存爆发，
+ * 用于捕获未来任何堆帽外分配面。
+ */
+const PAC_WORKER_RSS_LIMIT_KIB = 144 * 1024;
+const PAC_WORKER_RSS_POLL_MS = 25;
+const PAC_WORKER_PATH = fileURLToPath(new URL("./pac-eval-worker.js", import.meta.url));
+
+/**
+ * 模块级全局在飞闸（跨 transport 共享）：共用单一并发槽位排队等待，未取得槽位前不得 spawn 新 worker。
+ * 并发上限为 1（单 worker 受脚本可控堆 24 MiB 硬限 + 进程 RSS 144 MiB 兜底闸约束）。
+ */
+let pacWorkerSlot = null;
+const pacSlotWaiters = [];
+
+function acquirePacSlot(signal, pendingWaiters) {
+  if (signal?.aborted) return Promise.reject(abortError());
+  if (pacWorkerSlot === null) {
+    const token = {};
+    pacWorkerSlot = token;
+    return Promise.resolve(token);
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
+      pendingWaiters.delete(waiter);
+      const idx = pacSlotWaiters.indexOf(waiter);
+      if (idx >= 0) pacSlotWaiters.splice(idx, 1);
+    };
+    const waiter = {
+      grant(token) {
+        if (settled) return false;
+        if (signal?.aborted) {
+          settled = true;
+          cleanup();
+          reject(abortError());
+          return false;
+        }
+        settled = true;
+        cleanup();
+        resolve(token);
+        return true;
+      },
+      close() {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）"));
+      },
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortError());
+    };
+    pendingWaiters.add(waiter);
+    pacSlotWaiters.push(waiter);
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function releasePacSlot(token) {
+  if (pacWorkerSlot !== token) return;
+  while (pacSlotWaiters.length > 0) {
+    const next = pacSlotWaiters.shift();
+    const nextToken = {};
+    pacWorkerSlot = nextToken;
+    if (next.grant(nextToken)) return;
+  }
+  pacWorkerSlot = null;
+}
 
 /** 传输层错误。message 已脱敏，不含原始 cause。 */
 export class TransportError extends Error {
@@ -134,64 +222,6 @@ function classifyProxy(entry) {
   throw new TransportError(CONFIG_INVALID, `条目${describeEntry(entry)}的代理配置类型无效`);
 }
 
-// ── PAC 标准助手（纯字符串语义，不触网）────────────────────────────────────────
-
-function isPlainHostName(host) {
-  return typeof host === "string" && !host.includes(".");
-}
-
-function dnsDomainIs(host, domain) {
-  if (typeof host !== "string" || typeof domain !== "string") return false;
-  return host.toLowerCase().endsWith(domain.toLowerCase());
-}
-
-function shExpMatch(text, pattern) {
-  if (typeof text !== "string" || typeof pattern !== "string") return false;
-  let re = "^";
-  for (const ch of pattern) {
-    if (ch === "*") re += ".*";
-    else if (ch === "?") re += ".";
-    else re += ch.replace(/[.+^${}()|[\]\\/-]/g, "\\$&");
-  }
-  return new RegExp(`${re}$`).test(text);
-}
-
-/**
- * 在隔离上下文中求值 PAC 脚本（CFG-005）。
- * 上下文不含 process/require/module/Buffer 或宿主全局；代码生成（eval/Function）已禁用。
- * @returns {string} FindProxyForURL 返回的指令文本
- */
-function evaluatePac(script, targetUrl, host) {
-  const context = vm.createContext(
-    { isPlainHostName, dnsDomainIs, shExpMatch },
-    { codeGeneration: { strings: false, wasm: false } },
-  );
-  try {
-    new vm.Script(String(script), { filename: "proxy.pac" }).runInContext(context, {
-      timeout: PAC_EVAL_CPU_LIMIT_MS,
-    });
-  } catch {
-    throw new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（脚本无法解析或顶层执行出错）");
-  }
-  if (typeof context.FindProxyForURL !== "function") {
-    throw new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本缺少 FindProxyForURL");
-  }
-  context.__pacUrl = targetUrl;
-  context.__pacHost = host;
-  let directive;
-  try {
-    directive = vm.runInContext("FindProxyForURL(__pacUrl, __pacHost)", context, {
-      timeout: PAC_EVAL_CPU_LIMIT_MS,
-    });
-  } catch {
-    throw new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）");
-  }
-  if (typeof directive !== "string") {
-    throw new TransportError(PAC_CODES.ROUTE_FAILED, "PAC 脚本返回值不是指令文本");
-  }
-  return directive;
-}
-
 /** 校验 host:port，拒绝 userinfo、路径与空端口。 */
 function validHostPort(hp) {
   if (!/^[A-Za-z0-9.-]+:\d{1,5}$/.test(hp)) return false;
@@ -229,11 +259,11 @@ function pickPacRoute(directive) {
 /**
  * 为一个已保存条目创建传输。
  * @param {object} entry 归一化后的条目（含 proxy）
- * @param {{ fetch: (url: string, init: object) => Promise<any>, clock?: { now?: () => number }, log?: (level: string, message: string) => void }} deps
+ * @param {{ fetch: (url: string, init: object) => Promise<any>, clock?: { now?: () => number }, log?: (level: string, message: string) => void, spawnProcess?: typeof spawn }} deps
  * @returns {{ fetch: (url: string, init?: object) => Promise<any>, close: () => void, closeAll: () => void }}
  */
 export function createEntryTransport(entry, deps = {}) {
-  const { fetch: fetchFn, clock, log } = deps;
+  const { fetch: fetchFn, clock, log, spawnProcess = spawn } = deps;
   if (typeof fetchFn !== "function") throw new TypeError("createEntryTransport 需要注入 fetch");
 
   const label = describeEntry(entry);
@@ -243,6 +273,273 @@ export function createEntryTransport(entry, deps = {}) {
   let closed = false;
   /** 成功加载的 PAC 脚本缓存（随本 transport 生命周期，释放即失效）。失败不缓存。 */
   let pacCache = null;
+  /**
+   * 已解析的 PAC 路由缓存（key = `${url}\0${host}`，≥128 条整表清空）。
+   * 仅缓存 pickPacRoute 成功的轻量结构化 route 对象（kind/proxyUrl/viaPac/pacIndex/pacRevision/pacSource），
+   * 不存原始指令文本；命中时直接返回该 route 对象，不重复求值或解析。
+   */
+  const pacResultCache = new Map();
+  /** 在飞 PAC 求值子进程控制器，供 close/closeAll 立即强杀并收敛。 */
+  const activePacWorkers = new Set();
+  /** 本 transport 正在全局配额池等待槽位的求值请求，供 close/closeAll 立即清空并收敛。 */
+  const pendingPacWaiters = new Set();
+  let evalSeq = 0;
+
+  /**
+   * 在可独立终止的子进程边界内求值 PAC 脚本（CFG-005，工单 5）。
+   *
+   * 威胁模型：PAC 脚本来自远端配置（可能恶意、被攻陷或被劫持）。
+   * 为何子进程边界是受支持运行时上唯一可终止方案：在 DSH 内嵌 Electron 44.7（Node 24.21.0）
+   * 实测中，accessor getter 触发的全局读取（如 FindProxyForURL 或 __pacHost 死循环 getter）
+   * 完全不响应 node:vm 的 synchronous timeout，会在进程内永久挂死线程；只有可独立终止的
+   * 子进程边界才能从外部 SIGKILL。
+   * 纵深防御：worker（src/pac-eval-worker.js）内仍保留无宿主对象的隔离 vm 上下文、
+   * codeGeneration:{strings:false,wasm:false} 与三段各 500ms 的 CPU 护栏——普通死循环
+   * 由子内 vm timeout 快速失败，getter 类死循环则由父侧 PAC_EVAL_WALL_LIMIT_MS（2000ms）外杀。
+   *
+   * @returns {Promise<string>} FindProxyForURL 返回的指令文本
+   */
+  function runPacWorker(script, targetUrl, host, signal) {
+    if (signal?.aborted) return Promise.reject(abortError());
+    const evalId = ++evalSeq;
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let receivedOutcome = null;
+      let terminationReason = null; // "timeout" | "rss_limit" | "closed" | "abort" | null
+      let child = null;
+      let watchdog = null;
+      let wallTimer = null;
+      let rssTimer = null;
+      let rssSampling = false;
+      let rssDisabled = false;
+
+      const stopRssWatchdog = () => {
+        if (!rssTimer) return;
+        clearInterval(rssTimer);
+        rssTimer = null;
+      };
+
+      const killWatchdog = () => {
+        if (!watchdog) return;
+        const wd = watchdog;
+        watchdog = null;
+        try {
+          wd.kill();
+        } catch {}
+      };
+
+      const killChild = () => {
+        if (!child) return;
+        try {
+          child.kill("SIGKILL");
+        } catch {}
+      };
+
+      const finish = (err, value) => {
+        if (settled) return;
+        settled = true;
+        if (wallTimer) {
+          clearTimeout(wallTimer);
+          wallTimer = null;
+        }
+        stopRssWatchdog();
+        activePacWorkers.delete(workerHandle);
+        signal?.removeEventListener("abort", onAbort);
+        killWatchdog();
+        if (err) reject(err);
+        else resolve(value);
+      };
+
+      const onAbort = () => {
+        if (settled) return;
+        terminationReason = "abort";
+        killChild();
+        finish(abortError());
+      };
+
+      const workerHandle = {
+        close() {
+          if (settled) return;
+          terminationReason = "closed";
+          killChild();
+          finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）"));
+        },
+      };
+
+      activePacWorkers.add(workerHandle);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
+      try {
+        child = spawnProcess(process.execPath, [`--max-old-space-size=${PAC_WORKER_HEAP_LIMIT_MB}`, PAC_WORKER_PATH], {
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+          env: { ELECTRON_RUN_AS_NODE: "1" },
+          cwd: undefined,
+          signal,
+          killSignal: "SIGKILL",
+        });
+      } catch (err) {
+        if (isAbort(err, signal)) {
+          finish(abortError());
+        } else {
+          finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）"));
+        }
+        return;
+      }
+
+      // 父侧看门狗：防父进程被 SIGKILL 时挂死子进程成为永转 CPU 的孤儿。
+      // PID 复用在 3s 窗口内不可实际达成，且威胁模型是远端 PAC 脚本。
+      if (typeof child?.pid === "number" && child.pid > 0) {
+        try {
+          watchdog = spawn("/bin/sh", ["-c", `sleep 3; kill -9 ${child.pid} 2>/dev/null`], {
+            stdio: "ignore",
+          });
+          watchdog.on("error", () => {});
+          if (typeof watchdog.unref === "function") watchdog.unref();
+        } catch {
+          watchdog = null;
+        }
+
+        // 父进程 RSS 采样看门狗（真·闸）：堆帽只限老生代，外部/未触页之外的实际物理占用以 RSS 为唯一真值。
+        const pidArg = String(child.pid);
+        const sampleRss = () => {
+          if (settled || rssDisabled || rssSampling) return;
+          rssSampling = true;
+          try {
+            execFile("ps", ["-o", "rss=", "-p", pidArg], { encoding: "utf8", timeout: 500 }, (err, stdout) => {
+              rssSampling = false;
+              if (settled) return;
+              if (err) {
+                if (err.code === "ENOENT" || err.code === "EPERM" || err.code === "EACCES") {
+                  rssDisabled = true;
+                  stopRssWatchdog();
+                }
+                return;
+              }
+              const rssKiB = Number.parseInt(String(stdout).trim(), 10);
+              if (Number.isFinite(rssKiB) && rssKiB >= PAC_WORKER_RSS_LIMIT_KIB) {
+                terminationReason = "rss_limit";
+                stopRssWatchdog();
+                killChild();
+              }
+            });
+          } catch (err) {
+            rssSampling = false;
+            if (err?.code === "ENOENT" || err?.code === "EPERM" || err?.code === "EACCES") {
+              rssDisabled = true;
+              stopRssWatchdog();
+            }
+          }
+        };
+        rssTimer = setInterval(sampleRss, PAC_WORKER_RSS_POLL_MS);
+        if (typeof rssTimer.unref === "function") rssTimer.unref();
+      }
+
+      // 墙上时限 PAC_EVAL_WALL_LIMIT_MS 从取得槽位、worker 实际 spawn 后起算（排队时间不计入 2s——
+      // 否则并发链会因排队被误判超时）。
+      wallTimer = setTimeout(() => {
+        if (settled) return;
+        terminationReason = "timeout";
+        killChild();
+      }, PAC_EVAL_WALL_LIMIT_MS);
+
+      child.on("message", (msg) => {
+        if (settled) return;
+        if (msg && typeof msg === "object" && msg.id === evalId && typeof msg.outcome === "string") {
+          receivedOutcome = msg.outcome;
+        }
+      });
+
+      child.on("error", (err) => {
+        if (isAbort(err, signal) || terminationReason === "abort") {
+          finish(abortError());
+          return;
+        }
+        killChild();
+        finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）"));
+      });
+
+      child.on("exit", () => {
+        stopRssWatchdog();
+        killWatchdog();
+      });
+
+      child.on("close", () => {
+        if (terminationReason === "abort" || signal?.aborted) {
+          finish(abortError());
+          return;
+        }
+        if (
+          terminationReason === "timeout" ||
+          terminationReason === "rss_limit" ||
+          terminationReason === "closed" ||
+          receivedOutcome === null
+        ) {
+          finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）"));
+          return;
+        }
+        // 新增失败类别（工单 6）：沙箱密封后逃逸金丝雀自检未通过，归入 EVAL_FAILED，不影响既有三阶段消息。
+        if (receivedOutcome === "E") {
+          finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（沙箱安全自检未通过）"));
+          return;
+        }
+        if (receivedOutcome === "P") {
+          finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（脚本无法解析或顶层执行出错）"));
+          return;
+        }
+        if (receivedOutcome === "N") {
+          finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本缺少 FindProxyForURL"));
+          return;
+        }
+        if (receivedOutcome === "R") {
+          finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）"));
+          return;
+        }
+        if (receivedOutcome === "T") {
+          finish(new TransportError(PAC_CODES.ROUTE_FAILED, "PAC 脚本返回值不是指令文本"));
+          return;
+        }
+        // 新增失败类别（工单 8）：指令长度超过 worker 侧 PAC_DIRECTIVE_MAX_LEN（4096），归入 ROUTE_FAILED。
+        if (receivedOutcome === "L") {
+          finish(new TransportError(PAC_CODES.ROUTE_FAILED, "PAC 脚本返回值超过长度上限"));
+          return;
+        }
+        if (receivedOutcome.startsWith("S")) {
+          finish(null, receivedOutcome.slice(1));
+          return;
+        }
+        finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）"));
+      });
+
+      try {
+        child.send({ id: evalId, script: String(script), url: String(targetUrl), host: String(host) });
+      } catch {
+        if (signal?.aborted) {
+          finish(abortError());
+        } else {
+          killChild();
+          finish(new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）"));
+        }
+      }
+    });
+  }
+
+  async function evaluatePac(script, targetUrl, host, signal) {
+    if (signal?.aborted) throw abortError();
+    if (closed) {
+      throw new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）");
+    }
+    const slotToken = await acquirePacSlot(signal, pendingPacWaiters);
+    try {
+      if (signal?.aborted) throw abortError();
+      if (closed) {
+        throw new TransportError(PAC_CODES.EVAL_FAILED, "PAC 脚本求值失败（FindProxyForURL 运行出错）");
+      }
+      return await runPacWorker(script, targetUrl, host, signal);
+    } finally {
+      releasePacSlot(slotToken);
+    }
+  }
 
   function raise(error) {
     if (typeof log === "function") log("warn", error.message);
@@ -320,10 +617,17 @@ export function createEntryTransport(entry, deps = {}) {
     } catch {
       throw new TransportError(CONFIG_INVALID, `条目${label}的目标地址无效`);
     }
-    const directive = evaluatePac(pac.script, url, host);
-    const picked = pickPacRoute(directive);
-    const route = { kind: picked.kind, viaPac: true, pacIndex: picked.index, pacRevision: pac.revision, pacSource: pac.source };
-    if (picked.proxyUrl !== undefined) route.proxyUrl = picked.proxyUrl;
+    const cacheKey = `${url}\0${host}`;
+    let route = pacResultCache.get(cacheKey);
+    if (route === undefined) {
+      const directive = await evaluatePac(pac.script, url, host, signal);
+      const picked = pickPacRoute(directive);
+      route = { kind: picked.kind, viaPac: true, pacIndex: picked.index, pacRevision: pac.revision, pacSource: pac.source };
+      if (picked.proxyUrl !== undefined) route.proxyUrl = picked.proxyUrl;
+      // 仅缓存 pickPacRoute 成功的已解析路由对象（proxyUrl 经 WHATWG URL 校验规范化，天然有界）。
+      if (pacResultCache.size >= 128) pacResultCache.clear();
+      pacResultCache.set(cacheKey, route);
+    }
     return route;
   }
 
@@ -369,12 +673,18 @@ export function createEntryTransport(entry, deps = {}) {
     close() {
       closed = true;
       pacCache = null;
+      pacResultCache.clear();
+      for (const worker of [...activePacWorkers]) worker.close();
+      for (const waiter of [...pendingPacWaiters]) waiter.close();
     },
 
     /** 同 close（单条目 transport 的释放即全部释放）。幂等。 */
     closeAll() {
       closed = true;
       pacCache = null;
+      pacResultCache.clear();
+      for (const worker of [...activePacWorkers]) worker.close();
+      for (const waiter of [...pendingPacWaiters]) waiter.close();
     },
   };
 }

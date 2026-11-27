@@ -792,6 +792,16 @@ globalThis.window?.__ModuleLoader__?.load({
         background-size: 12px 12px;
       }
       .sc-billing-hint { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+      /* V5-7（Issue #58）：编辑器高级区（<details> 原生折叠，无 display/visibility 隐藏机制；复用既有字号档 12/18）。
+         说明行专用 .sc-proxy-hint（不复用 .sc-billing-hint——V5-6 判据钉「编辑路径零 sc-billing-hint 节点」，
+         换类即零迁移；视觉同档 12/18 tertiary）。 */
+      .sc-advanced { margin: 0; }
+      .sc-advanced summary { font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-label-secondary); cursor: pointer; }
+      .sc-advanced > .sc-field { margin-top: 8px; }
+      .sc-proxy-input-row { display: flex; align-items: center; gap: 8px; }
+      .sc-proxy-input-row .sc-input { flex: 1 1 auto; min-width: 0; }
+      .sc-proxy-input-row .sc-button-secondary { flex: none; }
+      .sc-proxy-hint { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
       .sc-status-node { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
       .sc-status-node[data-state="saved"] { color: var(--dsw-alias-state-success-primary); }
       .sc-status-node[data-state="error"] { color: var(--dsw-alias-state-error-primary); }
@@ -852,6 +862,10 @@ globalThis.window?.__ModuleLoader__?.load({
         revision: undefined,
         draft: { entries: [], useOfficial: true, timeoutText: String(DEFAULT_TIMEOUT_MS) },
         keys: {},
+        // V5-7（Issue #58）：代理输入明文缓冲（entryId → 文本），与 keys 同生命周期——
+        // 仅用户触碰输入后建档（键存在=已触碰）；成功提交/显式取消清除。
+        // 只写不回显：渲染 value 只读本缓冲；条目已持久 proxy 绝不写入任何 DOM。
+        proxyTexts: {},
         editingId: null,
         confirmId: null,
         busy: false,
@@ -1167,6 +1181,24 @@ globalThis.window?.__ModuleLoader__?.load({
         setModel((m) => ({ ...m, editorError: null, keys: { ...m.keys, [id]: value } }));
         if (entry) syncEntryCache(model, id, entry, value);
       };
+      // V5-7（Issue #58）：代理输入变更——只更新明文缓冲并清除该编辑器错误态。
+      // 缓冲不进 SET-008 草稿缓存（缓存记录 shape 不变）；后台读回/切换条目不清缓冲（与 keys 同）。
+      const updateProxyText = (id, value) => {
+        if (lockRef.current) return;
+        setModel((m) => ({ ...m, editorError: null, proxyTexts: { ...m.proxyTexts, [id]: value } }));
+      };
+      // V5-7：代理输入三态意图裁决——缓冲无记录（未触碰）→ null（条目原 proxy 原样保留：
+      // undefined 保留 undefined、原值保留原值）；已触碰 → 空串/纯空白 = 删除 proxy 字段；
+      // "pac:" 前缀 = { pac: 去前缀后文本 }；其余非空 = URL 字符串。normalizeProxy 是唯一校验权威
+      // （形态合法性由候选面 validate 裁决，错误文案经既有保存错误面原样透出）。
+      const proxyIntentOf = (id) => {
+        const text = model.proxyTexts[id];
+        if (typeof text !== "string") return null;
+        const s = text.trim();
+        if (s === "") return { removeProxy: true };
+        if (s.startsWith("pac:")) return { proxy: { pac: s.slice(4) } };
+        return { proxy: s };
+      };
 
       // 顶部官方开关：onChange 即离散提交（仅自身键）。
       // 五轮修复（codex 复审 P2）：比对「变没变」从合并后有效配置取值——继承 base=false 且 user 无覆盖时
@@ -1347,17 +1379,21 @@ globalThis.window?.__ModuleLoader__?.load({
       // 起算——编辑继承条目原位只改该行；新建追加有效列表末尾。旧版只以 user 层起算：继承条目不可见
       // → 编辑继承条目被误走「新建追加」分支、落盘只含该条 → user 层遮蔽整个继承数组（改名 → 只剩它；
       // 新建 → 继承兄弟行全没）。toOps 底仍为 user 层：对空 user 层逐行整条 set = 有效列表整单具化。
-      const candidateEntriesFor = (m, entry, credRef) => {
+      // V5-7（Issue #58）：proxyIntent（见 proxyIntentOf）——null=未触碰（proxy 原样保留）；
+      // {proxy}=覆盖写入；{removeProxy}=删除该字段。与 editorCredInputs 凭据逻辑正交（keyless 条目同样适用）。
+      const candidateEntriesFor = (m, entry, credRef, proxyIntent) => {
         const list = effectiveEntriesOf(m);
         const matched = list.find((e) => sameEntryId(e.id, entry.id)); // #55：持久行 id 可能带首尾空白
         // #55：命中持久行时 patch.id 取原持久行 raw id——trim 后草稿 id 不得改写原持久 id（写回最小字段级 diff）。
         const patch = { id: matched ? matched.id : entry.id, type: entry.type, name: entry.name, enabled: entry.enabled };
         if (credRef) patch.credentialRef = credRef;
+        if (proxyIntent && proxyIntent.proxy !== undefined) patch.proxy = proxyIntent.proxy;
         if (matched) {
           return list.map((e) => {
             if (!sameEntryId(e.id, entry.id)) return e;
             const out = { ...e, ...patch };
             if (!credRef) delete out.credentialRef;
+            if (proxyIntent && proxyIntent.removeProxy) delete out.proxy; // 触碰并清空 = 删除字段（未触碰不动）
             return out;
           });
         }
@@ -1388,6 +1424,9 @@ globalThis.window?.__ModuleLoader__?.load({
         const boundId = entry.id; // 编辑器绑定：本次提交只允许触及该 id 一行
         const { keyVal, writesKey, credRef: initialCredRef } = editorCredInputs(entry, model.keys[boundId]);
         let credRef = initialCredRef;
+        // V5-7（Issue #58）：代理三态意图（未触碰=原样保留/清空=删除/非空=写入）；非法形态由下方
+        // validate（normalizeProxy 权威）拦截，错误文案经 catch 落到既有保存错误面。
+        const proxyIntent = proxyIntentOf(boundId);
         // 四轮修复（B-007/009/019 污染源）：名称门（与实时 editorBlock 同判据；真实 DOM 中禁用钮不可点，
         // 此守卫兜底测试侧直接触发）：空名/纯空白名 → 零出站、编辑器不关、输入不丢（SET-004 失败保留面），
         // 错误于动作行上方 role=alert 呈现（SPC-023/SPC-030）。新建与编辑同一路径同判据。
@@ -1418,7 +1457,7 @@ globalThis.window?.__ModuleLoader__?.load({
               const credResult = unwrap(credResponse);
               if (!credResult.ok) throw new Error(credResult.message || "凭据服务拒绝写入");
             }
-            const candidate = candidateEntriesFor(snap, entry, credRef);
+            const candidate = candidateEntriesFor(snap, entry, credRef, proxyIntent);
             // 绑定守卫：漂移即拒发（可见报错，不得静默覆盖他条目）。
             // 五轮修复（codex 复审 P1 配套）：对照有效持久列表（继承合并视图）裁决——继承条目的候选行
             // 对 base 底板「他行零改动」即放行（旧版对照 user 层：继承编辑被误走新建分支，守卫按长度
@@ -1441,7 +1480,9 @@ globalThis.window?.__ModuleLoader__?.load({
             setModel((m) => {
               const keys = { ...m.keys };
               delete keys[boundId];
-              return { ...m, editorBusy: false, editingId: null, keys, editorError: null, savedNotice: { text: `已保存 ${name}。` } };
+              const proxyTexts = { ...m.proxyTexts };
+              delete proxyTexts[boundId]; // V5-7：成功提交清代理明文缓冲（重开回到「未触碰 + 已配置态」）
+              return { ...m, editorBusy: false, editingId: null, keys, proxyTexts, editorError: null, savedNotice: { text: `已保存 ${name}。` } };
             });
             await load(true); // 单写者：读回必须在队列内下一提交构建 ops 前落定
           } catch (err) {
@@ -1464,9 +1505,11 @@ globalThis.window?.__ModuleLoader__?.load({
         const trigger = restoreFocus.current;
         setModel((m) => {
           const keys = { ...m.keys };
+          const proxyTexts = { ...m.proxyTexts };
           let entries = m.draft.entries;
           if (entry) {
             delete keys[entry.id];
+            delete proxyTexts[entry.id]; // V5-7：取消 ≡ 丢弃——代理明文缓冲同清（与 key 缓冲同语义）
             if (entryIsPersisted(m, entry)) {
               // 五轮修复（codex 复审 P1/P2 配套）：持久值取有效行——继承条目的取消恢复到 base 值；
               // 旧版 entryIsPersisted 对继承条目误判新建（删行=页内丢失继承条目）且此处查不到持久行。
@@ -1482,7 +1525,7 @@ globalThis.window?.__ModuleLoader__?.load({
               entries = entries.filter((e) => e.id !== entry.id); // 新条目：移出草稿即清草稿
             }
           }
-          return { ...m, editingId: null, keys, editorError: null, draft: { ...m.draft, entries } };
+          return { ...m, editingId: null, keys, proxyTexts, editorError: null, draft: { ...m.draft, entries } };
         });
         restoreFocus.current = null;
         if (trigger && typeof trigger.focus === "function") Promise.resolve().then(() => trigger.focus());
@@ -1568,6 +1611,36 @@ globalThis.window?.__ModuleLoader__?.load({
       // 视图（有效持久列表）。草稿仍保留幽灵行（编辑器取值/提交候选/SET-008 缓存链不改），渲染按
       // 持久 id 过滤：打开新建/后台读回/O-6 重开任何时机，页内列表都不出现占位行。
       const editorEntry = model.draft.entries.find((e) => e.id === model.editingId);
+      // V5-7（Issue #58）：条目已持久 proxy 判定（草稿行经 draftFrom 承载 proxy）——驱动
+      // data-configured 与「已配置」placeholder；判定只看存在性，绝不读取/渲染其值（只写不回显）。
+      const entryHasProxy = editorEntry ? (editorEntry.proxy !== undefined && editorEntry.proxy !== null && editorEntry.proxy !== "") : false;
+      const proxyCleared = Boolean(editorEntry && entryHasProxy && model.proxyTexts[editorEntry.id] === "");
+      // 工单 11b（用户裁定纠正·远程 PAC 风险提示）：仅对当前输入缓冲中可判定的「非回环 PAC URL」
+      // （pac:http(s)://<non-loopback>/…，scheme 为 http 或 https 均提示；回环限 localhost/127.0.0.1/::1）
+      // 给出纯文本警示，不禁用不拦截。
+      // 用户裁定语义：回环=用户本机自装工具属自担信任（不提示）；公网/域名式=提示脚本内容可被远程服务器随时更改，
+      // TLS（https）仅保护传输层，不改变脚本内容可变风险。
+      // 限制说明：只写不回显策略下，既配置态仅有存在性（data-configured + placeholder），无法在不破坏
+      // 「绝不读取/渲染已存 proxy 值」的前提下判定既有配置的 scheme/host，故此处仅判定当前输入缓冲。
+      const isRemotePacInput = (text) => {
+        if (typeof text !== "string") return false;
+        const s = text.trim();
+        if (!s.startsWith("pac:")) return false;
+        const rawUrl = s.slice(4).trim();
+        if (!rawUrl) return false;
+        let u;
+        try {
+          u = new URL(rawUrl);
+        } catch {
+          return false;
+        }
+        if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+        const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+        return host !== "localhost" && host !== "127.0.0.1" && host !== "::1";
+      };
+      const remotePacWarn = editorEntry && !proxyCleared && isRemotePacInput(model.proxyTexts[editorEntry.id])
+        ? " 提示：该 PAC 来自远程地址，脚本内容可被其服务器随时更改；请仅配置您信任的来源。"
+        : "";
       // V4-1：编辑器就地展开——编辑器树先于卡片节点构建；持久条目渲染进其归属卡片（cardNodes 内），
       // 新建（未持久）条目无外层卡片，编辑器继续置于新建块之后（不入列表，V3-1 判据不变）。
       // #55：持久行 id 可能带首尾空白，草稿 id 为 trim 形态——身份集合按 trim 后构建，
@@ -1597,7 +1670,10 @@ globalThis.window?.__ModuleLoader__?.load({
         if (!writesKey && credRef && !POSIX_REF.test(credRef)) {
           return { text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] };
         }
-        const check = validate({ ...model.base, ...{ ...model.user, entries: candidateEntriesFor(model, editorEntry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef) } });
+        // V5-7（Issue #58）：触碰后的代理值同样进实时校验门（与名称门/凭据门同判据）——
+        // normalizeProxy 文案经 issues 原样呈现，非法值期间提交钮禁用（提交时兜底同判据）。
+        const proxyIntent = proxyIntentOf(editorEntry.id);
+        const check = validate({ ...model.base, ...{ ...model.user, entries: candidateEntriesFor(model, editorEntry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef, proxyIntent) } });
         if (!check.ok) return { text: "无法提交：配置校验未通过", issues: check.issues.map((i) => i.message) };
         return null;
       })();
@@ -1634,6 +1710,39 @@ globalThis.window?.__ModuleLoader__?.load({
           value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
           onChange: (ev) => updateKey(editorEntry.id, ev.target.value),
         })) : null,
+        // V5-7（Issue #58）：高级区——条目级网络代理三态输入（新建/编辑两条路径同一形态，折叠 details）。
+        // 只写不回显（CFG-002 类 key 政策）：value 恒为明文缓冲（未触碰=空串），已配置时 placeholder 提示
+        // 已配置态；既有 proxy 值（含 user:pass 认证参数）绝不写入任何 DOM 文本/属性。
+        React.createElement("details", { className: "sc-advanced", "data-role": "proxy-advanced" },
+          React.createElement("summary", null, "网络代理（高级）"),
+          React.createElement("div", { className: "sc-field" },
+            React.createElement("label", { className: "sc-field-label", htmlFor: "sc-proxy-input" }, "代理"),
+            React.createElement("div", { className: "sc-proxy-input-row" },
+              React.createElement("input", {
+                id: "sc-proxy-input",
+                className: "sc-input", type: "text", "data-role": "proxy-field", "data-field": "proxy", "data-entry-id": editorEntry.id, disabled: locked,
+                "data-configured": entryHasProxy ? "true" : undefined,
+                value: typeof model.proxyTexts[editorEntry.id] === "string" ? model.proxyTexts[editorEntry.id] : "",
+                placeholder: proxyCleared ? "已清除（保存后删除代理）" : entryHasProxy ? "已配置（输入新值覆盖，清空并提交=删除）" : "留空=直连",
+                autoComplete: "off",
+                onChange: (ev) => updateProxyText(editorEntry.id, ev.target.value),
+              }),
+              entryHasProxy && !proxyCleared ? React.createElement("button", {
+                className: "sc-button sc-button-secondary",
+                type: "button",
+                "data-role": "proxy-clear",
+                "data-entry-id": editorEntry.id,
+                disabled: locked || model.busy || model.editorBusy,
+                onClick: () => updateProxyText(editorEntry.id, ""),
+              }, "清除代理") : null,
+            ),
+          ),
+          React.createElement("p", { className: "sc-proxy-hint", "data-role": "proxy-hint" },
+            (proxyCleared
+              ? "留空=直连；填 http(s)://host:port；PAC 填 pac:http(s)://…（已清除，保存后删除代理；输入新值可覆盖）"
+              : "留空=直连；填 http(s)://host:port；PAC 填 pac:http(s)://…") + remotePacWarn,
+          ),
+        ),
         editorProblem ? React.createElement("p", {
           className: "sc-status-node", "data-role": "save-error", "data-state": "error", role: "alert",
         }, editorProblem.text, ...(editorProblem.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`))) : null,

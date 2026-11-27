@@ -134,6 +134,19 @@ async function settle(clock, out, ms = 30_000) {
   return out;
 }
 
+/** PAC 子进程求值适配：先真实泵送直至落定或真实截止（求值完成前绝不 advance，
+ *  保持旧「求值先于虚拟定时器引爆」顺序），随后与 settle 相同的单次 advance + 冲刷。 */
+async function settlePac(clock, out, realMs = 4_000) {
+  const deadline = Date.now() + realMs;
+  while (out.state === "pending" && Date.now() < deadline) {
+    await flush(6);
+    if (out.state === "pending") await new Promise((r) => setTimeout(r, 5));
+  }
+  if (out.state === "pending" && clock.pending().length > 0) clock.advance(30_000);
+  await flush(6);
+  return out;
+}
+
 /** 出站记录的路由标记（缺失即红：A4 要求 transport 标注路由）。 */
 function routeOf(record) {
   const route = record?.init?.route;
@@ -748,7 +761,7 @@ test("CFG-005/FB-001：请求已提交给某条 PAC 路由后失败——绝不�
   fetchFn.when(TARGET).fails({ error: new Error("[synthetic] 上游已收到查询后连接中断"), delayMs: 10 });
 
   const out = track(transport.fetch(TARGET));
-  const o = await settle(clock, out);
+  const o = await settlePac(clock, out);
   assert.equal(o.state, "err", "候选路由上失败必须上抛，交由链按 FB-001 降级");
   assert.equal(fetchFn.count(TARGET), 1, `查询已提交后不得重发（CFG-005「上游已收到查询时无重发」/FB-001 每条目最多一次）`);
   assert.equal(routeOf(targetCall(fetchFn)).pacIndex, 0, "失败的是脚本第 0 条候选");
@@ -778,7 +791,7 @@ test("CFG-005：PAC 三阶段失败各自携带 PAC_FETCH_FAILED / PAC_EVAL_FAIL
     fetchFn.when(TARGET).responds({ body: { ok: true } });
 
     const out = track(transport.fetch(TARGET));
-    const o = await settle(clock, out);
+    const o = await settlePac(clock, out);
     assert.equal(o.state, "err", `PAC ${c.label}：必须以错误落定（CFG-005「须报告具体阶段」）`);
     const expected = c.codes ?? [c.code];
     assert.ok(
@@ -836,7 +849,7 @@ test("CFG-005：PAC 脚本在隔离环境求值——看不到 process/require/�
     fetchFn.when("isolation-leak.invalid").fails({ error: new Error("[synthetic] 隔离被突破：脚本看到了宿主全局对象") });
 
     const out = track(transport.fetch(TARGET));
-    const o = await settle(clock, out);
+    const o = await settlePac(clock, out);
     assert.equal(
       o.state,
       "ok",
@@ -870,7 +883,7 @@ test("CFG-005：FindProxyForURL 收到完整目标 URL 与主机；标准助手 
   fetchFn.when("args-or-helpers-wrong.invalid").fails({ error: new Error("[synthetic] FindProxyForURL 参数或标准助手不符合 PAC 语义") });
 
   const out = track(transport.fetch(TARGET));
-  const o = await settle(clock, out);
+  const o = await settlePac(clock, out);
   assert.equal(
     o.state,
     "ok",
