@@ -116,9 +116,14 @@ async function moveWithKey(view, tree, entryId, key) {
   return act(view, () => fire(one(tree, ROLE.dragHandle, { entryId }), "onKeyDown", { key, preventDefault() {} }));
 }
 
+// #56（V5-2）步骤迁移：旧「点添加 → 点 picker 项」独立步骤已废止（src 移除 sc-picker 控件）。
+// 新流程 = 点添加（新增表单原位打开，默认厂商为目录第一种）→ 表单内厂商下拉选厂商。
+// 本助手是全部 14 个调用点的共同 add 步骤迁移点；各判据的行为断言（V3-1 无占位行、
+// SET-006 条目级提交、D-2C key 规则等）原样保留，逐条见交付报告迁移清单。
 async function addType(view, tree, type) {
   tree = await step(view, tree, ROLE.add);
-  return step(view, tree, ROLE.addType, { type });
+  const select = allNodes(one(tree, ROLE.editor)).find((n) => n && n.type === "select");
+  return act(view, () => fire(select, "onChange", { target: { value: type } }));
 }
 
 /** 打开并沉降面板（同一 withEnv 内 fetch 替身已安装）。 */
@@ -238,7 +243,11 @@ test("SET-002 添加入口列出 CAT-001 全部八种类型，每种各一个选
   await withEnv(makeSettingsState(), async () => {
     const { view, tree } = await openPanel("picker");
     const opened = await step(view, tree, ROLE.add);
-    const options = byRole(opened, ROLE.addType).map((n) => n.props["data-type"]);
+    // #56（V5-2）步骤迁移：类型列表由 picker 按钮组（ROLE.addType）迁为新增表单内的厂商下拉框
+    // （sc-picker 步骤废止）。断言语义原样保留：选项值集合恰为 CAT-001 八种、每种恰一个选项。
+    const editor = one(opened, ROLE.editor);
+    const select = allNodes(editor).find((n) => n && n.type === "select");
+    const options = select.children.map((o) => o.props.value);
     assert.deepEqual([...options].sort(), [...ALL_TYPES].sort(), "添加入口的类型选项须恰为 CAT-001 八种（providers.md）");
   });
 });
@@ -247,10 +256,33 @@ test("SET-002 类型选项显示计费说明（关键词钉，见 settings-oracl
   await withEnv(makeSettingsState(), async () => {
     const { view, tree } = await openPanel("billing");
     const opened = await step(view, tree, ROLE.add);
-    for (const type of ALL_TYPES) {
-      const option = one(opened, ROLE.addType, { type });
-      const text = textOf(option);
-      assert.ok(text.length > 0, `类型 ${type} 的选项须显示说明文字`);
+    // #56（V5-6）合法迁移：V5-6 厂商下拉选项改为纯厂商名，计费说明迁至下拉正下方的
+    // .sc-billing-hint（data-role="billing-hint"）提示行，随选中厂商联动更新。
+    // 默认厂商=openai 时显示 openai 提示；fire select onChange 切换至每个 keyed/bing 类型后断言对应关键词。
+    const findHint = (t) => {
+      const editor = one(t, ROLE.editor);
+      const hint = allNodes(editor).find(
+        (n) => n && typeof n.props?.className === "string" && n.props.className.split(/\s+/).includes("sc-billing-hint"),
+      );
+      assert.ok(hint, "新建表单须包含 .sc-billing-hint 计费提示行");
+      assert.equal(hint.props["data-role"], "billing-hint", "计费提示行须带 data-role=\"billing-hint\"");
+      return hint;
+    };
+    const defaultSelect = allNodes(one(opened, ROLE.editor)).find((n) => n && n.type === "select");
+    assert.equal(defaultSelect.props.value, "openai", "默认厂商须为 openai");
+    const defaultHintText = textOf(findHint(opened));
+    assert.ok(defaultHintText.length > 0, "默认厂商 openai 须显示计费提示文字");
+    for (const re of BILLING_KEYWORDS.openai ?? []) {
+      assert.match(defaultHintText, re, `默认厂商 openai 的计费说明须含关键要素 ${re}`);
+    }
+
+    let cur = opened;
+    const switchOrder = [...ALL_TYPES.filter((t) => t !== "openai"), "openai"];
+    for (const type of switchOrder) {
+      const select = allNodes(one(cur, ROLE.editor)).find((n) => n && n.type === "select");
+      cur = await act(view, () => fire(select, "onChange", { target: { value: type } }));
+      const text = textOf(findHint(cur));
+      assert.ok(text.length > 0, `类型 ${type} 的 .sc-billing-hint 须显示说明文字`);
       for (const re of BILLING_KEYWORDS[type] ?? []) {
         assert.match(text, re, `类型 ${type} 的计费说明须含关键要素 ${re}`);
       }

@@ -629,12 +629,11 @@ globalThis.window?.__ModuleLoader__?.load({
       /* SET-006/R1-3：全局保存钮（.sc-save-button）与 compact 修饰（.sc-button-primary-small）整体废止；
          编辑器动作行两钮为 SPC-014 standard 档，主按钮视觉由 .sc-button-primary 承接。 */
       .sc-button:disabled, .sc-button-primary:disabled, .sc-button-secondary:disabled,
-      .sc-button-danger:disabled, .sc-add-button:disabled, .sc-drag-handle:disabled,
-      .sc-picker-item:disabled { opacity: 0.4; cursor: default; }
+      .sc-button-danger:disabled, .sc-add-button:disabled, .sc-drag-handle:disabled { opacity: 0.4; cursor: default; }
       .sc-input:disabled { opacity: 0.6; cursor: default; }
       .sc-button:focus-visible, .sc-button-primary:focus-visible, .sc-button-secondary:focus-visible, .sc-button-danger:focus-visible,
       .sc-confirm-close:focus-visible, .sc-drag-handle:focus-visible,
-      .sc-add-button:focus-visible, .sc-picker-item:focus-visible {
+      .sc-add-button:focus-visible {
         outline: none;
         box-shadow: 0 0 0 var(--dsw-focus-ring-width, 2px) var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
       }
@@ -740,7 +739,7 @@ globalThis.window?.__ModuleLoader__?.load({
       @media (hover: hover) {
         .sc-add-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
       }
-      .sc-editor, .sc-picker, .sc-dialog {
+      .sc-editor, .sc-dialog {
         box-sizing: border-box;
         display: flex;
         flex-direction: column;
@@ -760,29 +759,7 @@ globalThis.window?.__ModuleLoader__?.load({
       @media (hover: hover) { .sc-confirm-close:hover:not(:disabled) { background: rgba(31, 35, 41, 0.08); color: #1f2329; } }
       .sc-confirm-title { margin: 0 24px 0 0; font-size: 15px; line-height: 22px; font-weight: 600; color: #1f2329; }
       .sc-confirm-desc { margin: 0; font-size: 13px; line-height: 20px; color: #454c55; }
-      .sc-picker { gap: 8px; }
-      .sc-picker-item {
-        display: flex;
-        width: 100%;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 4px;
-        padding: 14px 16px;
-        /* R4：picker 项边框——常驻 0.5px solid border-l4。 */
-        border: 0.5px solid var(--dsw-alias-border-l4);
-        border-radius: var(--dsw-radius-md);
-        background: var(--dsw-alias-bg-layer-1);
-        color: var(--dsw-alias-label-primary);
-        font: inherit;
-        text-align: start;
-        cursor: pointer;
-      }
-      /* R4：hover 单声明——仅背景，用非实色 interactive-bg-hover 复合估计。 */
-      @media (hover: hover) {
-        .sc-picker-item:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
-      }
-      .sc-picker-title { font-size: 14px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-primary); }
-      .sc-picker-billing { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
+      /* V5-2：原 .sc-picker/.sc-picker-item/-title/-billing 规则随 picker 控件废止整体移除（SPC-025 目标面废止）。 */
       .sc-editor-title { margin: 0; font-size: 14px; line-height: 22px; font-weight: 500; color: var(--dsw-alias-label-primary); }
       .sc-editor-actions, .sc-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
       .sc-field { display: flex; flex-direction: column; gap: 6px; margin-block: 0; }
@@ -814,6 +791,7 @@ globalThis.window?.__ModuleLoader__?.load({
         background-position: right 12px center;
         background-size: 12px 12px;
       }
+      .sc-billing-hint { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
       .sc-status-node { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
       .sc-status-node[data-state="saved"] { color: var(--dsw-alias-state-success-primary); }
       .sc-status-node[data-state="error"] { color: var(--dsw-alias-state-error-primary); }
@@ -827,7 +805,7 @@ globalThis.window?.__ModuleLoader__?.load({
         .sc-card { padding: 18px 16px; }
         .sc-card-row { align-items: flex-start; flex-direction: column; }
         .sc-card-actions { justify-content: flex-start; }
-        .sc-dialog, .sc-picker { padding: 18px; }
+        .sc-dialog { padding: 18px; }
       }
     `;
     const POSIX_REF = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -875,7 +853,6 @@ globalThis.window?.__ModuleLoader__?.load({
         draft: { entries: [], useOfficial: true, timeoutText: String(DEFAULT_TIMEOUT_MS) },
         keys: {},
         editingId: null,
-        addOpen: false,
         confirmId: null,
         busy: false,
         editorBusy: false,
@@ -890,6 +867,9 @@ globalThis.window?.__ModuleLoader__?.load({
       // V4-2：删除模态——触发移除按钮（关闭时焦点回归）与弹窗容器节点（打开时焦点入框）；
       // confirmRef 渲染期镜像模态开启态（编辑器 Escape 处理器据此让位顶层模态）。
       const removeTriggerRef = React.useRef(null);
+      // V5-2/V5-3：添加入口原位成表单——新增表单打开期间添加按钮不渲染，表单关闭（取消/Escape）后
+      // 按钮重新挂载；触发时的按钮节点已卸载，回焦经该 ref 指向重新挂载后的按钮。
+      const addButtonRef = React.useRef(null);
       const confirmDialogRef = React.useRef(null);
       const confirmRef = React.useRef(null);
       confirmRef.current = model.confirmId;
@@ -1033,8 +1013,10 @@ globalThis.window?.__ModuleLoader__?.load({
                 }
               }
             }
-            // addOpen / editorError 不在此重置（经 ...m 保留，与 ① 行为一致）；
+            // editorError 不在此重置（经 ...m 保留，与 ① 行为一致）；
             // keys/editingId 为 SET-008 重挂校验产物（keepStatus 时即 m.keys / m.editingId）。
+            // V5-2：addOpen 标志已废止——「新增表单打开」由「编辑器条目为未持久（幽灵）条目」派生，
+            // 读回/重挂重建 editingId 后派生态自动一致（含 SET-008 重挂自动重开新建表单的情形）。
             return {
               ...m,
               phase: typeof proj.revision === "number" ? "ready" : "unavailable",
@@ -1295,15 +1277,28 @@ globalThis.window?.__ModuleLoader__?.load({
         setModel((m) => ({ ...m, draft: { ...m.draft, entries: list }, pendingHandleFocus: id }));
         commitReorder(list.map((e) => e.id));
       };
-      const addEntry = (type, trigger) => {
+      // V5-2：点「添加搜索工具」即原位开新增表单——不再经 picker 选厂商独立步骤（该步骤废止）。
+      // 复用既有幽灵条目链：草稿末尾追加幽灵（不入列表，V3-1）、编辑表单内下拉选厂商、
+      // SET-006 条目级提交（提交成功才持久化）、SET-008 草稿缓存。默认厂商 = CATALOG_UI 顺序第一种。
+      const addEntry = (trigger) => {
         if (lockRef.current) return;
-        const label = CATALOG_UI.find((x) => x[0] === type)?.[1] ?? type;
+        // V5-5：存在未保存的新增（幽灵）草稿时，重开新增入口必须恢复同一待保存草稿——
+        // editingId 切回幽灵 id（id 不变，名称/厂商类型/credentialRef 随草稿行回填，key 明文
+        // 缓冲在 model.keys，厂商下拉选中值 = 切走前厂商），不新分配 id、不重置字段；
+        // SET-008 create 缓存记录不动（重挂复原路径不受影响）。判定面 = 内存草稿列表中
+        // 未持久行（与 editorIsCreate / V5-3 互斥 / 卡片幽灵过滤同一幽灵判定）。
+        const pending = model.draft.entries.find((e) => !entryIsPersisted(model, e));
+        if (pending) {
+          restoreFocus.current = trigger ?? null;
+          setModel((m) => ({ ...m, editingId: pending.id, editorError: null }));
+          return;
+        }
+        const [type, label] = CATALOG_UI[0];
         const id = `search_chain_${Date.now().toString(36)}_${++entryIdSeq}`;
-        // SET-006：选类型即进入该新条目的编辑器（草稿立即出现在列表末尾，提交成功才持久化）。
+        // 触发节点（添加按钮）在表单期间不渲染（V5-3 互斥）——回焦改由 addButtonRef 承接（见 cancelEditor）。
         restoreFocus.current = trigger ?? null;
         setModel((m) => ({
           ...m,
-          addOpen: false,
           editingId: id,
           editorError: null,
           draft: { ...m.draft, entries: [...m.draft.entries, { id, type, name: label, enabled: true, credentialRef: "" }] },
@@ -1311,6 +1306,33 @@ globalThis.window?.__ModuleLoader__?.load({
         // SET-008：新建草稿入缓存（稳定临时 id 为键；未提交即卸载，重挂须能复原）。
         // 二轮修复：baseRevision 取权威快照（读回在途时闭包 model.revision 陈旧 → 重挂校验假版本冲突）。
         draftCache.set(id, { mode: "create", type, fields: { name: label, credentialRef: "" }, key: "", baseRevision: typeof latestRef.current.revision === "number" ? latestRef.current.revision : undefined });
+      };
+
+      // V5-2：新增表单内切换厂商——字段集与凭据规则与编辑表单完全一致（keyed = credentialRef + key；bing 皆无）。
+      // 草稿字段迁移规则（规格 V5-2 设计决定）：名称仍等于旧厂商默认名（用户未修改）→ 跟随新厂商默认名；
+      // 用户已修改的名称原样保留；credentialRef 与 key 明文缓冲原样保留（免 key 厂商下隐藏、切回恢复）；
+      // SET-008 缓存记录 type 同步更新（重挂复原按切换后的厂商重建幽灵）。
+      const changeAddType = (id, type) => {
+        if (lockRef.current) return;
+        const row = CATALOG_UI.find((x) => x[0] === type);
+        if (!row) return; // 未知厂商值：忽略（受控 select 不会产生，防外部异常事件）
+        const entry = model.draft.entries.find((e) => e.id === id);
+        if (!entry || entryIsPersisted(model, entry)) return; // 仅新增（幽灵）表单提供厂商切换
+        const newLabel = row[1];
+        const oldRow = CATALOG_UI.find((x) => x[0] === entry.type);
+        const oldLabel = oldRow ? oldRow[1] : entry.type;
+        const name = entry.name === oldLabel ? newLabel : entry.name;
+        const keyVal = typeof model.keys[id] === "string" ? model.keys[id] : "";
+        setModel((m) => ({
+          ...m,
+          editorError: null,
+          draft: { ...m.draft, entries: m.draft.entries.map((e) => (e.id === id ? { ...e, type, name } : e)) },
+        }));
+        const rec = draftCache.get(id) || { mode: "create", type, fields: {}, key: "", baseRevision: typeof latestRef.current.revision === "number" ? latestRef.current.revision : undefined };
+        rec.type = type;
+        rec.fields = { name, credentialRef: entry.credentialRef ?? "" };
+        rec.key = keyVal;
+        draftCache.set(id, rec);
       };
 
       // 二轮修复：同时查权威快照——创建提交成功但读回未落定时闭包 user 缺该条目，误判 create 会使重挂校验误报版本冲突。
@@ -1349,14 +1371,23 @@ globalThis.window?.__ModuleLoader__?.load({
       // 且必须通过 singleEntryDiff({entries: 有效持久列表}, candidate, boundId)——候选与最新持久列表（继承合并
       // 视图，五轮修复起算有效列表：守卫意图「他行零改动」对继承底板同样成立）若不在绑定条目一行上
       // 存在漂移（stale 快照竞态）则拒发（B-007/009：旧代码以陈旧 user 列表为底，toOps 把他条目当「我的差异」LWW 覆盖）。
+      // 免 key 厂商（如 bing）隐藏凭据字段但仍保留 V5-2 缓存值以便切回 keyed 厂商时回填；
+      // 校验与提交路径须按当前厂商决定是否采信缓存的 credentialRef 与明文 key。
+      const editorCredInputs = (entry, rawKey) => {
+        const isKeyed = KEYED_TYPES.includes(entry.type);
+        const keyVal = (typeof rawKey === "string" ? rawKey : "").trim();
+        const writesKey = isKeyed && keyVal !== "";
+        const credRef = isKeyed ? (entry.credentialRef ?? "").trim() : "";
+        return { keyVal, writesKey, credRef };
+      };
+
       const submitEditor = () => {
         const entry = model.draft.entries.find((e) => e.id === model.editingId);
         if (!entry || lockRef.current) return;
         if (model.phase !== "ready" || typeof model.revision !== "number") return;
         const boundId = entry.id; // 编辑器绑定：本次提交只允许触及该 id 一行
-        const keyVal = (typeof model.keys[boundId] === "string" ? model.keys[boundId] : "").trim();
-        let credRef = (entry.credentialRef ?? "").trim();
-        const writesKey = keyVal !== "" && KEYED_TYPES.includes(entry.type);
+        const { keyVal, writesKey, credRef: initialCredRef } = editorCredInputs(entry, model.keys[boundId]);
+        let credRef = initialCredRef;
         // 四轮修复（B-007/009/019 污染源）：名称门（与实时 editorBlock 同判据；真实 DOM 中禁用钮不可点，
         // 此守卫兜底测试侧直接触发）：空名/纯空白名 → 零出站、编辑器不关、输入不丢（SET-004 失败保留面），
         // 错误于动作行上方 role=alert 呈现（SPC-023/SPC-030）。新建与编辑同一路径同判据。
@@ -1410,7 +1441,7 @@ globalThis.window?.__ModuleLoader__?.load({
             setModel((m) => {
               const keys = { ...m.keys };
               delete keys[boundId];
-              return { ...m, editorBusy: false, editingId: null, addOpen: false, keys, editorError: null, savedNotice: { text: `已保存 ${name}。` } };
+              return { ...m, editorBusy: false, editingId: null, keys, editorError: null, savedNotice: { text: `已保存 ${name}。` } };
             });
             await load(true); // 单写者：读回必须在队列内下一提交构建 ops 前落定
           } catch (err) {
@@ -1451,15 +1482,24 @@ globalThis.window?.__ModuleLoader__?.load({
               entries = entries.filter((e) => e.id !== entry.id); // 新条目：移出草稿即清草稿
             }
           }
-          return { ...m, editingId: null, addOpen: false, keys, editorError: null, draft: { ...m.draft, entries } };
+          return { ...m, editingId: null, keys, editorError: null, draft: { ...m.draft, entries } };
         });
         restoreFocus.current = null;
         if (trigger && typeof trigger.focus === "function") Promise.resolve().then(() => trigger.focus());
+        // V5-2/V5-3：新增表单的触发控件（添加按钮）在表单期间不渲染、取消时已卸载，上述回焦为空操作——
+        // 实际的添加按钮回焦由渲染提交后的 effect 承接（见 editorIsCreate 下方的 addFormWasOpen effect）。
       };
+      // V5-1：同一条「编辑」再点 = 收起——开/收全程零写入；草稿字段与 SET-008 缓存记录保留
+      // （收起 ≠ 丢弃；「丢弃」语义仍仅由取消 / Escape 承载）。重开同一编辑器时草稿字段随
+      // model.draft 原样回到编辑器（与切换条目在编语义一致）。
       const openEditorFor = (entryId, trigger) => {
         if (lockRef.current) return;
         restoreFocus.current = trigger ?? null;
-        setModel((m) => ({ ...m, editingId: entryId, editorError: null, addOpen: false }));
+        if (model.editingId === entryId) {
+          setModel((m) => ({ ...m, editingId: null, editorError: null }));
+          return;
+        }
+        setModel((m) => ({ ...m, editingId: entryId, editorError: null }));
       };
       const onDialogKeyDown = (ev) => {
         if (ev.key === "Escape") {
@@ -1535,15 +1575,25 @@ globalThis.window?.__ModuleLoader__?.load({
       const persistedIdSet = new Set(effectiveEntriesOf(model).map((e) => normEntryId(e.id)));
       // SET-006：提交钮实时校验（在途/只读/缺 revision/校验失败 → 禁用）；新 ref 由受控生成、恒合法，校验用占位 ref 投影。
       const editorIsCreate = editorEntry ? !entryIsPersisted(model, editorEntry) : false;
+      // V5-2/V5-3：新增表单关闭（取消/Escape/保存成功 → editingId 落空）且未改开其他编辑器
+      // （editingId 非空 = 从新增表单切到编辑持久条目，走编辑按钮触发回焦，不抢焦）时，
+      // 焦点回到重新挂载后的添加按钮。effect 在渲染提交后运行，按钮节点必已登记——
+      // 触发时的按钮节点在表单期间不渲染（已卸载），微任务无法保证重挂载提交时点。
+      const addFormWasOpen = React.useRef(false);
+      React.useEffect(() => {
+        if (addFormWasOpen.current && !editorIsCreate && model.editingId === null) {
+          const btn = addButtonRef.current;
+          if (btn && typeof btn.focus === "function") btn.focus();
+        }
+        addFormWasOpen.current = editorIsCreate;
+      });
       const editorBlock = (() => {
         if (!editorEntry) return null;
         // 四轮修复（B-007/009/019 污染源）：名称门实时呈现——空名/纯空白名即时禁用提交钮并在动作行
         // 上方 role=alert 报错（SPC-023「新建=完整校验」/SPC-030），不必等提交才暴露。
         const nameProblem = entryNameGate(editorEntry.name);
         if (nameProblem) return { text: nameProblem, issues: [] };
-        const keyVal = (typeof model.keys[editorEntry.id] === "string" ? model.keys[editorEntry.id] : "").trim();
-        const writesKey = keyVal !== "" && KEYED_TYPES.includes(editorEntry.type);
-        const credRef = (editorEntry.credentialRef ?? "").trim();
+        const { writesKey, credRef } = editorCredInputs(editorEntry, model.keys[editorEntry.id]);
         if (!writesKey && credRef && !POSIX_REF.test(credRef)) {
           return { text: "凭据引用格式无效：仅允许以字母或下划线开头，后续使用字母、数字或下划线。", issues: [] };
         }
@@ -1561,15 +1611,24 @@ globalThis.window?.__ModuleLoader__?.load({
         "data-role": "editor", onKeyDown: onDialogKeyDown, className: "sc-dialog sc-editor",
       },
         React.createElement("h4", { id: "sc-editor-title", className: "sc-editor-title" }, `${editorIsCreate ? "新建" : "编辑"} ${editorEntry.name || editorEntry.type}`),
+        // V5-2 / V5-6：厂商下拉框仅出现在新增表单（原 sc-picker 独立选厂商步骤废止）——选项文本为纯厂商名；
+        // 下拉正下方 .sc-billing-hint 随所选厂商联动显示 CATALOG_UI[2] 计费提示原文（仅新建显示）。
+        editorIsCreate ? React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "厂商"), React.createElement("select", {
+          className: "sc-input sc-select-input", "data-entry-id": editorEntry.id, disabled: locked,
+          value: editorEntry.type, onChange: (ev) => changeAddType(editorEntry.id, ev.target.value),
+        }, ...CATALOG_UI.map(([type, label]) => React.createElement("option", { key: type, value: type }, label)))) : null,
+        editorIsCreate ? React.createElement("p", {
+          className: "sc-billing-hint", "data-role": "billing-hint",
+        }, CATALOG_UI.find(([type]) => type === editorEntry.type)?.[2] ?? "") : null,
         React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "名称"), React.createElement("input", {
           className: "sc-input", type: "text", "data-role": "field", "data-field": "name", "data-entry-id": editorEntry.id, disabled: locked,
           value: editorEntry.name ?? "", onChange: (ev) => updateEditorField(editorEntry.id, "name", ev.target.value), autoFocus: true,
         })),
-        React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "凭据引用"), React.createElement("input", {
+        KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "凭据引用"), React.createElement("input", {
           className: "sc-input", type: "text", "data-role": "field", "data-field": "credentialRef", "data-entry-id": editorEntry.id, disabled: locked,
           value: editorEntry.credentialRef ?? "", placeholder: "例如 TAVILY_API_KEY",
           onChange: (ev) => updateEditorField(editorEntry.id, "credentialRef", ev.target.value),
-        })),
+        })) : null,
         KEYED_TYPES.includes(editorEntry.type) ? React.createElement("label", { className: "sc-field" }, React.createElement("span", { className: "sc-field-label" }, "API key（仅写入，不会回显）"), React.createElement("input", {
           className: "sc-input", type: "password", autoComplete: "new-password", "data-role": "field", "data-field": "key", "data-entry-id": editorEntry.id, disabled: locked,
           value: model.keys[editorEntry.id] ?? "", placeholder: "输入新 key；留空则保留现有凭据",
@@ -1649,8 +1708,8 @@ globalThis.window?.__ModuleLoader__?.load({
                   "data-role": "enabled-toggle", "data-entry-id": entry.id, checked: entry.enabled, disabled: locked,
                   onChange: (ev) => enabledToggleChange(entry.id, ev),
                 }),
+                // V5-4：卡片开关可见「启用」文字移除（无障碍名称仍在 input aria-label；官方行标签不受本条影响）。
                 React.createElement("span", { className: "sc-switch-track", "aria-hidden": "true" }),
-                React.createElement("span", { className: "sc-switch-label" }, "启用"),
               ),
               React.createElement("button", {
                 className: "sc-button-secondary", type: "button", "data-role": "card-edit", "data-entry-id": entry.id, disabled: locked,
@@ -1676,12 +1735,10 @@ globalThis.window?.__ModuleLoader__?.load({
       const sectionErrorNode = model.sectionError ? React.createElement("p", {
         className: "sc-status-node", "data-role": "save-error", "data-state": "error", role: "alert",
       }, model.sectionError.text, ...(model.sectionError.issues ?? []).map((issue, i) => React.createElement("span", { key: `issue-${i}`, style: secondaryTextStyle }, ` ${issue}`))) : null;
-      const addPicker = model.addOpen ? React.createElement("div", { role: "group", "aria-label": "选择搜索工具", className: "sc-picker" },
-        ...CATALOG_UI.map(([type, label, billing]) => React.createElement("button", {
-          key: type, className: "sc-picker-item", type: "button", "data-role": "add-type", "data-type": type, disabled: locked,
-          onClick: (ev) => addEntry(type, ev.currentTarget ?? null),
-        }, React.createElement("strong", { className: "sc-picker-title" }, label), React.createElement("span", { className: "sc-picker-billing" }, billing))),
-      ) : null;
+      // V5-2/V5-3：旧「点添加 → sc-picker 选厂商」独立步骤废止（picker 控件整体移除）。
+      // 「新增表单打开」由「当前编辑器条目为未持久（幽灵）条目」派生（editorIsCreate，非独立标志）：
+      // 幽灵编辑器渲染于添加块入口原位，期间添加按钮不渲染（互斥）；表单关闭（取消/Escape/保存成功）
+      // 后 editingId 落空 → 派生态自动恢复入口。
       // V4-2：删除确认模态（取代旧内联确认）——居中遮罩 alertdialog，标题/正文按规格精确文案，
       // 右上 ×、取消（secondary）、危险「删除 {名称}」（SPC-023 outline token，保留 confirm-remove 锚点）。
       const confirm = model.confirmId ? (() => {
@@ -1775,11 +1832,20 @@ globalThis.window?.__ModuleLoader__?.load({
         // 草稿含幽灵行，但持久视图仍空 → 空状态与新建编辑器同屏呈现（列表恒等于持久视图）。
         effectiveEntriesOf(model).length === 0 ? React.createElement("p", { "data-role": "empty-state", style: secondaryTextStyle }, "还没有配置搜索工具，点击下方「添加搜索工具」添加第一条。") : null,
         cardNodes.length ? React.createElement("div", { className: "sc-card-list" }, ...cardNodes) : null,
-        React.createElement("div", { className: "sc-add-block" }, React.createElement("div", { className: "sc-add-actions" }, React.createElement("button", { className: "sc-add-button", type: "button", "data-role": "add-tool", disabled: locked, onClick: () => { if (!locked) setModel((m) => ({ ...m, addOpen: !m.addOpen })); } }, "＋ 添加搜索工具")), addPicker),
+        // V5-2：添加入口原位成表单——新增表单（幽灵编辑器）渲染于入口原位，替换入口本身；
+        // V5-3：表单打开期间添加按钮不渲染（互斥），关闭后恢复。持久条目编辑器仍在归属卡片内（cardNodes），零重复。
+        React.createElement("div", { className: "sc-add-block" },
+          editorIsCreate
+            ? editor
+            : React.createElement("div", { className: "sc-add-actions" },
+                React.createElement("button", {
+                  className: "sc-add-button", type: "button", "data-role": "add-tool", disabled: locked,
+                  ref: (el) => { addButtonRef.current = el; },
+                  onClick: (ev) => { if (!locked) addEntry(ev.currentTarget ?? null); },
+                }, "＋ 添加搜索工具"),
+              ),
+        ),
         confirm,
-        // V4-1：未提交新建条目（幽灵）无外层卡片——编辑器仍置于新建块之后（不入列表，V3-1）；
-        // 持久条目的编辑器在其归属卡片内渲染（见 cardNodes），此处零重复。
-        editorEntry && !persistedIdSet.has(editorEntry.id) ? editor : null,
       ));
     }
 
