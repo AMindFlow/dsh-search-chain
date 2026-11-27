@@ -13,7 +13,7 @@
 | 凭据形状 | 把 `credentialService.resolve(ref)` 的返回值当作字符串 | 按 `{ value, source }` 或 `undefined` 读取，取 `value`，并去掉首尾空白 | 旧版在真实宿主上取不到 key，表现为 `SKIPPED_NO_KEY`。升级后需要逐条目验证。 |
 | 托管引用（第三层） | 通过 `readRecord(环境变量名)` 读取 `api-key` 记录 | 通过 `resolve(环境变量名)` 读取托管引用，不再读取记录 | 原先保存在 `api-key` 记录（如 `<owner>/<id>`）中的 key 不再被读取。需要以环境变量名为引用名重新保存，或改用条目引用。 |
 | `credentialRef` 语法 | 引用名原样使用 | 只接受 `^[A-Za-z_][A-Za-z0-9_]*$`；无效旧引用视为未设置并继续查找后续来源 | 含冒号等旧引用不会被读取。检查环境变量及后续来源；在设置面板输入新 key 可生成合法新引用，或改填已有合法引用。 |
-| 明文 key 字段 | 条目中的 `apiKey` 等字段可能仍在配置中 | 键名匹配 `apikey`、`api_key`、`key`、`secret`、`token`、`password`、`auth`、`authorization`（大小写不敏感）的字段在读取时丢弃，且不会被使用 | 旧配置中的明文 key 不再生效，不会迁移到凭据服务，也不会被自动删除。在配置表单手动删除这些字段，并另行补 key（检查清单第 3 步）。 |
+| 明文 key 字段 | 条目中的 `apiKey` 等字段可能仍在配置中 | 键名匹配 `apikey`、`api_key`、`key`、`secret`、`token`、`password`、`auth`、`authorization`（大小写不敏感）的字段在读取时丢弃且不会被使用；经设置面板完成任意保存时会自动从磁盘条目中清除 | 旧配置中的明文 key 不再生效、也不会迁移到凭据服务。经设置面板保存一次即可从磁盘清零，并另行通过 key 输入框或环境变量补录 key（检查清单第 3 步）。 |
 | 旧版 YAML 凭据层 | 生产入口在仓库历史中从未传入旧版 YAML | **v0.1 不自动导入旧版 YAML**：链侧代码层保留，但生产装配不传数据源，永不生效 | 依赖 `openai`、`tavily`、`deepseek` 顶层 YAML 项的，需在配置表单、环境变量或托管引用中手动重建。TODO（发布验收）：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)。 |
 | 注入声明 `inject` | 早期版本为 `["web", "configEditor"]`；之后为 `["web", "configEditor", "credentials"]` | `["web", "configEditor", "credentials", "agents"]` | 新增 `agents`，用于 DeepSeek 官方分支读取当前会话的路由。宿主必须提供这些服务，缺失时的宿主行为未在本仓库实机验证。升级后请重新启用插件，并在新会话中验证。 |
 | PAC 与配置错误 | 条目执行期的 `PAC_*` 和 `CONFIG_*` 错误会中断整次搜索 | 作为条目级失败记录到 attempts（原码保留），然后继续下一个条目；条目 open 期的带码错误（如代理形状问题）同样降级（`6963535`，FB-006 裁决 27）。全局配置错误和 `TRANSPORT_RELEASED` 仍直接抛出 | **v0.1 变化提示**：一个条目的 PAC 失败不再让整次搜索失败。如果你之前靠这种失败来阻止搜索，需要改为关闭该条目。排查时查看 attempts。 |
@@ -38,7 +38,7 @@
 
 1. **备份**：在修改 profile 之前，备份 profile 中的插件配置和搜索选择。手工修改前先备份，这是 DSH-003 的要求。
 2. **记录现有条目**：列出每个条目的 `id`、`type`、`enabled`、`credentialRef` 和 `proxy`。确认哪些条目原先依赖明文 key、旧版 YAML 或托管记录。
-3. **检查明文 key**：如果条目中含有 `apiKey`、`key`、`token` 等字段，读取时它们会被忽略，不会自动删除。重新编辑条目并在 key 输入框补录凭据；也可删掉残留字段后用环境变量或凭据引用提供 key。
+3. **检查明文 key**：如果条目中含有 `apiKey`、`key`、`token` 等字段，读取时它们会被忽略，也不会迁移到凭据服务；经设置面板完成任意一次保存后，这些残留明文字段会自动从配置条目中清除。请重新编辑条目并在 key 输入框补录凭据，或改用环境变量/凭据引用提供 key。
 4. **检查 `credentialRef`**：引用必须符合 `^[A-Za-z_][A-Za-z0-9_]*$`。冒号形旧值视为未设置；可在面板输入 key 生成新引用，或改填已有合法引用。
 5. **检查托管 key**：如果 key 之前保存在 `api-key` 记录中，需要以对应的环境变量名作为引用名，在宿主凭据服务中重新保存。本仓库未提供这一步的界面，入口以宿主为准。
 6. **检查旧版 YAML**：v0.1 不自动导入旧版 YAML。如果依赖 `openai`、`tavily`、`deepseek` 的顶层 YAML 项，把这些 key 手动迁移到条目引用、环境变量或托管引用（TODO：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)）。

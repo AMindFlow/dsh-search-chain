@@ -242,6 +242,9 @@ globalThis.window?.__ModuleLoader__?.load({
      * 删除通过从尾部 unset 收尾，避免重排引入无关列表覆写（D-1）。
      */
     function toOps(next, current) {
+      // 写闸等价预检（CFG-W-001 / CFG-W-002）：凡读闸必拒的形态，产出补丁前先以 CONFIG_INVALID 拒绝。
+      // 仅作预检，保留 nxt 原始键集以避免注入缺省顶层键引发额外 diff（D-1）。
+      normalizeConfig(next);
       const ops = [];
       const state = structuredClone(isPlainObject(current) ? current : {});
       const emit = (op) => {
@@ -322,6 +325,19 @@ globalThis.window?.__ModuleLoader__?.load({
       if (candidate.length !== list.length || boundIdx !== curIdx) return false;
       for (let i = 0; i < list.length; i++) if (i !== curIdx && !sameRow(list[i], candidate[i])) return false;
       return true;
+    }
+
+    /** 为 user.entries[*] 上残留的明文密钥字段产出 unset 补丁（CFG-W-003）。 */
+    function secretCleanupOps(userLayer, skipIndex = -1) {
+      const entries = isPlainObject(userLayer) && Array.isArray(userLayer.entries) ? userLayer.entries : [];
+      const ops = [];
+      for (let i = 0; i < entries.length; i++) {
+        if (i === skipIndex || !isPlainObject(entries[i])) continue;
+        for (const k of Object.keys(entries[i])) {
+          if (SECRET_FIELD.test(k)) ops.push({ op: "unset", path: ["entries", String(i), k] });
+        }
+      }
+      return ops;
     }
 
     /** 二轮修复：权威快照乐观更新——把本轮成功 ops 应用到 user 层克隆（与宿主 mutate 同形；随后读回仍为权威）。 */
@@ -464,18 +480,16 @@ globalThis.window?.__ModuleLoader__?.load({
     }
 
     function draftFrom(config) {
-      const entries = Array.isArray(config.entries) ? config.entries : [];
+      const entries = Array.isArray(config.entries) ? config.entries.filter(isPlainObject) : [];
       return {
         entries: entries.map((e) => {
           const passthrough = {};
-          if (isPlainObject(e)) {
-            for (const [k, value] of Object.entries(e)) {
-              if (HANDLED_ENTRY_FIELDS.includes(k) || SECRET_FIELD.test(k)) continue;
-              if (["string", "number", "boolean"].includes(typeof value)) passthrough[k] = value;
-            }
-            // proxy is a supported structured field; strip secret-shaped nested keys defensively.
-            if (Object.prototype.hasOwnProperty.call(e, "proxy")) passthrough.proxy = stripSecrets(e.proxy);
+          for (const [k, value] of Object.entries(e)) {
+            if (HANDLED_ENTRY_FIELDS.includes(k) || SECRET_FIELD.test(k)) continue;
+            if (["string", "number", "boolean"].includes(typeof value)) passthrough[k] = value;
           }
+          // proxy is a supported structured field; strip secret-shaped nested keys defensively.
+          if (Object.prototype.hasOwnProperty.call(e, "proxy")) passthrough.proxy = stripSecrets(e.proxy);
           return {
             ...passthrough,
             id: String(e.id),
@@ -1129,7 +1143,7 @@ globalThis.window?.__ModuleLoader__?.load({
       // 二轮修复（单写者）：提交整体在 commitChain 队列内执行——(a) 先 await 全部在途读回落进 latestRef；
       // (b) ops 从权威快照起算（buildOps(snap)，snap=最新持久投影）；(c) expectedRevision 取同一 snap（乐观锁）；
       // (d) 成功后乐观更新 latestRef 并 await load(true) 读回——队列内下一次提交必然从本轮之后的最新投影起算。
-      const commitDiscrete = (buildOps, successText) => {
+      const commitDiscrete = (buildOps, successText, onGateReject) => {
         const m0 = model;
         if (lockRef.current || m0.phase !== "ready" || typeof m0.revision !== "number") return Promise.resolve(false);
         return enqueueCommit(async () => {
@@ -1139,8 +1153,33 @@ globalThis.window?.__ModuleLoader__?.load({
           const snap = latestRef.current;
           if (!snap || typeof snap.revision !== "number") return false;
           let ops = null;
-          try { ops = buildOps(snap); } catch { ops = null; }
+          try {
+            ops = buildOps(snap);
+          } catch (err) {
+            if (!alive.current) return false;
+            if (onGateReject) onGateReject(snap);
+            setModel((m) => ({
+              ...m,
+              savedNotice: null,
+              sectionError: { text: `无法保存：${String((err && err.message) || err || "配置未通过校验")}`, issues: [] },
+            }));
+            return false;
+          }
           if (!ops || ops.length === 0) return true; // 意图未变化：无需写
+          // CFG-W-001 / CFG-W-002：所有离散写入在发出 mutate 前均须通过读闸等价预检。
+          const nextUser = applyOpsToLayer(snap.user, ops);
+          const nextEffective = { ...(isPlainObject(snap.base) ? snap.base : {}), ...nextUser };
+          const check = validate(nextEffective);
+          if (!check.ok) {
+            if (!alive.current) return false;
+            if (onGateReject) onGateReject(snap);
+            setModel((m) => ({
+              ...m,
+              savedNotice: null,
+              sectionError: { text: "无法保存：配置未通过校验", issues: check.issues.map((i) => i.message) },
+            }));
+            return false;
+          }
           if (lockRef.current) return false; // 队列排空后复核在途标志（排队期间可能已有新操作先行）
           setModel((m) => ({ ...m, busy: true, savedNotice: null, sectionError: null }));
           let response;
@@ -1207,7 +1246,9 @@ globalThis.window?.__ModuleLoader__?.load({
         const target = Boolean(ev.target && ev.target.checked);
         if (lockRef.current) return;
         setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, useOfficial: target } }));
-        commitDiscrete((m) => (effectiveOfficialOf(m) === target ? [] : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }]), null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变）
+        commitDiscrete((m) => (effectiveOfficialOf(m) === target
+          ? []
+          : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }, ...secretCleanupOps(m.user)]), null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变）
       };
 
       // 超时输入：失焦/回车 且 值有变化且合法 才提交（仅 timeoutMs 键）；成功后清 __global__ 草稿记录（SET-008）。
@@ -1229,7 +1270,9 @@ globalThis.window?.__ModuleLoader__?.load({
         // 五轮补充（codex 同族残留收口，lead (z) 点头）：对照合并后有效值（user 显式数值 → base → 默认 25000）
         // 判「变没变」——继承 world（base 有 timeoutMs、user 无覆盖）重输当前有效值零 mutate，
         // 新值落 user 层单键 override（与 official 开关同形，不连带具化条目列表）。
-        const run = commitDiscrete((snap) => (effectiveTimeoutMsOf(snap) === parsed ? [] : [{ op: "set", path: ["timeoutMs"], value: parsed }]), "已保存设置。");
+        const run = commitDiscrete((snap) => (effectiveTimeoutMsOf(snap) === parsed
+          ? []
+          : [{ op: "set", path: ["timeoutMs"], value: parsed }, ...secretCleanupOps(snap.user)]), "已保存设置。");
         run.then((ok) => { if (ok) draftCache.delete(DRAFT_CACHE_GLOBAL_KEY); }, () => {});
       };
 
@@ -1243,10 +1286,11 @@ globalThis.window?.__ModuleLoader__?.load({
         setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, entries: m.draft.entries.map((e) => (e.id === entryId ? { ...e, enabled: target } : e)) } }));
         commitDiscrete((m) => {
           const list = effectiveEntriesOf(m);
-          const idx = list.findIndex((e) => sameEntryId(e.id, entryId)); // #55：entryId 为草稿（trim）形态，持久行可能带首尾空白
+          const idx = list.findIndex((e) => isPlainObject(e) && sameEntryId(e.id, entryId)); // #55：entryId 为草稿（trim）形态，持久行可能带首尾空白
           if (idx < 0) return []; // 未提交新条目无持久化变更
           if ((list[idx].enabled !== false) === target) return []; // 意图未变化：无需写（对照有效值）
-          return toOps({ entries: list.map((e) => (sameEntryId(e.id, entryId) ? { ...e, enabled: target } : e)) }, { entries: userEntriesOf(m) });
+          const cleanList = list.map((e) => stripSecrets(isPlainObject(e) && sameEntryId(e.id, entryId) ? { ...e, enabled: target } : e));
+          return toOps({ entries: cleanList }, { entries: userEntriesOf(m) });
         }, null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变）
       };
 
@@ -1270,14 +1314,27 @@ globalThis.window?.__ModuleLoader__?.load({
         }));
         commitDiscrete((m) => {
           const user = userEntriesOf(m);
-          const uIdx = user.findIndex((e) => sameEntryId(e.id, entryId)); // #55：持久行 id 可能带首尾空白
-          if (uIdx >= 0) return [{ op: "unset", path: ["entries", String(uIdx)] }];
+          const uIdx = user.findIndex((e) => isPlainObject(e) && sameEntryId(e.id, entryId)); // #55：持久行 id 可能带首尾空白
+          if (uIdx >= 0) return [...secretCleanupOps(m.user, uIdx), { op: "unset", path: ["entries", String(uIdx)] }];
           const list = effectiveEntriesOf(m);
-          const idx = list.findIndex((e) => sameEntryId(e.id, entryId)); // #55
+          const idx = list.findIndex((e) => isPlainObject(e) && sameEntryId(e.id, entryId)); // #55
           if (idx < 0) return [];
           const hasUserEntries = isPlainObject(m && m.user) && Array.isArray(m.user.entries);
-          return toOps({ entries: list.filter((e) => !sameEntryId(e.id, entryId)) }, hasUserEntries ? { entries: user } : {});
-        }, "已保存设置。");
+          const remaining = list.filter((e) => !(isPlainObject(e) && sameEntryId(e.id, entryId))).map(stripSecrets);
+          return toOps({ entries: remaining }, hasUserEntries ? { entries: user } : {});
+        }, "已保存设置。", (snap) => {
+          const restored = draftFrom({ entries: effectiveEntriesOf(snap) }).entries;
+          setModel((m) => ({
+            ...m,
+            draft: {
+              ...m.draft,
+              entries: [
+                ...restored.map((r) => m.draft.entries.find((d) => sameEntryId(d.id, r.id)) || r),
+                ...m.draft.entries.filter((d) => !restored.some((r) => sameEntryId(r.id, d.id))),
+              ],
+            },
+          }));
+        });
       };
 
       // 拖拽/键盘重排：草稿先行（视觉即时），随后以持久化快照的相对顺序落盘（D-1 整条编码，仅 entries 键）。
@@ -1289,11 +1346,14 @@ globalThis.window?.__ModuleLoader__?.load({
         commitDiscrete((m) => {
           const user = userEntriesOf(m);
           const list = effectiveEntriesOf(m);
-          const present = new Set(list.map((e) => normEntryId(e.id))); // #55：持久行 id 可能带首尾空白，草稿 id 为 trim 形态
+          const cleanList = list.map(stripSecrets);
+          // 先跑读闸等价校验（捕捉重复 id / null 字段 / 非对象项），防止在非法配置上静默吞错返回 []。
+          normalizeConfig({ entries: cleanList });
+          const present = new Set(cleanList.map((e) => normEntryId(e.id))); // #55：持久行 id 可能带首尾空白，草稿 id 为 trim 形态
           const targetIds = ids.filter((id) => present.has(normEntryId(id)));
-          if (targetIds.length !== list.length) return []; // 草稿含未提交新条目（不在有效列表）：持久化顺序不受影响
-          if (targetIds.every((id, i) => sameEntryId(id, list[i].id))) return [];
-          const byId = new Map(list.map((e) => [normEntryId(e.id), e]));
+          if (targetIds.length !== cleanList.length) return []; // 草稿含未提交新条目（不在有效列表）：持久化顺序不受影响
+          if (targetIds.every((id, i) => sameEntryId(id, cleanList[i].id))) return [];
+          const byId = new Map(cleanList.map((e) => [normEntryId(e.id), e]));
           return toOps({ entries: targetIds.map((id) => byId.get(normEntryId(id))) }, { entries: user });
         }, "已保存设置。");
       };
@@ -1370,8 +1430,8 @@ globalThis.window?.__ModuleLoader__?.load({
       // 二轮修复：同时查权威快照——创建提交成功但读回未落定时闭包 user 缺该条目，误判 create 会使重挂校验误报版本冲突。
       // 五轮修复（codex 复审 P1/P2 同根）：继承条目（base 层已持久）同样判为已持久——驱动编辑器编辑/新建
       // 语义、取消时恢复持久值（而非当作新条目删行）、SET-008 缓存记录 mode（edit 而非 create）。
-      const entryIsPersisted = (m, entry) => effectiveEntriesOf(m).some((e) => sameEntryId(e.id, entry.id))
-        || (latestRef.current && effectiveEntriesOf(latestRef.current).some((e) => sameEntryId(e.id, entry.id))); // #55：持久行 id 可能带首尾空白
+      const entryIsPersisted = (m, entry) => effectiveEntriesOf(m).some((e) => isPlainObject(e) && sameEntryId(e.id, entry.id))
+        || (latestRef.current && effectiveEntriesOf(latestRef.current).some((e) => isPlainObject(e) && sameEntryId(e.id, entry.id))); // #55：持久行 id 可能带首尾空白
 
       // 编辑器提交的候选条目列表：按稳定条目 id 合并该条目全部托管字段，
       // 其余条目取持久化快照值；载荷不含其他条目/全局字段草稿（SET-006）。
@@ -1381,23 +1441,24 @@ globalThis.window?.__ModuleLoader__?.load({
       // 新建 → 继承兄弟行全没）。toOps 底仍为 user 层：对空 user 层逐行整条 set = 有效列表整单具化。
       // V5-7（Issue #58）：proxyIntent（见 proxyIntentOf）——null=未触碰（proxy 原样保留）；
       // {proxy}=覆盖写入；{removeProxy}=删除该字段。与 editorCredInputs 凭据逻辑正交（keyless 条目同样适用）。
+      // CFG-W-003：对返回条目统一剥离 SECRET_FIELD，由 toOps 对未移动条目自动产出字段级 unset 清理残留明文。
       const candidateEntriesFor = (m, entry, credRef, proxyIntent) => {
         const list = effectiveEntriesOf(m);
-        const matched = list.find((e) => sameEntryId(e.id, entry.id)); // #55：持久行 id 可能带首尾空白
+        const matched = list.find((e) => isPlainObject(e) && sameEntryId(e.id, entry.id)); // #55：持久行 id 可能带首尾空白
         // #55：命中持久行时 patch.id 取原持久行 raw id——trim 后草稿 id 不得改写原持久 id（写回最小字段级 diff）。
         const patch = { id: matched ? matched.id : entry.id, type: entry.type, name: entry.name, enabled: entry.enabled };
         if (credRef) patch.credentialRef = credRef;
         if (proxyIntent && proxyIntent.proxy !== undefined) patch.proxy = proxyIntent.proxy;
         if (matched) {
           return list.map((e) => {
-            if (!sameEntryId(e.id, entry.id)) return e;
-            const out = { ...e, ...patch };
+            if (!isPlainObject(e) || !sameEntryId(e.id, entry.id)) return stripSecrets(e);
+            const out = stripSecrets({ ...e, ...patch });
             if (!credRef) delete out.credentialRef;
             if (proxyIntent && proxyIntent.removeProxy) delete out.proxy; // 触碰并清空 = 删除字段（未触碰不动）
             return out;
           });
         }
-        return [...list, { ...patch }];
+        return [...list.map((e) => stripSecrets(e)), stripSecrets({ ...patch })];
       };
 
       // 条目级提交（新建=创建 / 编辑=更新）：先凭据后配置；成功=该条目整体生效并关闭编辑器；
@@ -1449,6 +1510,15 @@ globalThis.window?.__ModuleLoader__?.load({
             if (!alive.current) return;
             const snap = latestRef.current;
             if (!snap || typeof snap.revision !== "number") throw new Error("宿主投影缺少 revision，禁止保存（请重新打开设置）");
+            // CFG-W-004：先于 credentials/set 执行写闸预检与绑定守卫，避免配置校验失败时留下孤儿凭据写入。
+            const preCandidate = candidateEntriesFor(snap, entry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef, proxyIntent);
+            const baseObj = isPlainObject(snap.base) ? snap.base : {};
+            const userObj = isPlainObject(snap.user) ? snap.user : {};
+            const preCheck = validate({ ...baseObj, ...{ ...userObj, entries: preCandidate } });
+            if (!preCheck.ok) throw new Error(`校验未通过：${preCheck.issues.map((i) => i.message).join("；")}`);
+            if (!singleEntryDiff({ entries: effectiveEntriesOf(snap) }, preCandidate, boundId)) {
+              throw new Error("提交目标与编辑器绑定条目不一致（持久快照漂移），本次写入已拒绝；请重新保存");
+            }
             if (writesKey) {
               // 新引用总是 POSIX 合法（受控生成）；先写凭据，成功后才允许携带新 ref 落盘。
               const newRef = credentialRefFor(boundId);
@@ -1457,16 +1527,7 @@ globalThis.window?.__ModuleLoader__?.load({
               const credResult = unwrap(credResponse);
               if (!credResult.ok) throw new Error(credResult.message || "凭据服务拒绝写入");
             }
-            const candidate = candidateEntriesFor(snap, entry, credRef, proxyIntent);
-            // 绑定守卫：漂移即拒发（可见报错，不得静默覆盖他条目）。
-            // 五轮修复（codex 复审 P1 配套）：对照有效持久列表（继承合并视图）裁决——继承条目的候选行
-            // 对 base 底板「他行零改动」即放行（旧版对照 user 层：继承编辑被误走新建分支，守卫按长度
-            // +1 拒发=继承条目永远无法提交；继承新建则把 user 层空列表当底板，守卫与遮蔽缺陷同源）。
-            if (!singleEntryDiff({ entries: effectiveEntriesOf(snap) }, candidate, boundId)) {
-              throw new Error("提交目标与编辑器绑定条目不一致（持久快照漂移），本次写入已拒绝；请重新保存");
-            }
-            const check = validate({ ...snap.base, ...{ ...snap.user, entries: candidate } });
-            if (!check.ok) throw new Error(`校验未通过：${check.issues.map((i) => i.message).join("；")}`);
+            const candidate = writesKey ? candidateEntriesFor(snap, entry, credRef, proxyIntent) : preCandidate;
             const ops = toOps({ entries: candidate }, { entries: userEntriesOf(snap) });
             if (ops.length > 0) {
               const response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: snap.revision });
@@ -1513,7 +1574,7 @@ globalThis.window?.__ModuleLoader__?.load({
             if (entryIsPersisted(m, entry)) {
               // 五轮修复（codex 复审 P1/P2 配套）：持久值取有效行——继承条目的取消恢复到 base 值；
               // 旧版 entryIsPersisted 对继承条目误判新建（删行=页内丢失继承条目）且此处查不到持久行。
-              const persisted = effectiveEntriesOf(m).find((e) => sameEntryId(e.id, entry.id)); // #55：持久行 id 可能带首尾空白
+              const persisted = effectiveEntriesOf(m).find((e) => isPlainObject(e) && sameEntryId(e.id, entry.id)); // #55：持久行 id 可能带首尾空白
               entries = entries.map((e) => (e.id === entry.id
                 ? {
                     ...e,
@@ -1645,7 +1706,7 @@ globalThis.window?.__ModuleLoader__?.load({
       // 新建（未持久）条目无外层卡片，编辑器继续置于新建块之后（不入列表，V3-1 判据不变）。
       // #55：持久行 id 可能带首尾空白，草稿 id 为 trim 形态——身份集合按 trim 后构建，
       // 带空白 id 的有效条目卡片不再被过滤隐藏（cardNodes/幽灵过滤的 .has(草稿id) 判据不变）。
-      const persistedIdSet = new Set(effectiveEntriesOf(model).map((e) => normEntryId(e.id)));
+      const persistedIdSet = new Set(effectiveEntriesOf(model).filter(isPlainObject).map((e) => normEntryId(e.id)));
       // SET-006：提交钮实时校验（在途/只读/缺 revision/校验失败 → 禁用）；新 ref 由受控生成、恒合法，校验用占位 ref 投影。
       const editorIsCreate = editorEntry ? !entryIsPersisted(model, editorEntry) : false;
       // V5-2/V5-3：新增表单关闭（取消/Escape/保存成功 → editingId 落空）且未改开其他编辑器
