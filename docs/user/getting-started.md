@@ -6,12 +6,13 @@
 
 前提：
 
-- 宿主为 DeepSeek Harness（DSH），本包的宿主依赖按 `package.json` 声明为 `0.2.2-rc.5`：`@deepseek-ai/dsh-web-search-deepseek`、`@deepseek-ai/dsh-llm-deepseek`、`@deepseek-ai/dsh-credentials`、`@deepseek-ai/dsh-launch-environment`。宿主版本与这组依赖的兼容范围尚未发布验证，发布时以实际安装测试为准。
+- 宿主为 DeepSeek Harness（DSH），版本须在 `package.json` 的 `engines.dsh` 范围内（`>=0.2.2-rc.5 <0.3.0-0`，宿主依赖 `0.2.2-rc.5` 组）。该兼容范围已在 0.2.2-rc.5 上实装验证（见 `docs/project/releases/v0.1.0.md`）。
 - 包不提交锁文件（`.gitignore` 忽略 `pnpm-lock.yaml`），依赖解析由 DSH 的安装流程完成。
 
-安装方式（二选一）：
+安装方式（三选一）：
 
-- 在 DSH 中打开 **Plugins** > **Add plugin**，选择本包所在的本地目录。
+- **从 GitHub 安装（发布渠道）**：按根目录 [INSTALL.md](../../INSTALL.md) 用发布 tag 解引用后的 40 位完整 commit 安装（`git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>`），支持后续「更新」能力。
+- 在 DSH 中打开 **Plugins** > **Add plugin**，选择本包所在的本地目录（开发自用）。
 - 由管理员通过插件管理工具安装：`install_bundle`，`target` 填写包目录的绝对路径。
 
 安装只注册搜索 provider `search-chain`，不会改写你现有的搜索或抓取选择。升级已安装的版本，见 [升级指南](upgrade.md)。
