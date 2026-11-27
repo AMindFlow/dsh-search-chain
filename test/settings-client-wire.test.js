@@ -80,8 +80,8 @@ const SECTION_ID = "search-chain";
 const SECTION_TITLE = "网页搜索链";
 const SECTION_ORDER = 30; // [L2]：agent-presets 20 之后
 const PACKAGE_ID = "dsh-search-chain"; // [M3]：load 注册 id 恒 = 包名
-// 区域标题 + 编辑指引要素（#46 rev 轮，P1-1 已证路径定案：真机 verify-ui-46 步骤 6a-6b 实证
-// 可走路径 = 侧栏「插件」→ dsh-search-chain 卡片 → 详情页配置表单；「设置→…」路由仍未证
+// 区域标题 + 编辑指引要素（#46 rev 轮历史定案：当时真机验收（verify-ui-46，脚本已随 #80 退役）
+// 实证可走路径 = 侧栏「插件」→ 卡片 → 详情页配置表单；「设置→…」路由仍未证
 // （nav 无设置入口）→ 禁「设置→」前缀，设置页路由仍为规格 BCF-006 开放项。历史：六要素
 // 钉过约束废 → 放宽为 设置+包名 → 本轮按已证路径重新收紧（git 历史可考））：
 // Issue #48 migration：section 4 原断言 v0.1 只读指示器的指引文案（插件/详情/配置表单）已迁移为
@@ -97,7 +97,8 @@ const PHANTOM_SERVICES = ["configEditor", "credentials", "host"];
 // ↑ "host"（#46 迁移轮，真机两轮探针定案，BCF-001 冲突史）：静态 client factory 声明
 //   inject:["slots","host"] → 包不激活 `pending (waiting for service: host)`；未声明读
 //   ctx.host → 抛 `cannot get property "host" without inject`。host.call → 宿主半通道作废，
-//   表单读写走同源 settings RPC（bundle-config-ui.md [C3][C8]）。
+//   表单读写走同源 settings RPC（历史规格 bundle-config-ui [C3][C8]，#80 后通道钉由
+//   settings-ui.md 与 helpers/settings-panel-v02.js C-5 继续承担）。
 
 // cache-bust：自注册模块的每次动态 import 用新 URL（?v=）绕开 ESM 模块缓存，
 // 保证 [M1] 的 import 期 load 副作用每次重新执行。
@@ -407,8 +408,8 @@ test("挂载形状（factory 产物）：apply→inject 回调恰 1 次 register
       );
     }
     // 恰 1 次 inject；注册懒挂载：apply 时点不得已 register（[M1] 模板：inject 懒回调）。
-    // #46 BCF-001：apply 另含 plugins.bundle.config 槽（见 client-bundle-config.test.js 第 1 组），
-    // 故钉 settings.section 的 inject 次数（不再钉 apply 的总 inject 数）。
+    // #80：bundle 配置槽退役，配置入口唯一 → 总 inject 数收回到恰 1。
+    assert.equal(h.injects.length, 1, `apply 总 inject 数须恰 1（#80 后无 bundle 槽）；现 ${h.injects.length} 次`);
     assert.equal(
       h.injects.filter((x) => x.name === SLOT).length,
       1,
@@ -555,8 +556,8 @@ test("幂等：factory 产物同一 ctx 重复 apply 不双 inject；挂载后�
   } catch (e) {
     assert.fail(`apply(ctx) 在 live 形状 ctx 上直接抛错（见第 4 组）：${e && e.message}`);
   }
-  // #46 BCF-001：总 inject 数含 plugins.bundle.config 槽，钉 settings.section 的次数。
-  assert.equal(h.injects.filter((x) => x.name === SLOT).length, 1, "重复 apply 不得双 inject（settings.section）");
+  // #80：bundle 槽退役，重复 apply 的总 inject 恰 1。
+  assert.equal(h.injects.length, 1, "重复 apply 不得双 inject（总 inject 恰 1，#80）");
   h.mountInjected(0);
   assert.equal(h.regs.length, 1, "重复 apply + 挂载后仍恰 1 个 settings.section 注册");
   const cleanups = runEffects(h.effects);

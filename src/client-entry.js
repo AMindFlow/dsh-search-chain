@@ -1,4 +1,5 @@
-// WP13 客户端挂载线：Client 产物入口（SET-001 / DSH-001）+ Issue #48 设置面板（SET-001..005）+ bundle 页配置表单（BCF-001..006）。
+// WP13 客户端挂载线：Client 产物入口（SET-001 / DSH-001）+ Issue #48 设置面板（SET-001..005）。
+// Issue #80：详情页 bundle 配置表单（历史 BCF-001..006）已退役——配置入口唯一归设置页面板。
 //
 // 装载链（DSH 0.2.2-rc.5 app.asar 模板，权威）：
 //   本文件顶层经 window.__ModuleLoader__.load({ id, factory }) 自注册；id 恒为包名。
@@ -12,7 +13,8 @@
 //   - 幂等：同一 ctx.slots 重复 apply 只挂载一次；卸载 cleanup 经 ctx.effect 登记并清空幂等键。
 //   - React 缺失（require 抛出或返回非 React 值）时组件安全降级为 null。
 //
-// 通道（规格 bundle-config-ui.md [C8]）：
+// 通道（同源 settings RPC；历史规格 bundle-config-ui [C8] 退役后由 settings-ui.md 与
+// helpers/settings-panel-v02.js C-5 钉继续承担）：
 //   读 = 同源 POST /api/settings/describe（args={}），取 namespaces 中 ns=search-chain 的 user 层与
 //         revision（投影）；缺 revision 即禁止保存。
 //   写 = 同源 POST /api/settings/mutate，args={ns, ops, expectedRevision}；凭据只写 = /api/credentials/set，args={ref,value}；
@@ -23,9 +25,7 @@
 
 const PROVIDER_ID = "search-chain";
 const SEARCH_NS = "search-chain"; // settings namespace（行 id 同值）
-const PACKAGE_KEY = "dsh-search-chain"; // [C1] plugins.bundle.config 以包名为 key（非行 id）
 const SECTION_SLOT = "settings.section";
-const BUNDLE_SLOT = "plugins.bundle.config";
 const SECTION_TITLE = "网页搜索链";
 
 /** 区域排序：live [L2] 既有 occupants 之后。 */
@@ -1961,303 +1961,11 @@ globalThis.window?.__ModuleLoader__?.load({
     // 内联纯函数面（merge/validate/toOps + SET-008 缓存纯函数 draftCacheApply），测试经此访问。
     SettingsPanel.contract = contract;
 
-    /** bundle 页配置组件（第二参，plugins.bundle.config）。只用 useState / useEffect / useRef。 */
-    function BundleConfig(props) {
-      if (!React) return null;
-      const view = props && props.view;
-      const [model, setModel] = React.useState({
-        phase: "loading", // loading | ready | unavailable
-        draft: EMPTY_DRAFT,
-        base: {},
-        user: {},
-        revision: undefined,
-        status: IDLE,
-      });
-      const alive = React.useRef(true);
-      const ackPending = React.useRef(false);
-
-      /** 读取投影（describe）。挂载与保存后的刷新共用。 */
-      const load = (keepStatus) => {
-        setModel((m) => ({ ...m, phase: "loading" }));
-        let pending;
-        try {
-          pending = rpc("describe", {});
-        } catch (err) {
-          pending = Promise.reject(err);
-        }
-        Promise.resolve(pending).then(
-          (res) => {
-            if (!alive.current) return;
-            const got = unwrap(res);
-            const proj = got.ok ? projectionOf(got.value) : null;
-            if (!proj) {
-              const text = got.ok ? "宿主投影中缺少 search-chain 命名空间" : `读取配置失败：${got.message}`;
-              setModel((m) => ({ ...m, phase: "unavailable", revision: undefined, status: { kind: "error", text, issues: [] } }));
-              return;
-            }
-            if (proj.revision === undefined) {
-              setModel((m) => ({
-                ...m,
-                phase: "unavailable",
-                revision: undefined,
-                status: { kind: "error", text: "宿主投影缺少 revision，禁止保存（请重新打开配置表单）", issues: [] },
-              }));
-              return;
-            }
-            const effective = { ...proj.base, ...proj.user };
-            const check = validate(effective);
-            setModel((m) => ({
-              ...m,
-              phase: "ready",
-              base: proj.base,
-              user: proj.user,
-              revision: proj.revision,
-              draft: draftFrom(check.ok ? check.config : effective),
-              status: keepStatus
-                ? m.status
-                : check.ok
-                  ? IDLE
-                  : { kind: "error", text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) },
-            }));
-          },
-          (err) => {
-            if (!alive.current) return;
-            setModel((m) => ({
-              ...m,
-              phase: "unavailable",
-              revision: undefined,
-              status: { kind: "error", text: `读取配置失败：${String((err && err.message) || err)}`, issues: [] },
-            }));
-          },
-        );
-      };
-
-      // 挂载即拉取投影。
-      React.useEffect(() => {
-        alive.current = true;
-        load();
-        return () => {
-          alive.current = false;
-        };
-      }, []);
-
-      // 保存进行中：一次性 ref 驱动结果回填后的那一趟渲染（真实 React 下仅多一次渲染）。
-      if (model.status.kind !== "pending") ackPending.current = false;
-      else if (!ackPending.current) {
-        ackPending.current = true;
-        setModel((m) => ({ ...m }));
-      }
-
-      if (view === "summary") {
-        return React.createElement(
-          "section",
-          { "data-bundle-config-summary": "1" },
-          React.createElement("span", null, "网页搜索链：条目与超时在配置表单中管理"),
-        );
-      }
-
-      const ready = model.phase === "ready";
-      const draft = model.draft;
-      const setDraft = (fn) => setModel((m) => ({ ...m, draft: fn(m.draft) }));
-      const updateEntry = (id, patch) =>
-        setDraft((d) => ({ ...d, entries: d.entries.map((e) => (e.id === id ? { ...e, ...patch } : e)) }));
-      const removeEntry = (id) => setDraft((d) => ({ ...d, entries: d.entries.filter((e) => e.id !== id) }));
-      const addEntry = () => {
-        setDraft((d) => ({
-          ...d,
-          entries: [
-            ...d.entries,
-            { id: `new-${d.entries.length + 1}-${Date.now().toString(36)}`, type: TOOL_TYPES[0], name: "", enabled: true, credentialRef: "" },
-          ],
-        }));
-      };
-
-      const save = () => {
-        if (!ready) return;
-        if (typeof model.revision !== "number") {
-          setModel((m) => ({ ...m, status: { kind: "error", text: "缺少 revision，禁止保存（请重新打开配置表单）", issues: [] } }));
-          return;
-        }
-        const form = {
-          entries: draft.entries.map((e) => ({
-            id: e.id,
-            type: e.type,
-            name: e.name,
-            enabled: e.enabled,
-            credentialRef: e.credentialRef,
-          })),
-          useOfficialDeepSeekSearch: draft.useOfficial,
-          timeoutMs: Number(draft.timeoutText),
-        };
-        const merged = merge(form, model.user);
-        const check = validate(Object.assign({}, model.base, merged));
-        if (!check.ok) {
-          setModel((m) => ({
-            ...m,
-            status: { kind: "error", text: "配置未保存：校验未通过", issues: check.issues.map((i) => i.message) },
-          }));
-          return;
-        }
-        let ops;
-        try {
-          ops = toOps(merged, model.user);
-        } catch (err) {
-          setModel((m) => ({ ...m, status: { kind: "error", text: String((err && err.message) || err), issues: [] } }));
-          return;
-        }
-        const revision = model.revision;
-        setModel((m) => ({ ...m, status: { kind: "pending", text: "保存中…", issues: [] } }));
-        let pending;
-        try {
-          pending = rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: revision });
-        } catch (err) {
-          pending = Promise.reject(err);
-        }
-        Promise.resolve(pending).then(
-          (res) => {
-            if (!alive.current) return;
-            const got = unwrap(res);
-            if (got.ok) {
-              const nextRev = got.value && typeof got.value.revision === "number" ? got.value.revision : undefined;
-              setModel((m) => ({
-                ...m,
-                user: merged,
-                revision: nextRev !== undefined ? nextRev : m.revision,
-                status: { kind: "saved", text: "已保存", issues: [] },
-              }));
-              if (nextRev === undefined) load(true); // 宿主回包未带 revision：重新读投影取得新版本号（保留 saved 态）
-            } else {
-              setModel((m) => ({
-                ...m,
-                status: { kind: "error", text: `保存失败：${got.message}`, issues: [] },
-              }));
-            }
-          },
-          (err) => {
-            if (!alive.current) return;
-            setModel((m) => ({
-              ...m,
-              status: { kind: "error", text: `保存失败：${String((err && err.message) || err)}`, issues: [] },
-            }));
-          },
-        );
-      };
-
-      const disabled = !ready;
-      const field = (attrs) => React.createElement("input", attrs);
-      const rows = draft.entries.map((e) =>
-        React.createElement(
-          "li",
-          { key: e.id, "data-config-entry": e.id },
-          React.createElement("span", null, e.name || "（未命名条目）"),
-          React.createElement(
-            "select",
-            {
-              "data-config-field": "entry-type",
-              value: e.type,
-              disabled,
-              onChange: (ev) => updateEntry(e.id, { type: ev.target.value }),
-            },
-            TOOL_TYPES.map((t) => React.createElement("option", { key: t, value: t }, t)),
-          ),
-          field({
-            type: "text",
-            "data-config-field": "entry-name",
-            value: e.name,
-            disabled,
-            "aria-label": "条目名称",
-            onChange: (ev) => updateEntry(e.id, { name: ev.target.value }),
-          }),
-          field({
-            type: "checkbox",
-            "data-config-field": "entry-enabled",
-            checked: e.enabled,
-            disabled,
-            "aria-label": "启用条目",
-            onChange: (ev) => updateEntry(e.id, { enabled: ev.target.checked }),
-          }),
-          field({
-            type: "text",
-            "data-config-field": "entry-credentialRef",
-            value: e.credentialRef,
-            disabled,
-            placeholder: "凭据引用（credentialRef）",
-            "aria-label": "凭据引用",
-            onChange: (ev) => updateEntry(e.id, { credentialRef: ev.target.value }),
-          }),
-          React.createElement(
-            "button",
-            { type: "button", "data-config-action": "remove-entry", disabled, onClick: () => removeEntry(e.id) },
-            "删除",
-          ),
-        ),
-      );
-
-      const st = model.status;
-      const statusNode =
-        st.kind === "saved"
-          ? React.createElement("span", { "data-config-status": "saved" }, st.text)
-          : st.kind === "pending"
-            ? React.createElement("span", { "data-config-status": "pending" }, st.text)
-            : st.kind === "error"
-              ? React.createElement(
-                  "div",
-                  { "data-config-status": "error" },
-                  React.createElement("span", { "data-config-error": "1" }, st.text),
-                  ...st.issues.map((m, i) => React.createElement("p", { key: `issue-${i}` }, m)),
-                )
-              : null;
-
-      return React.createElement(
-        "div",
-        { "data-bundle-config": "1" },
-        React.createElement(
-          "label",
-          null,
-          field({
-            type: "checkbox",
-            "data-config-field": "useOfficialDeepSeekSearch",
-            checked: draft.useOfficial,
-            disabled,
-            onChange: (ev) => setDraft((d) => ({ ...d, useOfficial: ev.target.checked })),
-          }),
-          " 使用官方 DeepSeek 搜索",
-        ),
-        React.createElement(
-          "label",
-          null,
-          "超时（毫秒）",
-          field({
-            type: "number",
-            min: 1,
-            step: 1,
-            "data-config-field": "timeoutMs",
-            value: draft.timeoutText,
-            disabled,
-            onChange: (ev) => setDraft((d) => ({ ...d, timeoutText: ev.target.value })),
-          }),
-        ),
-        React.createElement("ul", null, ...rows),
-        React.createElement(
-          "button",
-          { type: "button", "data-config-action": "add-entry", disabled, onClick: addEntry },
-          "添加条目",
-        ),
-        React.createElement(
-          "button",
-          { type: "button", "data-config-action": "save", disabled, onClick: save },
-          "保存",
-        ),
-        statusNode,
-      );
-    }
-
-    BundleConfig.contract = contract;
 
     return {
       inject: ["slots"],
       /**
-       * 挂载「网页搜索链」设置区（SET-001）与 bundle 页配置表单（BCF-001）。
+       * 挂载「网页搜索链」设置区（SET-001）——配置入口唯一。
        * @param {{
        *   slots: {
        *     inject(slot: string, factory: () => (() => void)): () => void,
@@ -2278,14 +1986,9 @@ globalThis.window?.__ModuleLoader__?.load({
           ),
         );
 
-        const offBundle = ctx.slots.inject(BUNDLE_SLOT, () =>
-          ctx.slots.register({ name: BUNDLE_SLOT, key: PACKAGE_KEY, inject: () => ({}) }, BundleConfig),
-        );
-
         // 卸载语义（DSH-001）：撤销懒挂载并清除幂等键；重复调用无副作用。
         ctx.effect(() => () => {
           offSection();
-          offBundle();
           mounted.delete(key);
         });
       },

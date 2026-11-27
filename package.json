@@ -42,7 +42,6 @@
   "scripts": {
     "test": "node --test --test-timeout=30000 test/",
     "verify:desktop-43": "node scripts/verify-desktop-43.mjs",
-    "verify:ui-46": "node scripts/verify-ui-46.mjs",
     "verify:ui-48": "node scripts/verify-ui-48.mjs"
   },
   "files": [
