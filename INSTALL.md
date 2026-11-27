@@ -5,16 +5,17 @@
 ## 前提（一次性）
 
 1. DSH 版本满足 `package.json` 的 `engines.dsh`（`>=0.2.2-rc.5 <0.3.0-0`）。版本不符会被宿主挡下，不会装坏。
-2. 本仓库为公开仓库，HTTPS 匿名可读；无需 GitHub 授权。私有化后需把你的 Git 凭证配好（推荐 `ssh -T git@github.com` 验证通过）。
-3. 本插件注册搜索 provider `search-chain`，不自动改写 `web.searchProvider`。若同时装了其他把 `web.searchProvider` 指到自己或内置行的补丁插件（modsearch、free-web-search、官方「会话/搜索」实验包等），后装的补丁可能赢，行为不可预期——先卸掉同类再装本插件，或装完后核对 `web.searchProvider` 行。
+2. 机器上有 **pnpm** 且在 PATH（Git 渠道安装由 pnpm 拉取与解析依赖；缺了会报 `spawn pnpm ENOENT`）：`npm install -g pnpm` 或 `corepack enable pnpm`。
+3. 本仓库为公开仓库，HTTPS 匿名可读；无需 GitHub 授权。私有化后需把你的 Git 凭证配好（推荐 `ssh -T git@github.com` 验证通过）。
+4. 本插件注册搜索 provider `search-chain`，不自动改写 `web.searchProvider`。若同时装了其他把 `web.searchProvider` 指到自己或内置行的补丁插件（modsearch、free-web-search、官方「会话/搜索」实验包等），后装的补丁可能赢，行为不可预期——先卸掉同类再装本插件，或装完后核对 `web.searchProvider` 行。
 
 ## 安装（固定 40 位提交）
 
 取发布 tag 指向的完整 commit：
 
 ```bash
-git ls-remote https://github.com/AMindFlow/dsh-search-chain.git 'refs/tags/v0.1.0*'
-# 取 refs/tags/v0.1.0^{} 那一行的 40 位 SHA（^{} 解引用后的 commit，不是 tag 对象本身）
+git ls-remote --tags https://github.com/AMindFlow/dsh-search-chain.git
+# 取最新 refs/tags/v0.1.*^{} 那一行的 40 位 SHA（^{} 解引用后的 commit，不是 tag 对象本身）
 ```
 
 **方式 A · 交给你的 DSH 装**（推荐，桌面版/网页版皆可）——把这句话发给 DeepSeek Harness（Standard 模式，它会用插件管理器安装并要求你确认）：
@@ -22,6 +23,14 @@ git ls-remote https://github.com/AMindFlow/dsh-search-chain.git 'refs/tags/v0.1.
 > 用 plugin_manager 的 install_bundle 安装 `git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>`。
 
 **方式 B · 桌面插件页**：Plugins → Add plugin → 输入 `git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>` → 安装 → 启用。
+
+**方式 C · 命令行**（终端用户/CI）：
+
+```bash
+npx -y @deepseek-ai/dsh plugin --profile <profile名> add "git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>"
+```
+
+profile 不存在会自动创建；成功后 `<profile>/package.json` 的 dependencies 与 `dsh.profile.bundles` 均写入本插件，重启 DSH 生效。
 
 注意：**spec 必须钉 40 位完整 commit**。用分支名或裸 tag 安装的副本在 DSH 里没有「更新」能力（官方规则：非完整 commit 的 git spec 不可更新）。
 
