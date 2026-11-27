@@ -28,6 +28,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { existsSync, realpathSync, rmSync } from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as C from "./helpers/contract.js";
 import { createFakeFetch, SYNTHETIC_PAC } from "./helpers/fake-fetch.js";
@@ -1540,8 +1544,10 @@ test("T12-3 RSS 看门狗端到端：有限分配 >144MiB 子进程（1s 内自�
     "  }, 1000);",
     "});",
   ].join("\n");
-  const rssProbeSpawn = (cmd, _args, opts) => {
-    const child = spawn(cmd, ["-e", allocChildCode], opts);
+  const rssProbeSpawn = (cmd, args, opts) => {
+    const execIdx = Array.isArray(args) ? args.findIndex((a) => String(a).startsWith("--max-old-space-size=")) : -1;
+    const childArgs = execIdx > 0 ? [...args.slice(0, execIdx), "-e", allocChildCode] : ["-e", allocChildCode];
+    const child = spawn(cmd, childArgs, opts);
     child.once("exit", (code, signal) => settleExit({ code, signal }));
     return child;
   };
@@ -1692,3 +1698,403 @@ test("T12-4 语义回归：常规路由与助手重定义照常，repeat/JSON.pa
     assert.equal(fetchFn.count(TARGET), 0, "求值失败后不得向目标出站");
   }
 });
+
+// ─── T13 Issue #64：macOS sandbox-exec OS 级最小权限加固单测与集成 PoC ─────────────
+
+function makeStubChildWithOutcome(outcome = "SDIRECT") {
+  const child = new EventEmitter();
+  child.pid = 42424;
+  child.killed = false;
+  child.send = (msg) => {
+    queueMicrotask(() => {
+      child.emit("message", { id: msg.id, outcome });
+      child.emit("close", 0, null);
+    });
+  };
+  child.kill = () => {
+    child.killed = true;
+  };
+  child.disconnect = () => {};
+  return child;
+}
+
+test("T13-1 命令形态（OSB-001/002）：darwin 且探测通过时以 /usr/bin/sandbox-exec -p <profile> 直接 exec 包裹 worker", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  const calls = [];
+  const stubSpawn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return makeStubChildWithOutcome("SDIRECT");
+  };
+  const fetchFn = createFakeFetch({ default: "never" });
+  const entry = C.makeEntry({ id: "e-pac-t13-cmd", type: "tavily", proxy: { pac: SYNTHETIC_PAC } });
+  const transport = mod.createEntryTransport(entry, {
+    fetch: fetchFn,
+    spawnProcess: stubSpawn,
+    sandbox: {
+      platform: "darwin",
+      sandboxExecPath: "/usr/bin/sandbox-exec",
+      probe: () => true,
+      cache: new Map(),
+    },
+  });
+  declarePac(fetchFn, 'function FindProxyForURL() { return "DIRECT"; }');
+  fetchFn.when(TARGET).responds({ status: 200, body: { ok: true } });
+
+  const out = await captureFetch(transport);
+  assert.equal(out.state, "ok", `包裹命令形态下合法 PAC 必须成功，实际：${out.error?.message ?? "(无)"}`);
+  assert.equal(calls.length, 1);
+
+  const { cmd, args, opts } = calls[0];
+  assert.equal(cmd, "/usr/bin/sandbox-exec", "首参必须为 /usr/bin/sandbox-exec（禁止 sh -c 包装壳）");
+  assert.equal(args[0], "-p");
+  assert.equal(typeof args[1], "string");
+  const profile = args[1];
+  const execReal = realpathSync(process.execPath);
+  assert.equal(args[2], execReal, "第 3 参数必须为 process.execPath 的 realpath");
+  assert.equal(args[3], "--max-old-space-size=24");
+  assert.equal(args[4], PAC_WORKER_FILE);
+  assert.deepEqual(opts.stdio, ["ignore", "ignore", "ignore", "ipc"]);
+  assert.deepEqual(opts.env, { ELECTRON_RUN_AS_NODE: "1" });
+
+  assert.ok(profile.includes("(version 1)"));
+  assert.ok(profile.includes("(deny default)"));
+  assert.ok(profile.includes("(deny file-write*)"));
+  assert.ok(profile.includes("(deny network*)"));
+  assert.ok(profile.includes("(deny process-fork)"));
+  assert.ok(profile.includes(`(allow process-exec (literal ${JSON.stringify(execReal)}))`));
+  assert.ok(profile.includes("(allow dynamic-code-generation)"));
+  assert.ok(profile.includes("(allow sysctl-read)"));
+});
+
+test("T13-2 能力探测缓存（OSB-001）：连续多次未命中缓存求值，probe 只执行一次", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  let probeCount = 0;
+  const sharedCache = new Map();
+  const stubSpawn = () => makeStubChildWithOutcome("SDIRECT");
+
+  for (const suffix of ["one", "two"]) {
+    const fetchFn = createFakeFetch({ default: "never" });
+    const entry = C.makeEntry({ id: `e-pac-t13-cache-${suffix}`, type: "tavily", proxy: { pac: SYNTHETIC_PAC } });
+    const transport = mod.createEntryTransport(entry, {
+      fetch: fetchFn,
+      spawnProcess: stubSpawn,
+      sandbox: {
+        platform: "darwin",
+        sandboxExecPath: "/usr/bin/sandbox-exec",
+        probe: () => {
+          probeCount += 1;
+          return true;
+        },
+        cache: sharedCache,
+      },
+    });
+    declarePac(fetchFn, 'function FindProxyForURL() { return "DIRECT"; }');
+    const url = `${TARGET}&seq=${suffix}`;
+    fetchFn.when(url).responds({ status: 200, body: { ok: true } });
+    const out = await captureFetch(transport, url);
+    assert.equal(out.state, "ok");
+  }
+
+  assert.equal(probeCount, 1, `能力探测结果必须跨多次求值缓存，只探测 1 次，实际 ${probeCount} 次`);
+});
+
+test("T13-3 非 darwin 平台回退（OSB-001）：跳过探测并直 spawn process.execPath", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  let probeCount = 0;
+  const calls = [];
+  const stubSpawn = (cmd, args) => {
+    calls.push({ cmd, args });
+    return makeStubChildWithOutcome(`SPROXY ${BEHAVIOR_PROXY}`);
+  };
+  const fetchFn = createFakeFetch({ default: "never" });
+  const entry = C.makeEntry({ id: "e-pac-t13-linux", type: "tavily", proxy: { pac: SYNTHETIC_PAC } });
+  const transport = mod.createEntryTransport(entry, {
+    fetch: fetchFn,
+    spawnProcess: stubSpawn,
+    sandbox: {
+      platform: "linux",
+      probe: () => {
+        probeCount += 1;
+        return true;
+      },
+      cache: new Map(),
+    },
+  });
+  declarePac(fetchFn, `function FindProxyForURL() { return "PROXY ${BEHAVIOR_PROXY}"; }`);
+  fetchFn.when(TARGET).responds({ status: 200, body: { ok: true } });
+
+  const out = await captureFetch(transport);
+  assert.equal(out.state, "ok");
+  assert.equal(probeCount, 0, "非 darwin 平台不得调用 sandbox-exec 探测");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, process.execPath);
+  assert.deepEqual(calls[0].args, ["--max-old-space-size=24", PAC_WORKER_FILE]);
+  assert.equal(routeOf(fetchFn).proxyUrl, `http://${BEHAVIOR_PROXY}`);
+});
+
+test("T13-4 探测失败/缺失/抛错回退（OSB-001）：回退现状直 spawn 且复用负数缓存", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+
+  // 1) probe 返回 false + 负数缓存
+  {
+    let probeCount = 0;
+    const cache = new Map();
+    const calls = [];
+    const stubSpawn = (cmd, args) => {
+      calls.push({ cmd, args });
+      return makeStubChildWithOutcome("SDIRECT");
+    };
+    for (const seq of [1, 2]) {
+      const fetchFn = createFakeFetch({ default: "never" });
+      const entry = C.makeEntry({ id: `e-pac-t13-fb-false-${seq}`, type: "tavily", proxy: { pac: SYNTHETIC_PAC } });
+      const transport = mod.createEntryTransport(entry, {
+        fetch: fetchFn,
+        spawnProcess: stubSpawn,
+        sandbox: {
+          platform: "darwin",
+          probe: () => {
+            probeCount += 1;
+            return false;
+          },
+          cache,
+        },
+      });
+      declarePac(fetchFn, 'function FindProxyForURL() { return "DIRECT"; }');
+      const url = `${TARGET}&fb=${seq}`;
+      fetchFn.when(url).responds({ status: 200, body: { ok: true } });
+      const out = await captureFetch(transport, url);
+      assert.equal(out.state, "ok");
+    }
+    assert.equal(probeCount, 1, "失败探测也必须缓存，不得重复探测");
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].cmd, process.execPath);
+    assert.equal(calls[1].cmd, process.execPath);
+  }
+
+  // 2) probe 抛错
+  {
+    const calls = [];
+    const stubSpawn = (cmd, args) => {
+      calls.push({ cmd, args });
+      return makeStubChildWithOutcome("SDIRECT");
+    };
+    const fetchFn = createFakeFetch({ default: "never" });
+    const entry = C.makeEntry({ id: "e-pac-t13-fb-throw", type: "tavily", proxy: { pac: SYNTHETIC_PAC } });
+    const transport = mod.createEntryTransport(entry, {
+      fetch: fetchFn,
+      spawnProcess: stubSpawn,
+      sandbox: {
+        platform: "darwin",
+        probe: () => {
+          throw new Error("sandbox_apply: Operation not permitted");
+        },
+        cache: new Map(),
+      },
+    });
+    declarePac(fetchFn, 'function FindProxyForURL() { return "DIRECT"; }');
+    fetchFn.when(TARGET).responds({ status: 200, body: { ok: true } });
+    const out = await captureFetch(transport);
+    assert.equal(out.state, "ok");
+    assert.equal(calls[0].cmd, process.execPath);
+  }
+
+  // 3) 不存在的 sandboxExecPath 走默认探测回退直 spawn
+  {
+    const calls = [];
+    const stubSpawn = (cmd, args) => {
+      calls.push({ cmd, args });
+      return makeStubChildWithOutcome("SDIRECT");
+    };
+    const fetchFn = createFakeFetch({ default: "never" });
+    const entry = C.makeEntry({ id: "e-pac-t13-fb-missing", type: "tavily", proxy: { pac: SYNTHETIC_PAC } });
+    const transport = mod.createEntryTransport(entry, {
+      fetch: fetchFn,
+      spawnProcess: stubSpawn,
+      sandbox: {
+        platform: "darwin",
+        sandboxExecPath: "/nonexistent/sandbox-exec-64",
+        cache: new Map(),
+      },
+    });
+    declarePac(fetchFn, 'function FindProxyForURL() { return "DIRECT"; }');
+    fetchFn.when(TARGET).responds({ status: 200, body: { ok: true } });
+    const out = await captureFetch(transport);
+    assert.equal(out.state, "ok");
+    assert.equal(calls[0].cmd, process.execPath);
+  }
+});
+
+test("T13-5 Profile 构造（OSB-002）：symlink realpath 沿途 metadata、Electron Frameworks 豁免与异常路径返回 null", async (t) => {
+  const mod = await load(t);
+  if (!mod) return;
+  assert.equal(typeof mod.buildPacSandboxProfile, "function");
+
+  // 1) symlink 挂载路径 + Electron .app/Contents/Frameworks
+  const map = new Map([
+    ["/profile/node_modules/dsh-search-chain/src/pac-eval-worker.js", "/repo/src/pac-eval-worker.js"],
+    ["/profile/node_modules/dsh-search-chain/src", "/repo/src"],
+    ["/profile/node_modules/dsh-search-chain", "/repo"],
+    ["/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness", "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"],
+    ["/Applications/DeepSeek Harness.app/Contents/Frameworks", "/Applications/DeepSeek Harness.app/Contents/Frameworks"],
+  ]);
+  const built = mod.buildPacSandboxProfile({
+    execPath: "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness",
+    workerPath: "/profile/node_modules/dsh-search-chain/src/pac-eval-worker.js",
+    realpathFn: (p) => map.get(p) ?? p,
+    existsFn: (p) => p === "/Applications/DeepSeek Harness.app/Contents/Frameworks",
+  });
+  assert.ok(built);
+  assert.equal(built.frameworksRealpath, "/Applications/DeepSeek Harness.app/Contents/Frameworks");
+  assert.ok(built.profile.includes('(literal "/profile/node_modules/dsh-search-chain")'));
+  assert.ok(built.profile.includes('(literal "/repo")'));
+  assert.ok(built.profile.includes('(subpath "/repo")'));
+  assert.ok(built.profile.includes('(subpath "/Applications/DeepSeek Harness.app/Contents/Frameworks")'));
+  assert.ok(built.profile.includes('(allow process-exec (literal "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"))'));
+
+  // 2) 非法控制字符或 realpath 失败返回 null
+  assert.equal(mod.buildPacSandboxProfile({ execPath: "/bad\npath", workerPath: PAC_WORKER_FILE }), null);
+  assert.equal(
+    mod.buildPacSandboxProfile({
+      execPath: process.execPath,
+      workerPath: PAC_WORKER_FILE,
+      realpathFn: () => {
+        throw new Error("ENOENT");
+      },
+    }),
+    null,
+  );
+});
+
+test(
+  "T13-6 darwin-only 集成 PoC（OSB-002/003）：包裹 worker 内写盘/连网/监听/fork 全被 OS 拒（EACCES/EPERM），PID 不变且 IPC 正常",
+  { skip: process.platform !== "darwin" },
+  async (t) => {
+    const mod = await load(t);
+    if (!mod) return;
+
+    const probeFileTmp = path.join(os.tmpdir(), `pac-sbx-poc-${process.pid}-${Date.now()}.txt`);
+    const probeFileRepo = path.join(REPO_ROOT, `.pac-sbx-poc-${process.pid}-${Date.now()}.txt`);
+    const server = net.createServer();
+    let serverConnections = 0;
+    server.on("connection", (sock) => {
+      serverConnections += 1;
+      sock.destroy();
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+
+    try {
+      const pocCode = [
+        'import fs from "node:fs";',
+        'import net from "node:net";',
+        'import { spawnSync } from "node:child_process";',
+        `const probeFiles = ${JSON.stringify([probeFileTmp, probeFileRepo])};`,
+        `const targetPort = ${port};`,
+        "function isOsDenied(err) { return err && (err.code === 'EACCES' || err.code === 'EPERM'); }",
+        'process.on("message", async (msg) => {',
+        "  const failures = [];",
+        "  if (msg.expectPid !== process.pid) failures.push('pid-changed:' + msg.expectPid + '!=' + process.pid);",
+        "  for (const f of probeFiles) {",
+        "    try { fs.writeFileSync(f, 'pwned'); failures.push('write-succeeded:' + f); } catch (e) {",
+        "      if (!isOsDenied(e)) failures.push('write-unexpected:' + (e && e.code));",
+        "    }",
+        "  }",
+        "  const forkRes = spawnSync(process.execPath, ['-e', '0']);",
+        "  if (!isOsDenied(forkRes.error)) failures.push('fork-unexpected:' + (forkRes.error && forkRes.error.code) + ':' + forkRes.status);",
+        "  const connectDenied = await new Promise((resolve) => {",
+        "    const sock = net.connect({ host: '127.0.0.1', port: targetPort });",
+        "    sock.once('connect', () => { sock.destroy(); resolve('connected'); });",
+        "    sock.once('error', (e) => resolve(isOsDenied(e) ? 'ok' : ('err:' + e.code)));",
+        "  });",
+        "  if (connectDenied !== 'ok') failures.push('net-connect-' + connectDenied);",
+        "  const listenDenied = await new Promise((resolve) => {",
+        "    const srv = net.createServer();",
+        "    srv.once('error', (e) => resolve(isOsDenied(e) ? 'ok' : ('err:' + e.code)));",
+        "    srv.listen(0, '127.0.0.1', () => { srv.close(); resolve('listened'); });",
+        "  });",
+        "  if (listenDenied !== 'ok') failures.push('net-listen-' + listenDenied);",
+        "  const outcome = failures.length === 0 ? 'SDIRECT' : ('SPROXY 9.9.9.9:8080');",
+        "  process.send({ id: msg.id, outcome }, () => process.exit(0));",
+        "});",
+      ].join("\n");
+
+      let seenCmd = null;
+      let seenArgs = null;
+      const pocSpawn = (cmd, args, opts) => {
+        seenCmd = cmd;
+        seenArgs = args;
+        assert.equal(cmd, "/usr/bin/sandbox-exec", "darwin 下必须启用 /usr/bin/sandbox-exec 包裹");
+        const execIdx = args.findIndex((a) => String(a).startsWith("--max-old-space-size="));
+        assert.ok(execIdx > 0);
+        const patchedArgs = [...args.slice(0, execIdx), "--input-type=module", "-e", pocCode];
+        const child = spawn(cmd, patchedArgs, opts);
+        const origSend = child.send.bind(child);
+        child.send = (msg, ...rest) => origSend({ ...msg, expectPid: child.pid }, ...rest);
+        return child;
+      };
+
+      const fetchFn = createFakeFetch({ default: "never" });
+      const entry = C.makeEntry({ id: "e-pac-t13-poc", type: "tavily", proxy: { pac: SYNTHETIC_PAC } });
+      const transport = mod.createEntryTransport(entry, { fetch: fetchFn, spawnProcess: pocSpawn });
+      declarePac(fetchFn, 'function FindProxyForURL() { return "DIRECT"; }');
+      fetchFn.when(TARGET).responds({ status: 200, body: { ok: true } });
+
+      const out = await captureFetch(transport);
+      assert.equal(seenCmd, "/usr/bin/sandbox-exec");
+      assert.ok(Array.isArray(seenArgs) && seenArgs[0] === "-p");
+      assert.equal(out.state, "ok", `PoC 沙箱进程内 IPC 回传失败：${out.error?.message ?? "(无)"}`);
+      const route = routeOf(fetchFn);
+      assert.equal(route.kind, "direct", `OS 拒写/拒网/拒fork/同PID 任一项未成立会路由到 9.9.9.9，实际：${JSON.stringify(route)}`);
+      assert.equal(existsSync(probeFileTmp), false, "sandbox-exec 内不得写出临时文件");
+      assert.equal(existsSync(probeFileRepo), false, "sandbox-exec 内不得写出仓库文件");
+      assert.equal(serverConnections, 0, "sandbox-exec 内不得连入父进程监听端口");
+    } finally {
+      server.close();
+      rmSync(probeFileTmp, { force: true });
+      rmSync(probeFileRepo, { force: true });
+    }
+  },
+);
+
+test(
+  "T13-7 darwin-only 集成（OSB-001/002/003）：真实 sandbox-exec 包裹 src/pac-eval-worker.js，合法 FindProxyForURL 行为不变",
+  { skip: process.platform !== "darwin" },
+  async (t) => {
+    const mod = await load(t);
+    if (!mod) return;
+    let capturedCmd = null;
+    let capturedArgs = null;
+    const spySpawn = (cmd, args, opts) => {
+      capturedCmd = cmd;
+      capturedArgs = args;
+      return spawn(cmd, args, opts);
+    };
+    const fetchFn = createFakeFetch({ default: "never" });
+    const entry = C.makeEntry({ id: "e-pac-t13-legal-darwin", type: "tavily", proxy: { pac: SYNTHETIC_PAC } });
+    const transport = mod.createEntryTransport(entry, { fetch: fetchFn, spawnProcess: spySpawn });
+    declarePac(
+      fetchFn,
+      "function FindProxyForURL(url, host) {" +
+        '  if (!isPlainHostName(host) && dnsDomainIs(host, ".tavily.invalid") && shExpMatch(host, "*.tavily.invalid")) {' +
+        `    return "PROXY ${BEHAVIOR_PROXY}; DIRECT";` +
+        "  }" +
+        '  return "DIRECT";' +
+        "}",
+    );
+    fetchFn.when(TARGET).responds({ status: 200, body: { ok: true } });
+
+    const out = await captureFetch(transport);
+    assert.equal(capturedCmd, "/usr/bin/sandbox-exec", "darwin 下真跑须走 /usr/bin/sandbox-exec 包裹");
+    assert.ok(Array.isArray(capturedArgs) && capturedArgs.includes(PAC_WORKER_FILE));
+    assert.equal(out.state, "ok", `包裹模式下合法 PAC 必须求值成功，实际：${out.error?.message ?? "(无)"}`);
+    const route = routeOf(fetchFn);
+    assert.equal(route.kind, "proxy");
+    assert.equal(route.proxyUrl, `http://${BEHAVIOR_PROXY}`);
+    assert.equal(route.viaPac, true);
+    assert.equal(route.pacIndex, 0);
+  },
+);
