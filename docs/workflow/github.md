@@ -6,6 +6,13 @@
 
 每个工作包对应一个 Issue、一个分支、一个 PR。打开 PR 时关联 Issue、规格编号和前置依赖，记录实际验证及缺口。评审基于当前提交，处理阻塞意见后默认 squash 合并，随后删除主题分支。完整兑现 Issue 时使用 `Closes #编号`，只完成部分时引用 Issue 并保留其后续工作。tag 和 Release 来自已验收的 `main` 提交。
 
+## Agent 协作
+
+1. 由 Qwen3.8 Flash High 担任 lead 并启动 agent 团队。Lead 只负责分工、审阅、跟踪阻塞和汇总交付。Oracle、实现和验证由所分派的 subagent 完成。
+2. 先由独立的 GPT-6 Luna High subagent 编制测试 Oracle，依据规格明确可观察的预期和验证方法。Lead 审阅并通过 Oracle 后才分派开发。如果工作无需测试或测试无法执行，Lead 记录理由和验证缺口后可以跳过 Oracle。
+3. 由 Haiku 5.5 High subagent 按已审阅的 Oracle 和规格实施，并记录自测结果。
+4. 开发完成后，Lead 跟踪 GitHub 上的自动 GPT 审阅及其对应提交。审阅整改限于 P0 和影响主体功能的 P1，由开发 subagent 修复后复验。其余审阅意见在交付时列出影响并交由用户裁决。自动审阅未返回时标记为待审，继续遵守仓库已有的 PR 门禁。
+
 ## GitHub Projects
 
 AMindFlow 组织的 [dsh-search-chain Project #1](https://github.com/orgs/AMindFlow/projects/1/views/1) 已关联此仓库。用仓库 Issue 承载工作包，Issue 的 `Blocked by` 表示执行依赖。工作包按 [DAG](../project/development-dag.md)登记。之后负责人、进度、优先级和运行中的依赖在 GitHub 维护，仓库文档保留技术契约与里程碑。 [GitHub Issue dependencies](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-issue-dependencies)
