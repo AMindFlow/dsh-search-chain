@@ -5,6 +5,14 @@
   "type": "module",
   "description": "DSH 网页搜索链插件（自定义多供应商回退链）",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AMindFlow/dsh-search-chain.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AMindFlow/dsh-search-chain/issues"
+  },
+  "homepage": "https://github.com/AMindFlow/dsh-search-chain#readme",
   "engines": {
     "node": ">=24",
     "dsh": ">=0.2.2-rc.5 <0.3.0-0"
