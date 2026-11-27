@@ -447,6 +447,32 @@ async function waitRpc(path, fromIndex, limit = 90) {
   for (let i = 0; i < limit; i++) { const c = await calls(); if (c.slice(fromIndex).some((x) => x.url === path)) return c; await wait(1000); }
   throw new Error(`超时未见 RPC：${path}`);
 }
+async function waitForQuiescence(stage) {
+  const quietMs = 600, limitMs = 5000, pollMs = 100;
+  const deadline = performance.now() + limitMs;
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(resolve, limitMs, null); });
+  let apiCount = -1, quietSince = 0;
+  try {
+    while (performance.now() < deadline) {
+      const records = await Promise.race([calls(), timeout]);
+      const now = performance.now();
+      if (records === null || now >= deadline) break;
+      const count = records.filter(({ url }) => url.startsWith("/api/")).length;
+      // 记录在响应时追加，后续 describe 记录出现时也重新起算。
+      // 挂起中的响应不会计入，静默门对未决请求不敏感，真正的兜底是 setT 阶梯。
+      if (count !== apiCount) {
+        apiCount = count;
+        quietSince = now;
+      }
+      if (now - quietSince >= quietMs) return;
+      await wait(Math.min(pollMs, deadline - now));
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  console.log(`[oracle] 注记：${stage} ${limitMs}ms 内未观测到连续 ${quietMs}ms 的 /api/ 静默，继续执行原判据。`);
+}
 async function openSettings() {
   await pageWait(`() => !!document.body && !((document.body.innerText || '').includes('Loading plugins'))`, "app shell 就绪", 150);
   const hasPanel = async () => evaluate(`() => !!document.querySelector('${ROOT}')`, 30000);
@@ -1998,6 +2024,118 @@ async function a053RuleScan() {
   return "dragging .5 / drop-target z-index 1 / 4px→12px / ±4→±10 / 55°+125° business-primary 渐变 + calc(100%-4px) 2px 线全检出；pointer-events 违例 0";
 }
 
+async function b017Phase(theme) {
+  await darkAttr(theme === "dark");
+  const tSel = await evaluate(`() => {
+    const selectors = ['[data-field="timeoutMs"]', '[data-field="timeout"]', '[data-role="timeout"] input', 'input[name="timeoutMs"]', 'input[type="number"]'];
+    return selectors.map((sel) => '${ROOT} ' + sel).find((sel) => document.querySelector(sel)) ?? null;
+  }`, 30000);
+  if (!tSel) {
+    console.log(`[取证][B-017] ${theme} fsAll=null recs17=null（超时输入框缺失）`);
+    await exec("B-017", theme, async () => { throw new Error('missing element: 超时输入框（[data-field=timeoutMs]/number 输入均未见）'); });
+    return;
+  }
+
+  const selector = JSON.stringify(tSel);
+  const readTimeout = () => evaluate(`() => document.querySelector(${selector})?.value ?? null`, 30000);
+  const readError = () => evaluate(`() => {
+    const a = document.querySelector('${ROOT} [role="alert"], ${ROOT} .sc-error, ${ROOT} [aria-invalid="true"]');
+    return a ? (a.textContent || a.getAttribute('aria-invalid') || "invalid").trim().slice(0, 60) : null;
+  }`, 30000);
+  const mutatesSince = async (from) => (await calls()).slice(from).filter((record) => record.url === "/api/settings/mutate");
+  const focusSample = (label) => evaluate(`() => {
+    const el = document.querySelector(${selector});
+    const ae = document.activeElement;
+    const st = document.querySelector('${ROOT} [data-role="save-status"]');
+    const field = ae?.getAttribute("data-field");
+    return {
+      s: ${JSON.stringify(label)}, focused: !!el && ae === el,
+      ae: ae ? ae.tagName + (field ? "@" + field : "") : "∅",
+      dis: !!el?.disabled, busy: st ? (st.textContent || "").trim().slice(0, 20) : "∅",
+    };
+  }`, 30000);
+  const setT = async (value, retryFrom) => {
+    const v = await evaluate(`() => {
+      const el = document.querySelector(${selector});
+      el.focus();
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(String(value))});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return el.value;
+    }`, 30000);
+    const fs1 = await focusSample("after-focus");
+    await wait(220); // 输入和 blur 分帧，避免 React 读取旧值。
+    const fs2 = await focusSample("pre-blur");
+    await evaluate(`() => {
+      const el = document.querySelector(${selector});
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.blur();
+    }`, 30000);
+    let focusout = false;
+    if (retryFrom === undefined) {
+      await wait(250);
+    } else {
+      await wait(900);
+      if (!(await mutatesSince(retryFrom)).length) {
+        // 失焦竞态下 blur() 可能无效，冒泡 focusout 仍经 React 派发到同一个 onBlur。
+        await evaluate(`() => document.querySelector(${selector}).dispatchEvent(new FocusEvent("focusout", { bubbles: true }))`, 30000);
+        focusout = true;
+        await wait(900);
+      }
+    }
+    return { v, fs1, fs2, focusout };
+  };
+
+  await waitForQuiescence(`B-017 ${theme} 首次 setT 前`);
+  const before = theme === "dark" ? await readTimeout() : null;
+  const n17a = (await calls()).length;
+  const invalid = [await setT(0)];
+  await wait(500);
+  let recsBad = await mutatesSince(n17a);
+  let errUI = await readError();
+  if (!errUI) {
+    invalid.push(await setT(0, n17a));
+    await wait(500);
+    recsBad = await mutatesSince(n17a);
+    errUI = await readError();
+  }
+
+  const n17b = (await calls()).length;
+  const valid = [await setT(5000)];
+  await waitForAutoSave(n17b);
+  let recs17b = await mutatesSince(n17b);
+  if (!recs17b.length) {
+    valid.push(await setT(5000, n17b));
+    if (await implV1()) await saveViaGlobalSave(n17b);
+    recs17b = await mutatesSince(n17b);
+  }
+  const mk17b = recs17b.length ? recs17b[recs17b.length - 1].mkeys : null;
+  const fsAll = JSON.stringify({ invalid, valid });
+  console.log(redact(`[取证][B-017] ${theme} fsAll=${fsAll} recs17=${JSON.stringify({ invalid: recsBad.length, valid: recs17b.length })}`));
+  await reloadAndReopen();
+  const back17 = await readTimeout();
+  await exec("B-017", theme, async () => {
+    const mis = [];
+    if (recsBad.length) mis.push(`非法值 0 也发出了 settings/mutate（客户端校验未拦截，违反 SET-008 非法值不落库）`);
+    if (!errUI) mis.push(`非法值未呈现错误提示（alert/aria-invalid 均无；含一次自检重试；采样=${fsAll}）`);
+    if (String(back17).replace(/[^0-9]/g, "") !== "5000") mis.push(`合法 blur 自动落盘后 reload 读回 got ${back17} 期望 5000`);
+    if (!recs17b.length) mis.push(`合法值提交窗未发出 settings/mutate（timeoutCommit 未触发——触发面（含一次自检重试仍缺）；采样=${fsAll}；两静默分支=src:1194 lockRef 早退/未聚焦元素 blur 无事件）`);
+    else if (mk17b && !mk17b.some((k) => /timeoutMs@5000(\D|$)/.test(k))) mis.push(`提交窗载荷值非 5000：${JSON.stringify((mk17b || []).slice(0, 4))}（stale 值=折叠面；缺失=字段错位）`);
+    if (mis.length) throw new Error(mis.join("；"));
+    return { measured: `非法 0：0 次 mutate + 错误提示「${errUI}」；合法 5000：blur 自动落盘（无保存钮）reload 读回 ${back17}；提交窗 mutate×${recs17b.length} 载荷=${JSON.stringify((mk17b || []).slice(0, 3))}；触发采样=${fsAll}` };
+  });
+
+  // 暗态先执行，复原持久值后亮态仍能独立提交 5000。
+  if (theme === "dark" && back17 !== before) {
+    const restoreStart = (await calls()).length;
+    await setT(before, restoreStart);
+    if (await implV1()) await saveViaGlobalSave(restoreStart);
+    await reloadAndReopen();
+    const restored = await readTimeout();
+    if (restored !== before) throw new Error(`B-017 dark 复原超时失败：got ${restored}，期望 ${before}`);
+  }
+}
+
 // ───────── 主流程 ─────────
 try {
   await pageWait(`() => !!document.body`, "document body", 90);
@@ -2307,6 +2445,7 @@ try {
     return { measured: `拖动中 data-dragging 卡 opacity=0.5（暗态实机可达）；drop 副作用序已复原 ${JSON.stringify(pre)}（键盘排序通道，B-007 前提保全）` };
   });
   await exec("A-053", "dark", async () => ({ measured: await a053RuleScan() }));
+  await b017Phase("dark");
   await darkAttr(false);
 
   await reducedMotionPhase("light");
@@ -2428,47 +2567,9 @@ try {
       return { measured: `关→自动落盘→reload=false；载荷 ${JSON.stringify(mk16.slice(0, 4))} 仅开关字段；无保存入口、面板未跳转；savedNotice 无新增✓(前=${JSON.stringify(nt16a.text)} 后=${JSON.stringify(nt16b.text)})；视觉态 ${JSON.stringify(vis16)}` };
     });
     { const n = (await calls()).length; await evaluate(`(() => { document.querySelector('${OFFICIAL_TOGGLE}').click(); return true; })()`, 30000); await wait(350); if (!(await waitForAutoSave(n))) throw new Error("B-016 复原（再开）未落定"); }
+    await waitForQuiescence("B-016 复原（再开）");
   }
-  {
-    const tSel = await evaluate(`(() => { const sels = ['${ROOT} [data-field="timeoutMs"]', '${ROOT} [data-field="timeout"]', '${ROOT} [data-role="timeout"] input', '${ROOT} input[name="timeoutMs"]', '${ROOT} input[type="number"]']; for (const x of sels) { const el = document.querySelector(x); if (el) return x; } return null; })()`, 30000);
-    if (!tSel) {
-      await exec("B-017", "light", async () => { throw new Error('missing element: 超时输入框（[data-field=timeoutMs]/number 输入均未见）'); });
-    } else {
-      // run-14 定因分叉（疑似 flake，非缺陷）：run-13 PASS→run-14 FAIL，两者代码唯一差异=da82336（B-026 探针通道，
-      // 执行于 B-017 之后，无因果链）→ 9db85ff 路径结构性排除（src:1080 pendingHandleFocus 仅在 activeElement=body 空位时回焦，
-      // 且 run-13 同路径同代码 PASS）。timeoutCommit 两个静默分支（src:1194 lockRef.current 早退=busy 窗口 / 未聚焦元素 blur 无事件）。
-      // 最小改动：focus/disabled/busy 三点采样（after-focus/pre-blur）+ 触发窗单次自检重试（非法路径无状态副作用；合法路径重输同值）
-      // ——断言语义不变（仍要求 0 非法 mutate + 错误提示 + 提交窗 mutate@5000 + reload 读回 5000）。
-      const focusSample = async (label) => evaluate(`(() => { const el = document.querySelector('${tSel}'); const ae = document.activeElement; const st = document.querySelector('${ROOT} [data-role="save-status"]'); return { s: ${JSON.stringify(label)}, focused: !!(el && ae === el), ae: ae ? (ae.tagName + (typeof ae.getAttribute === "function" && ae.getAttribute("data-field") ? "@" + ae.getAttribute("data-field") : "")) : "∅", dis: !!(el && el.disabled), busy: st ? (st.textContent || "").trim().slice(0, 20) : "∅" }; })()`, 30000);
-      const setT = async (v) => { const r = await evaluate(`(() => { const el = document.querySelector('${tSel}'); el.focus(); const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const d = Object.getOwnPropertyDescriptor(proto, 'value'); d.set.call(el, ${JSON.stringify(String(v))}); el.dispatchEvent(new Event('input', { bubbles: true })); return el.value; })()`, 30000); const fs1 = await focusSample("after-focus"); await wait(220); /* run-acc2 实证：同任务连发 input+blur 会被 React 同帧折叠，timeoutCommit 读 stale text（reload 25000 误报面）→ 分帧提交 */ const fs2 = await focusSample("pre-blur"); await evaluate(`(() => { const el = document.querySelector('${tSel}'); el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); return true; })()`, 30000); await wait(250); return { v: r, fs1, fs2 }; };
-      const n17a = (await calls()).length;
-      let badT = await setT(0); // 非法值
-      await wait(500);
-      let recsBad = (await calls()).slice(n17a).filter((x) => x.url === "/api/settings/mutate");
-      let errUI = await evaluate(`(() => { const a = document.querySelector('${ROOT} [role="alert"], ${ROOT} .sc-error, ${ROOT} [aria-invalid="true"]'); return a ? (a.textContent || a.getAttribute('aria-invalid') || "invalid").trim().slice(0, 60) : null; })()`, 30000);
-      if (!errUI) { badT = await setT(0); await wait(500); recsBad = (await calls()).slice(n17a).filter((x) => x.url === "/api/settings/mutate"); errUI = await evaluate(`(() => { const a = document.querySelector('${ROOT} [role="alert"], ${ROOT} .sc-error, ${ROOT} [aria-invalid="true"]'); return a ? (a.textContent || a.getAttribute('aria-invalid') || "invalid").trim().slice(0, 60) : null; })()`, 30000); } // 触发窗单次自检重试（run-14 疑似 flake 判别面）
-      const n17b = (await calls()).length;
-      let goodT = await setT(5000); // 合法值
-      await waitForAutoSave(n17b);
-      // run-acc4 取证协议2：合法段提交窗 mutate 值自证（@5000 token 区分 触发折叠/持久丢失 两种读法）
-      let recs17b = (await calls()).slice(n17b).filter((x) => x.url === "/api/settings/mutate");
-      if (!recs17b.length) { goodT = await setT(5000); await waitForAutoSave(n17b); recs17b = (await calls()).slice(n17b).filter((x) => x.url === "/api/settings/mutate"); } // 触发窗单次自检重试
-      const mk17b = recs17b.length ? recs17b[recs17b.length - 1].mkeys : null;
-      const fsAll = JSON.stringify([badT.fs1, badT.fs2, goodT.fs1, goodT.fs2]).slice(0, 280);
-      await reloadAndReopen();
-      const back17 = await evaluate(`(() => { const el = document.querySelector('${tSel}'); return el ? el.value : null; })()`, 30000);
-      await exec("B-017", "light", async () => {
-        const mis = [];
-        if (recsBad.length) mis.push(`非法值 0 也发出了 settings/mutate（客户端校验未拦截，违反 SET-008 非法值不落库）`);
-        if (!errUI) mis.push(`非法值未呈现错误提示（alert/aria-invalid 均无；含一次自检重试；采样=${fsAll}）`);
-        if (String(back17).replace(/[^0-9]/g, "") !== "5000") mis.push(`合法 blur 自动落盘后 reload 读回 got ${back17} 期望 5000`);
-        if (!recs17b.length) mis.push(`合法值提交窗未发出 settings/mutate（timeoutCommit 未触发——触发面（含一次自检重试仍缺）；采样=${fsAll}；两静默分支=src:1194 lockRef 早退/未聚焦元素 blur 无事件）`);
-        else if (mk17b && !mk17b.some((k) => /timeoutMs@5000(\D|$)/.test(k))) mis.push(`提交窗载荷值非 5000：${JSON.stringify((mk17b || []).slice(0, 4))}（stale 值=折叠面；缺失=字段错位）`);
-        if (mis.length) throw new Error(mis.join("；"));
-        return { measured: `非法 0：0 次 mutate + 错误提示「${errUI}」；合法 5000：blur 自动落盘（无保存钮）reload 读回 ${back17}；提交窗 mutate×${recs17b.length} 载荷=${JSON.stringify((mk17b || []).slice(0, 3))}；触发采样=${fsAll}` };
-      });
-    }
-  }
+  await b017Phase("light");
   {
     const n18 = (await calls()).length;
     const nt18a = await evaluate(`(() => { const e = document.querySelector('${ROOT} [data-role="save-status"]'); return { exists: !!e, text: (e && e.textContent || "").trim() }; })()`, 30000); // run-acc8 v3 V3-3 缺席判据快照
