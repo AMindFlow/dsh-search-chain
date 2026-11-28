@@ -1,7 +1,7 @@
 // 共享常量（与 test/helpers/contract.js 保持同值；见 PR 交付记录的「常量复制」说明）。
 // 运行时代码不得 import test/ 下的任何文件，故在此复制一份。
 
-export const BUNDLE_NAME = "dsh-search-chain";
+export const BUNDLE_NAME = "dsh-fleetseek";
 export const PROVIDER_ID = "search-chain";
 
 /** dsh 宿主官方 DeepSeek Messages 搜索路由 id（inspect `web` 服务实证）。 */

@@ -66,7 +66,7 @@
 
 **PAC_ROUTE_FAILED**：PAC 的返回值不是字符串，或者其中没有受支持的指令（按顺序取第一个可用指令；当前支持 `DIRECT`、`PROXY host:port`、`HTTPS host:port`，`SOCKS` 等被跳过）。可操作：确保 PAC 对目标地址返回 `DIRECT`，或者受支持的代理指令。注意命中代理的结果在 v0.1 仍会以 `ENTRY_PROXY` 失败（见上文）。
 
-**CONFIG_ROW_UNAVAILABLE**：搜索开始时插件在宿主中找不到自己的配置行，或者宿主配置端口不可用。这是整次搜索直接失败的终态，没有 attempts。通常是插件未启用、未挂载或已卸载。可操作：在插件设置中确认 dsh-search-chain 处于启用状态；如果仍然失败，重新安装该插件后在新会话中验证。
+**CONFIG_ROW_UNAVAILABLE**：搜索开始时插件在宿主中找不到自己的配置行，或者宿主配置端口不可用。这是整次搜索直接失败的终态，没有 attempts。通常是插件未启用、未挂载或已卸载。可操作：在插件设置中确认 dsh-fleetseek 处于启用状态；如果仍然失败，重新安装该插件后在新会话中验证。
 
 **WEB_PROVIDER_UNAVAILABLE**：DeepSeek 官方分支不可用，原因是宿主 `web-search-deepseek` 配置行未挂载，或宿主组件无法加载。这种情况不会回退到条目链。可操作：在宿主插件设置中启用 `web-search-deepseek` 行。如果暂时不需要官方分支，把 `useOfficialDeepSeekSearch` 设为 `false`，改用条目链。
 

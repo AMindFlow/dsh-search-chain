@@ -1,18 +1,18 @@
 {
-  "name": "dsh-search-chain",
-  "version": "0.1.4",
+  "name": "dsh-fleetseek",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "DSH 网页搜索链插件（自定义多供应商回退链）",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AMindFlow/dsh-search-chain.git"
+    "url": "git+https://github.com/AMindFlow/dsh-fleetseek.git"
   },
   "bugs": {
-    "url": "https://github.com/AMindFlow/dsh-search-chain/issues"
+    "url": "https://github.com/AMindFlow/dsh-fleetseek/issues"
   },
-  "homepage": "https://github.com/AMindFlow/dsh-search-chain#readme",
+  "homepage": "https://github.com/AMindFlow/dsh-fleetseek#readme",
   "engines": {
     "node": ">=24",
     "dsh": ">=0.2.2-rc.5 <0.3.0-0"

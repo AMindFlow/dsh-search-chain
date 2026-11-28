@@ -11,63 +11,12 @@
 
 安装方式（选一）：
 
-- **从 GitHub 安装（发布渠道）**：按根目录 [INSTALL.md](../../INSTALL.md) 用发布 tag 解引用后的 40 位完整 commit 安装（`git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>`），支持后续「更新」能力。
-- **从 npm 安装**：包名 `@amindflow/dsh-search-chain`（`dsh plugin add @amindflow/dsh-search-chain` 或在宿主插件页输入该包名）。
-- **从 Discover 索引源安装**：在插件市场添加自建索引源 `https://raw.githubusercontent.com/AMindFlow/dsh-plugin-index/main/market-index.json`，选择「网页搜索链」。
-- 在 DSH 中打开 **Plugins** > **Add plugin**，选择本包所在的本地目录（开发自用）。
-- 由管理员通过插件管理工具安装：`install_bundle`，`target` 填写包目录的绝对路径。
+- **从 GitHub 安装（发布渠道）**：按根目录 [INSTALL.md](../../INSTALL.md) 用发布 tag 解引用后的 40 位完整 commit 安装（`git+https://github.com/AMindFlow/dsh-fleetseek.git#<SHA>`），支持后续「更新」能力。
+- **从 npm 安装**：`dsh plugin --profile <profile> add dsh-fleetseek`（或在宿主插件页输入包名 `dsh-fleetseek`）。
+- **从 Discover 索引源安装**：在插件市场添加自建索引源 `https://raw.githubusercontent.com/AMindFlow/dsh-plugin-index/main/market-index.json`，选择「FleetSeek 网页搜索链」。
 
-> **一个 profile 只装一个渠道。** DSH 以 npm 包名识别插件：Git 渠道的包名是 `dsh-search-chain`，npm 包是 `@amindflow/dsh-search-chain`——两者内容同源，但对宿主是两个不同的 bundle 身份。同一 profile 同时安装会出现两张卡片，且两套 bundle 声明同一个配置行（叠加行为宿主未定义），请只保留其一；更换渠道时先卸载另一个。
+> **身份说明**：三个渠道现在是同一个包名 `dsh-fleetseek`，宿主识别为同一个插件，不会重复出现两张卡片。历史遗留的 `@amindflow/dsh-search-chain`（0.1.4 及以前）与旧 Git 渠道身份 `dsh-search-chain` 是另一个 bundle：从 0.1.x 升级请按 [upgrade.md](upgrade.md) 的迁移小节先卸载旧身份。旧 npm 包已 deprecate 并固定不再更新。
 
-安装只注册搜索 provider `search-chain`，不会改写你现有的搜索或抓取选择。升级已安装的版本，见 [升级指南](upgrade.md)。
-
-## 2. 启用
-
-1. 在插件设置中启用 dsh-search-chain。启用后「设置」页出现「网页搜索链」设置面板（其在目标 DSH 版本中的具体外观仍需实机确认，见第 3.1 节）。
-2. 若要让搜索使用本插件，把 `web.searchProvider` 设为 `search-chain`（依据 `docs/specs/draft/dsh-integration.md` 的 DSH-003；本包代码不修改 `web` 行）。
-3. 新开一个会话，发起一次搜索验证。
-
-回退：把 `web.searchProvider` 改回原值即可，已安装的其他搜索插件和配置不受影响。手工编辑 profile 配置前请先备份。
-
-## 3. 配置条目
-
-### 3.1 设置面板
-
-启用本插件后，DSH「设置」页的「网页搜索链」区域提供配置面板：可新增、编辑、停用、移除和排序工具条目，并配置 DeepSeek 官方搜索开关。设置页负责编辑和显示本地配置状态；打开、修改、排序和保存都不会向搜索供应商发请求。**保存即校验**：保存成功的配置必能通过启动读取（写入前运行与启动读取等价的校验，发现重复 `id`、非法字段或越界 `null` 会直接报错拦截并保留草稿）。保存前先写入新 key 的宿主凭据引用（仅当写闸校验通过后才写入），成功后再提交配置；失败时草稿保留且已生效配置不变。凭据只写不读，输入框不会回显旧 key。
-
-「网页搜索链」面板是唯一配置入口（详情页不再重复提供表单），读写走 `search-chain` 设置命名空间。面板通过宿主同源 settings/credentials Remote API 保存，并携带配置 revision 防止覆盖并发修改。当前安装未能连接真实 GUI 时，本轮未完成隔离 profile 的实机 DOM 验收；具体 DSH 版本的外观和宿主 Remote 回包形状仍以本地验证结果为准。
-
-### 3.2 配置形状
-
-插件的配置对象由三个顶层键组成：
-
-| 顶层键 | 类型 | 缺省 | 含义 |
-| --- | --- | --- | --- |
-| `entries` | 数组 | `[]` | 有序的搜索条目。列表顺序即执行顺序。 |
-| `useOfficialDeepSeekSearch` | 布尔 | `true` | DeepSeek 官方分支开关，见第 5 节。 |
-| `timeoutMs` | 正整数（毫秒） | `25000` | 一次搜索的总预算，见第 6 节。 |
-
-每个条目的字段：
-
-| 字段 | 必填 | 含义与校验 |
-| --- | --- | --- |
-| `id` | 是 | 非空字符串，首尾空白会被去掉。同一列表内不得重复，否则整次搜索以 `CONFIG_INVALID` 失败。 |
-| `type` | 是 | 取值为 `openai`、`tavily`、`exa`、`brave`、`bing`、`gemini`、`deepseek-search`、`deepseek-agentic-search` 之一。其中两个 DeepSeek 类型对应 DeepSeek 的两种模式，共用同一个 key。 |
-| `name` | 否 | 显示名，字符串。缺省时等于 `type`。 |
-| `enabled` | 否 | 布尔。缺省 `true`。为 `false` 时该条目不解析凭据、不出站，但保留在列表中的位置。 |
-| `credentialRef` | 否 | 凭据引用名（字符串），首尾空白会被去掉。非空值必须符合 POSIX 标识符语法 `^[A-Za-z_][A-Za-z0-9_]*$`；空串视为未设置，旧冒号形式视为无效引用并继续查找后续凭据来源。见第 4 节。 |
-| `proxy` | 否 | 省略或空白表示直连；`"http://..."` 或 `"https://..."` 表示 HTTP(S) 代理 URL；`{ "pac": "http(s)://..." }` 表示 PAC 文件地址（查询参数会原样保留）。其他形状为 `CONFIG_INVALID`（`src/config.js` 的 `normalizeProxy`、`src/transport.js` 的 `classifyProxy`）。**代理与 PAC 在当前版本实际能走到哪一步，见第 7 节。** |
-| 其他标量参数 | 否 | 字符串、数字、布尔值按原样保留，供对应适配器读取。对象和数组会被丢弃。 |
-
-键名为 `apiKey`、`api_key`、`key`、`secret`、`token`、`password`、`auth`、`authorization`（大小写不敏感）的字段在读取时被丢弃，**既不会被使用，也不会迁移到凭据服务**；若历史或手改配置中仍残留这些字段，**通过设置面板完成任意一次保存后会自动从持久条目中清除**，仍需按第 4 节另行提供 key（见 [升级指南](upgrade.md)）。
-
-配置形状示意（不是 profile 文件的原文）：
-
-```json
-{
-  "entries": [
-    { "id": "tavily-main", "type": "tavily", "name": "Tavily 主用", "enabled": true,
-      "credentialRef": "SEARCH_CHAIN_CREDENTIAL_tavily_main_<唯一后缀>" },
     { "id": "bing-rss", "type": "bing", "enabled": true },
     { "id": "exa-backup", "type": "exa", "enabled": false }
   ],
@@ -103,7 +52,7 @@
 1. **条目引用**：条目的 `credentialRef`，通过宿主凭据服务 `resolve(ref)` 读取，取返回对象的 `value`。
 2. **进程环境变量**：上表中对应的环境变量。
 3. **DSH 托管引用**：以该环境变量名作为引用名，执行宿主凭据服务的 `resolve(环境变量名)`。
-4. **旧版 YAML 顶层项**（仅 `openai`、`tavily`、`deepseek`）：链侧保留了这一层的代码（`src/search.js` 的 `resolveKey`），但生产装配没有传入旧版 YAML 数据源，**v0.1 不自动导入旧 YAML**。旧 YAML 里的 key 请在配置表单手动重建：写入条目引用、环境变量或托管引用。TODO（发布验收）：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)（外链以 Issue 当前内容为准）。
+4. **旧版 YAML 顶层项**（仅 `openai`、`tavily`、`deepseek`）：链侧保留了这一层的代码（`src/search.js` 的 `resolveKey`），但生产装配没有传入旧版 YAML 数据源，**v0.1 不自动导入旧 YAML**。旧 YAML 里的 key 请在配置表单手动重建：写入条目引用、环境变量或托管引用。TODO（发布验收）：[Issue #13](https://github.com/AMindFlow/dsh-fleetseek/issues/13)（外链以 Issue 当前内容为准）。
 
 纯空白的值视为未提供。宿主凭据服务返回 `undefined` 时同样视为未提供。以上三层都没有 key 的条目会记为 `SKIPPED_NO_KEY` 并跳过，不发出请求。
 
@@ -151,7 +100,7 @@
   - 本节结论有本地 headless 复测支撑（只连回环地址，无真实供应商）：fixture [evidence/proxy-retest-v0.1.mjs](evidence/proxy-retest-v0.1.mjs)，输出 [evidence/proxy-retest-v0.1.log](evidence/proxy-retest-v0.1.log)。复测与上述描述一致，未发现额外缺陷；代理分发器接入前的版本，代理条目请停用或改直连。
 - **响应体上限 2 MiB**（`src/constants.js` 的 `MAX_RESPONSE_BYTES`，PAC 与七家供应商正文共用；bing 适配器的 `MAX_BODY_BYTES` 是该常量的别名，同值）：超限立即停止读取。供应商 2xx 正文超限按异常响应记 `ENTRY_BAD_RESPONSE`（原因含尺寸线索），PAC 超限记 `PAC_FETCH_FAILED`。
 - **设置页的「网页搜索链」区域**：由 client 产物自注册完整设置面板；操作只读/写入本插件配置和宿主凭据 Remote，不发起供应商请求。目标 DSH 版本的面板外观和 Remote 回包仍待隔离 profile 实机确认（见第 3.1 节）。
-- **v0.1 不自动导入旧版 YAML 凭据**（见第 4.2 节；TODO 见 [Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)）。
+- **v0.1 不自动导入旧版 YAML 凭据**（见第 4.2 节；TODO 见 [Issue #13](https://github.com/AMindFlow/dsh-fleetseek/issues/13)）。
 - **额度判定中的 `QUOTA_LIMITED` 待证认**。它在代码中作为额度证据码出现，但来源是第三方文档，尚未取得实机样本。Gemini 在 429 下按消息含 `quota` 判为额度的做法也是待复核的临时口径。详见 [排错指南](troubleshooting.md)。
 - 本页不包含真实供应商的实网验收结果。
 

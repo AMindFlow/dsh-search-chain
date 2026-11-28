@@ -4,7 +4,7 @@
 
 ## DSH-001 注册和释放搜索 provider
 
-- **要求** dsh 装载名为 `dsh-search-chain` 的 bundle 时，插件须提供配置行 `id: search-chain`，并注册一个同名 `WebSearchProvider`。卸载须移除设置区域和搜索注册并释放连接资源。重新装载后各只有一个注册项。插件只注册搜索 provider。
+- **要求** dsh 装载名为 `dsh-fleetseek` 的 bundle 时，插件须提供配置行 `id: search-chain`，并注册一个同名 `WebSearchProvider`。卸载须移除设置区域和搜索注册并释放连接资源。重新装载后各只有一个注册项。插件只注册搜索 provider。
 - **来源** [原始需求 R1、R7及新版设置要求 R9](../../project/requirements.md)。
 - **验收** 在测试 profile 用 `plugin_manager install_bundle` 装载候选包。检查注册表新增一个 `search-chain`，设置出现对应配置区域。卸载及重装后核对两处注册、连接清理和已有抓取 provider。
 

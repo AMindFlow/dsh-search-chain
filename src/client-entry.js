@@ -56,7 +56,7 @@ const sectionLabel = () => SECTION_TITLE;
 const mounted = new WeakMap();
 
 globalThis.window?.__ModuleLoader__?.load({
-  id: "dsh-search-chain",
+  id: "dsh-fleetseek",
   factory(require) {
     // React 经宿主模块表注入的 require 取得；缺失或异常时降级为 null（组件渲染 null）。
     let React = null;

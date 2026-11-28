@@ -2,7 +2,7 @@
 
 ## 分支与 PR
 
-远程地址为 `https://github.com/AMindFlow/dsh-search-chain.git`，默认分支为 `main`。空远程建立初始 `main` 后，所有变更从最新 `main` 切短分支，如 `feat/123-openai`，通过 PR 回到 `main`。在仓库中保护 `main`，启用 PR 审阅及已落地的相关检查，限制直接推送和强推。 [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)
+远程地址为 `https://github.com/AMindFlow/dsh-fleetseek.git`，默认分支为 `main`。空远程建立初始 `main` 后，所有变更从最新 `main` 切短分支，如 `feat/123-openai`，通过 PR 回到 `main`。在仓库中保护 `main`，启用 PR 审阅及已落地的相关检查，限制直接推送和强推。 [GitHub Flow](https://docs.github.com/en/get-started/using-github/github-flow)
 
 每个工作包对应一个 Issue、一个分支、一个 PR。打开 PR 时关联 Issue、规格编号和前置依赖，记录实际验证及缺口。评审基于当前提交，处理阻塞意见后默认 squash 合并，随后删除主题分支。完整兑现 Issue 时使用 `Closes #编号`，只完成部分时引用 Issue 并保留其后续工作。tag 和 Release 来自已验收的 `main` 提交。
 
@@ -15,7 +15,7 @@
 
 ## GitHub Projects
 
-AMindFlow 组织的 [dsh-search-chain Project #1](https://github.com/orgs/AMindFlow/projects/1/views/1) 已关联此仓库。用仓库 Issue 承载工作包，Issue 的 `Blocked by` 表示执行依赖。工作包按 [DAG](../project/development-dag.md)登记。之后负责人、进度、优先级和运行中的依赖在 GitHub 维护，仓库文档保留技术契约与里程碑。 [GitHub Issue dependencies](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-issue-dependencies)
+AMindFlow 组织的 [dsh-fleetseek Project #1](https://github.com/orgs/AMindFlow/projects/1/views/1) 已关联此仓库。用仓库 Issue 承载工作包，Issue 的 `Blocked by` 表示执行依赖。工作包按 [DAG](../project/development-dag.md)登记。之后负责人、进度、优先级和运行中的依赖在 GitHub 维护，仓库文档保留技术契约与里程碑。 [GitHub Issue dependencies](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-issue-dependencies)
 
 | 字段或视图 | 用途 |
 | --- | --- |

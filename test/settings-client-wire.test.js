@@ -22,7 +22,7 @@
 //        v0.2 实现经 window.__ModuleLoader__.require('react') 懒取 React 是对不存在 API 的调用；
 //        相关「loader.require 懒取」钉全部删除。React 只经 factory 入参 require('react') 进入
 //        组件作用域（[M1]）。
-//   [M3] load 注册的 id 恒 = 包名（本包 = "dsh-search-chain"）。
+//   [M3] load 注册的 id 恒 = 包名（本包 = "dsh-fleetseek"）。
 //   [M4] package.json dsh.client.inject 是**装载包列表**（宿主按序装载依赖包），不是服务名表。
 //        本包 factory 所需 React 由宿主模块表经 load factory 的 require 注入（[M1]），不是独立
 //        装载包 → inject 现须恰为 []。把服务名（"slots"）填进装载列表 = 宿主去装载 phantom 包
@@ -79,7 +79,7 @@ const SLOT = "settings.section";
 const SECTION_ID = "search-chain";
 const SECTION_TITLE = "网页搜索链";
 const SECTION_ORDER = 30; // [L2]：agent-presets 20 之后
-const PACKAGE_ID = "dsh-search-chain"; // [M3]：load 注册 id 恒 = 包名
+const PACKAGE_ID = "dsh-fleetseek"; // [M3]：load 注册 id 恒 = 包名
 // 区域标题 + 编辑指引要素（#46 rev 轮历史定案：当时真机验收（verify-ui-46，脚本已随 #80 退役）
 // 实证可走路径 = 侧栏「插件」→ 卡片 → 详情页配置表单；「设置→…」路由仍未证
 // （nav 无设置入口）→ 禁「设置→」前缀，设置页路由仍为规格 BCF-006 开放项。历史：六要素
@@ -692,7 +692,7 @@ test("内置插件页编辑面（v0.1）：cordis.patch.yml 行声明 entries �
   assert.equal(rows.length, 1, `patch 须恰含 1 个 insert 配置行（现识别 ${rows.length} 个）`);
   const row = rows[0];
   assert.equal(row.id, SECTION_ID);
-  assert.equal(row.name, "dsh-search-chain");
+  assert.equal(row.name, "dsh-fleetseek");
   assert.ok(
     row.entries.present,
     "行 config 必须声明 entries 字段（内置插件页可编辑种子，v0.1 唯一编辑入口）；" +

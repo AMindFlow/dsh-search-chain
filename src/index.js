@@ -1,4 +1,4 @@
-// dsh-search-chain bundle 入口（DSH-001..003、DSH-005）。
+// dsh-fleetseek bundle 入口（DSH-001..003、DSH-005）。
 // 只注册一个 WebSearchProvider（id=search-chain）；卸载时反注册并释放链资源。
 // 生产装配（WP6）：搜索链由 search.js 的 createSearchChain 接线（适配器见 src/backends/*，传输见 transport.js）；
 // 设置面板（WP12）不在本文件内实现。

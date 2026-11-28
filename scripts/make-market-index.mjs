@@ -10,13 +10,13 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
-const repoUrl = 'https://github.com/AMindFlow/dsh-search-chain.git'
+const repoUrl = 'https://github.com/AMindFlow/dsh-fleetseek.git'
 
 // 展示元数据（Discover 卡片与详情页标题区）。正文详情以仓库 README 为准。
 const meta = {
   title: {
-    zh: '网页搜索链',
-    en: 'Web Search Chain',
+    zh: 'FleetSeek 网页搜索链',
+    en: 'FleetSeek Web Search Chain',
   },
   description: {
     zh: '多厂商搜索降级链：利用各厂商免费额度聚合出一个高额度、确保可用的 web_search。按你保存的顺序逐个尝试条目（供应商×端点），失败或无结果才降级，比裸 Bing 或 web_fetch 的结果更可用；条目级代理出站与 PAC 沙箱，配了代理的条目绝不静默回退直连。',

@@ -1935,21 +1935,21 @@ test("T13-5 Profile 构造（OSB-002）：symlink realpath 沿途 metadata、Ele
 
   // 1) symlink 挂载路径 + Electron .app/Contents/Frameworks
   const map = new Map([
-    ["/profile/node_modules/dsh-search-chain/src/pac-eval-worker.js", "/repo/src/pac-eval-worker.js"],
-    ["/profile/node_modules/dsh-search-chain/src", "/repo/src"],
-    ["/profile/node_modules/dsh-search-chain", "/repo"],
+    ["/profile/node_modules/dsh-fleetseek/src/pac-eval-worker.js", "/repo/src/pac-eval-worker.js"],
+    ["/profile/node_modules/dsh-fleetseek/src", "/repo/src"],
+    ["/profile/node_modules/dsh-fleetseek", "/repo"],
     ["/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness", "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness"],
     ["/Applications/DeepSeek Harness.app/Contents/Frameworks", "/Applications/DeepSeek Harness.app/Contents/Frameworks"],
   ]);
   const built = mod.buildPacSandboxProfile({
     execPath: "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness",
-    workerPath: "/profile/node_modules/dsh-search-chain/src/pac-eval-worker.js",
+    workerPath: "/profile/node_modules/dsh-fleetseek/src/pac-eval-worker.js",
     realpathFn: (p) => map.get(p) ?? p,
     existsFn: (p) => p === "/Applications/DeepSeek Harness.app/Contents/Frameworks",
   });
   assert.ok(built);
   assert.equal(built.frameworksRealpath, "/Applications/DeepSeek Harness.app/Contents/Frameworks");
-  assert.ok(built.profile.includes('(literal "/profile/node_modules/dsh-search-chain")'));
+  assert.ok(built.profile.includes('(literal "/profile/node_modules/dsh-fleetseek")'));
   assert.ok(built.profile.includes('(literal "/repo")'));
   assert.ok(built.profile.includes('(subpath "/repo")'));
   assert.ok(built.profile.includes('(subpath "/Applications/DeepSeek Harness.app/Contents/Frameworks")'));
