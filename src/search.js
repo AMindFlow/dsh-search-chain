@@ -42,6 +42,18 @@ const ENTRY_CODE_VALUES = new Set(Object.values(ENTRY_CODES));
  */
 const ENTRY_PHASE_CODE_VALUES = new Set([...ENTRY_CODE_VALUES, ...Object.values(CONFIG_CODES)]);
 
+/**
+ * #86 POOL-004 轮替触发集（key-pool.md 设计决定 + lead 审阅批准）：仅凭据/额度/限流类上游失败
+ * 指向「换一把 key 可能成功」，条目内在池序内换 key 重试；每把 key 至多一次提交（无二次轮转）。
+ * 其余码（NETWORK/PROXY/TIMEOUT/CHANNEL_LIMIT/BAD_RESPONSE/CONTENT_POLICY/CONFIG_*）不轮替——
+ * 换 key 不改变其归因，按 FB-001/FB-005 既有降级/终止语义处理（POOL-004④⑦）。
+ */
+const POOL_ROTATION_CODES = new Set([
+  ENTRY_CODES.CREDENTIALS,
+  ENTRY_CODES.QUOTA,
+  ENTRY_CODES.RATE_LIMITED,
+]);
+
 // CONFIG_* 与 PAC_* 条目执行期码的诊断文案（仅链自产文本，不带上游原文，CFG-003）。
 const CONFIG_PHASE_DESC = {
   [CONFIG_CODES.INVALID]: "配置违约",
@@ -214,17 +226,18 @@ export function createSearchChain(deps) {
         if (budgetMs <= 0) continue; // FB-003：无可用时间不得发出请求（不计入 attempts）
 
         // CFG-002：只为实际准备尝试的启用条目解析 key；免 key 类型（bing）不读凭据。
+        // #86 POOL-004/007：credentialRefs 池形态 = 唯一轮替候选集；池全 absent → 下层兜底单 key。
         const envName = KEY_ENV_BY_TYPE[entry.type];
-        let key = null;
+        let plan = null;
         let credentialReadError = null;
         if (envName) {
           try {
-            key = await resolveKey(entry, envName);
+            plan = await resolvePoolPlan(entry, envName);
           } catch (err) {
             credentialReadError = err;
           }
         }
-        // FB-003 取消闸：await resolveKey 期间宿主可能已取消；此处复查，已取消则零出站、不进入 transport.open。
+        // FB-003 取消闸：await resolvePoolPlan 期间宿主可能已取消；此处复查，已取消则零出站、不进入 transport.open。
         if (externalSignal?.aborted || state.cancelled) throw abortError(externalSignal);
         if (credentialReadError) {
           // CFG-002「需要读取但无法访问或解析的凭据文件须报告配置错误」：
@@ -233,21 +246,21 @@ export function createSearchChain(deps) {
           recordFailure(entry, ENTRY_CODES.CREDENTIALS, reason);
           continue;
         }
-        if (envName && key === null) {
+        if (envName && plan === null) {
           const reason = `缺少凭据：${envName} 未配置（条目引用、环境变量与 DSH 托管记录均未提供）`;
           attempts.push(attemptOf(entry, SKIPPED_NO_KEY, reason));
           issues.push({ kind: "skip", name: entry.name, envName });
           continue;
         }
 
-        const outcome = await runEntry(entry, { query, maxResults, key, budgetMs, externalSignal, state });
+        const outcome = await runEntryPool(entry, { query, maxResults, plan, budgetMs, externalSignal, state });
 
         if (outcome.kind === "cancelled") {
           // FB-003：宿主取消须终止整链（拒绝），不得再请求。
           throw abortError(externalSignal);
         }
         if (outcome.kind === "timeout") {
-          recordFailure(entry, ENTRY_CODES.TIMEOUT, FAILURE_REASON[ENTRY_CODES.TIMEOUT](entry, budgetMs));
+          recordFailure(entry, ENTRY_CODES.TIMEOUT, FAILURE_REASON[ENTRY_CODES.TIMEOUT](entry, budgetMs), poolOf(outcome));
           continue; // FB-003：剩余总预算允许时继续下一条
         }
         if (outcome.kind === "error") {
@@ -256,14 +269,24 @@ export function createSearchChain(deps) {
             // A5/FB-005：程序违约（无条目可降级的码，含 TRANSPORT_RELEASED）原样暴露，不包装、不再发起新上游请求。
             throw outcome.error;
           }
-          recordFailure(entry, code, FAILURE_REASON[code](entry));
-          if (code === ENTRY_CODES.CONTENT_POLICY) break; // FB-001/FB-005：终止类，不降级
+          // POOL-006①：池耗尽文案（「全部 N 把 key 失败」）仅限池形态且实际尝试 ≥2 把；
+          // 单 key（含 1 元池、下层兜底单 key）维持 v0.2.0 基准文案，不得出现池字样。
+          const reason = outcome.fromPool && outcome.tried >= 2
+            ? `全部 ${outcome.tried} 把 key 失败：${FAILURE_REASON[code](entry, budgetMs)}`
+            : FAILURE_REASON[code](entry, budgetMs);
+          recordFailure(entry, code, reason, poolOf(outcome));
+          if (code === ENTRY_CODES.CONTENT_POLICY) break; // FB-001/FB-005：终止类，不降级（POOL-004⑦ 零轮替）
           continue;
         }
         // 成功结果（A5 resolve）：非空有效来源 → 首个返回有效来源的条目结束搜索（FB-001）；
-        // 空数组 = 明确无结果 → 总预算内继续下一条（FB-001/FB-004）。
+        // 空数组 = 明确无结果 → 总预算内继续下一条（FB-001/FB-004，POOL-004⑤ 空结果停止轮次）。
         const built = buildSuccessResult(entry, outcome.value, { maxResults, issues });
         if (built.sources.length > 0) {
+          if (outcome.fromPool && outcome.switched && outcome.poolSize > 1) {
+            // POOL-006②：换 key 命中成功 → content 首行冠「已使用第 N/M 把 key」（FB-002 同一渠道）。
+            const note = `已使用第 ${outcome.usedIndex}/${outcome.poolSize} 把 key`;
+            built.content = built.content ? `${note}\n${built.content}` : note;
+          }
           log?.("debug", "search-chain 条目命中", { entryId: entry.id, type: entry.type });
           return built;
         }
@@ -278,8 +301,8 @@ export function createSearchChain(deps) {
       return terminalResult();
     };
 
-    function recordFailure(entry, code, reason) {
-      attempts.push(attemptOf(entry, code, reason));
+    function recordFailure(entry, code, reason, pool) {
+      attempts.push(attemptOf(entry, code, reason, pool));
       issues.push({ kind: "fail", name: entry.name, code });
       failed += 1;
       log?.("warn", "search-chain 条目失败", { entryId: entry.id, type: entry.type, code });
@@ -348,53 +371,115 @@ export function createSearchChain(deps) {
 
     /**
      * 实际尝试一个条目（A6：transport.open → 适配器 ctx.fetch → close）。
-     * @returns {Promise<{kind:"success", value:object}|{kind:"error", error:object}|{kind:"timeout"}|{kind:"cancelled"}>}
+     * #86 POOL-004 池轮替：候选集内按池序逐 key 尝试——每把 key 至多一次提交；每把 key 独立
+     * open→search→close 生命周期；条目预算为全部 key 共享（分母不因池 >1 改变，POOL-005），
+     * 逐次 race = min(名义预算, 本次尝试开始时剩余)；触发集外（POOL_ROTATION_CODES）不轮替；
+     * 单 key / 单引用 / 下层兜底 = 单候选，行为与 v0.2.0 逐位一致。
+     * @returns {Promise<{kind:"success", value, switched, usedIndex, fromPool, poolSize}
+     *                  |{kind:"error", error, tried, fromPool, poolSize, triedList}
+     *                  |{kind:"timeout", tried, fromPool, poolSize, triedList}
+     *                  |{kind:"cancelled"}>}
      */
-    async function runEntry(entry, { query, maxResults, key, budgetMs, externalSignal, state }) {
+    async function runEntryPool(entry, { query, maxResults, plan, budgetMs, externalSignal, state }) {
       const backend = backends.get?.(entry.type);
       if (!backend || typeof backend.search !== "function") {
         // 目录与后端不一致属内部程序违约：无 code，原样暴露（FB-005）。
         throw new TypeError(`[search-chain] 条目 ${entry.id}（${entry.type}）没有可用的后端适配器（程序违约）`);
       }
-      const entryAc = new AbortController();
-      // A6 seam 前：open 失败时尚无句柄、适配器未触及；带码错误交由下游 outcome.error 分支按条目降级，
-      // 无码/TRANSPORT_RELEASED 仍经同一分支裸上抛（不改全局位）。
-      let handle;
-      try {
-        handle = transport.open(entry);
-      } catch (error) {
-        return { kind: "error", error };
-      }
-      const ctx = {
-        entry,
-        query,
-        maxResults,
-        key,
-        fetch: handle.fetch,
-        budgetMs,
-        signal: entryAc.signal,
-        clock,
-        log,
+      const candidates = Array.isArray(plan?.candidates) && plan.candidates.length > 0
+        ? plan.candidates
+        : [{ ref: null, key: null, index: 0 }];
+      const fromPool = Boolean(plan?.fromPool);
+      const poolSize = Number.isInteger(plan?.poolSize) ? plan.poolSize : 0;
+      const entryStartAt = clock.now();
+      const triedList = []; // 逐 key 脱敏明细 { index, code }：index 为池内序号（1 起），下层兜底单 key 为 0
+      const meta = () => ({ tried: triedList.length, fromPool, poolSize, triedList });
+      const poolDetail = () => (fromPool ? { size: poolSize, tried: triedList.length, outcomes: triedList.map((t) => ({ index: t.index, code: t.code })) } : undefined);
+      const rotateOrEnd = (code, prevCand, nextCand) => {
+        // POOL-004 脱敏轮替事件：每次换 key 恰一条（事件数 = 换 key 次数）；只含条目 id 与池内序号，
+        // 不得携带引用名/key 明文（CFG-003/POOL-006③）。
+        log?.("warn", "search-chain key 轮替", { entryId: entry.id, type: entry.type, fromIndex: prevCand.index, toIndex: nextCand.index, code });
       };
-      try {
-        return await raceEntry(backend, ctx, {
-          budgetMs,
-          externalSignal,
-          state,
-          onTimeout: () => {
-            // FB-003：条目到期须取消当前请求。
-            const reason = new Error(`条目预算 ${budgetMs}ms 到期`);
-            reason.name = "TimeoutError";
-            entryAc.abort(reason);
-          },
-          onExternalAbort: () => {
-            // FB-003：宿主取消须取消在途操作。
-            entryAc.abort(externalSignal.reason);
-          },
-        });
-      } finally {
-        handle.close(); // A6/CFG-004：条目结束（成功/失败/超时/取消）后释放传输句柄
+      for (let ci = 0; ci < candidates.length; ci++) {
+        if (state.cancelled) return { kind: "cancelled" };
+        const cand = candidates[ci];
+        const remaining = budgetMs - (clock.now() - entryStartAt);
+        if (remaining <= 0) {
+          // 条目预算（全 key 共享）耗尽：不得再出站，ENTRY_TIMEOUT 归因（POOL-005①a）。
+          return { kind: "timeout", ...meta() };
+        }
+        const entryAc = new AbortController();
+        // A6 seam 前：open 失败时尚无句柄、适配器未触及。open 错误不是换 key 的触发集
+        // （传输/代理/配置问题与 key 无关）——带码按本 key 失败归因后整条终结，
+        // 无码/TRANSPORT_RELEASED 裸上抛（A5/FB-005）。
+        let handle;
+        try {
+          handle = transport.open(entry);
+        } catch (error) {
+          if (!isEntryPhaseCode(error?.code)) return { kind: "error", error };
+          triedList.push({ index: cand.index, code: error.code });
+          const nextCand = candidates[ci + 1];
+          if (nextCand && POOL_ROTATION_CODES.has(error.code)) {
+            rotateOrEnd(error.code, cand, nextCand);
+            continue;
+          }
+          return { kind: "error", error, ...meta() };
+        }
+        const ctx = {
+          entry,
+          query,
+          maxResults,
+          key: cand.key,
+          fetch: handle.fetch,
+          budgetMs, // 名义条目预算恒为 FB-003 公式值（ctx 面不改，POOL-005①a 钉）
+          signal: entryAc.signal,
+          clock,
+          log,
+        };
+        let outcome;
+        try {
+          outcome = await raceEntry(backend, ctx, {
+            budgetMs: remaining, // 共享预算：race 只取本次尝试开始时剩余的时间（POOL-005①a 在途取消钉）
+            externalSignal,
+            state,
+            onTimeout: () => {
+              // FB-003：条目到期须取消当前请求。
+              const reason = new Error(`条目预算 ${budgetMs}ms 到期`);
+              reason.name = "TimeoutError";
+              entryAc.abort(reason);
+            },
+            onExternalAbort: () => {
+              // FB-003：宿主取消须取消在途操作。
+              entryAc.abort(externalSignal.reason);
+            },
+          });
+        } finally {
+          handle.close(); // A6/CFG-004：每把 key 结束（成功/失败/超时/取消）后释放传输句柄
+        }
+        if (outcome.kind === "cancelled") return { kind: "cancelled" };
+        if (outcome.kind === "timeout") {
+          // 预算到期取消在途：已出站者计为已尝试（POOL-005①b tried 口径），ENTRY_TIMEOUT 归因。
+          triedList.push({ index: cand.index, code: ENTRY_CODES.TIMEOUT });
+          return { kind: "timeout", ...meta() };
+        }
+        if (outcome.kind === "success") {
+          // 成功即止（含空结果：停止轮次、非池耗尽，POOL-004⑤）——usedIndex 供「已使用第 N/M 把 key」。
+          return { kind: "success", value: outcome.value, switched: ci > 0, usedIndex: cand.index, fromPool, poolSize };
+        }
+        const code = isEntryPhaseCode(outcome.error?.code) ? outcome.error.code : null;
+        if (code === null) {
+          // A5/FB-005：程序违约（无条目可降级的码，含 TRANSPORT_RELEASED）原样暴露。
+          return { kind: "error", error: outcome.error };
+        }
+        triedList.push({ index: cand.index, code });
+        const nextCand = candidates[ci + 1];
+        if (nextCand && POOL_ROTATION_CODES.has(code)) {
+          rotateOrEnd(code, cand, nextCand);
+          continue;
+        }
+        return { kind: "error", error: outcome.error, ...meta() };
       }
+      return { kind: "cancelled" }; // 防御性：循环内所有路径均已收敛
     }
 
     /**
@@ -448,10 +533,23 @@ export function createSearchChain(deps) {
     });
   }
 
-  /** CFG-002 优先级：条目引用 → 进程环境变量 → DSH 托管记录 → 旧版 YAML 顶层。宿主对超语法引用抛 TypeError 时按未设置处理（R-1）。 */
-  async function resolveKey(entry, envName) {
-    const ref = typeof entry.credentialRef === "string" ? entry.credentialRef.trim() : "";
-    if (ref) {
+  /**
+   * #86 POOL-004/007：条目凭据候选计划（v0.2.0 单 key resolveKey 的池化替代）：
+   *   - 池形态（credentialRefs 数组，1..8 个引用）= 唯一轮替候选集：选取期逐 ref resolve 各一次
+   *     （absent 项跳过、零「空 key 提交」）；池内命中 → 下层（env/托管/YAML）零参与、零重读
+   *     （POOL-007②：池耗尽不得引发凭据层重新读取）；
+   *   - 池全 absent → 下层兜底恰好一个单 key（POOL-007①/②b），index 0、无池明细、非轮替候选；
+   *   - legacy 形态（单 credentialRef）：v0.2.0 逐层解析链原样（条目引用 → env → 托管 → YAML，
+   *     POOL-007④ 回归钉）；
+   *   - 免 key 类型（bing，envName undefined）：零凭据读取（POOL-007③/CFG-002），key null。
+   * R-1 镜像：宿主对超语法引用抛 TypeError 时按本层未命中处理；合法名的其他凭据服务故障
+   * 保留 hard-failure（上抛 → 条目凭据失败降级，CFG-002）。
+   * @returns {Promise<{candidates: Array<{ref: string|null, key: string|null, index: number}>, poolSize: number, fromPool: boolean}|null>}
+   *   null = 各层均无 key（调用方按 v0.2.0 语义记 SKIPPED_NO_KEY 并继续）。
+   */
+  async function resolvePoolPlan(entry, envName) {
+    if (!envName) return { candidates: [{ ref: null, key: null, index: 0 }], poolSize: 0, fromPool: false };
+    const resolveRef = async (ref) => {
       let hit;
       try {
         hit = await credentials.resolve(ref);
@@ -459,10 +557,37 @@ export function createSearchChain(deps) {
         // dsh-credentials 以 POSIX 标识符校验引用；R-1 约定语法错误只是本层未命中。
         // 对于合法名的其他凭据服务故障仍保留原有 hard-failure 行为。
         if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref) || !(error instanceof TypeError)) throw error;
+        return null;
       }
       const value = typeof hit?.value === "string" ? hit.value.trim() : "";
-      if (value !== "") return value;
+      return value === "" ? null : value;
+    };
+    const refs = Array.isArray(entry.credentialRefs)
+      ? entry.credentialRefs.filter((r) => typeof r === "string" && r.trim() !== "").map((r) => r.trim())
+      : [];
+    if (refs.length > 0) {
+      // POOL-007：池 = 唯一候选集；选取期各 ref 读一次，失败/未命中不重读层。
+      const candidates = [];
+      for (let i = 0; i < refs.length; i++) {
+        const key = await resolveRef(refs[i]);
+        if (key !== null) candidates.push({ ref: refs[i], key, index: i + 1 });
+      }
+      if (candidates.length > 0) return { candidates, poolSize: refs.length, fromPool: true };
+      const fallback = await lowerLayerKey(entry, envName);
+      return fallback === null ? null : { candidates: [{ ref: null, key: fallback, index: 0 }], poolSize: 0, fromPool: false };
     }
+    // legacy 单引用：v0.2.0 逐层链逐位不变（POOL-007④）。
+    const ref = typeof entry.credentialRef === "string" ? entry.credentialRef.trim() : "";
+    if (ref) {
+      const value = await resolveRef(ref);
+      if (value !== null) return { candidates: [{ ref, key: value, index: 1 }], poolSize: 0, fromPool: false };
+    }
+    const fallback = await lowerLayerKey(entry, envName);
+    return fallback === null ? null : { candidates: [{ ref: null, key: fallback, index: 0 }], poolSize: 0, fromPool: false };
+  }
+
+  /** 下层兜底（进程环境变量 → DSH 托管记录 → 旧版 YAML 顶层）：只参与选取期降级，不进轮替候选集（POOL-007）。 */
+  async function lowerLayerKey(entry, envName) {
     if (Object.hasOwn(env, envName)) {
       const value = typeof env[envName] === "string" ? env[envName].trim() : "";
       if (value !== "") return value;
@@ -479,6 +604,17 @@ export function createSearchChain(deps) {
     }
     return null;
   }
+}
+
+/** #86 POOL-005①b/POOL-006①：条目终态 pool 明细（仅池形态；单 key/legacy 不带，v0.2.0 形状零变化）。 */
+function poolOf(outcome) {
+  if (!outcome?.fromPool) return undefined;
+  const triedList = Array.isArray(outcome.triedList) ? outcome.triedList : [];
+  return {
+    size: Number.isInteger(outcome.poolSize) ? outcome.poolSize : 0,
+    tried: triedList.length,
+    outcomes: triedList.map((t) => ({ index: t.index, code: t.code })),
+  };
 }
 
 // ─── 纯函数工具 ───────────────────────────────────────────────────────────────
@@ -536,8 +672,12 @@ function buildSuccessResult(entry, value, { maxResults, issues }) {
   return result;
 }
 
-function attemptOf(entry, code, reason) {
-  return { entryId: entry.id, entryType: entry.type, entryName: entry.name, code, reason };
+function attemptOf(entry, code, reason, pool) {
+  const out = { entryId: entry.id, entryType: entry.type, entryName: entry.name, code, reason };
+  // #86 POOL-005①b/POOL-006①：池条目终态附逐 key 脱敏明细（size/tried/outcomes）；
+  // 单 key（含 legacy 单引用、下层兜底）不带该键——v0.2.0 attempts 形状逐位不变。
+  if (pool && typeof pool === "object") out.pool = { size: pool.size, tried: pool.tried, outcomes: pool.outcomes.map((o) => ({ index: o.index, code: o.code })) };
+  return out;
 }
 
 function isEntryPhaseCode(code) {
