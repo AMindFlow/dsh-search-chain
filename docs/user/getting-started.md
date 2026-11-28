@@ -9,11 +9,15 @@
 - 宿主为 DeepSeek Harness（DSH），版本须在 `package.json` 的 `engines.dsh` 范围内（`>=0.2.2-rc.5 <0.3.0-0`，宿主依赖 `0.2.2-rc.5` 组）。该兼容范围已在 0.2.2-rc.5 上实装验证（见 `docs/project/releases/v0.1.0.md`）。
 - 包不提交锁文件（`.gitignore` 忽略 `pnpm-lock.yaml`），依赖解析由 DSH 的安装流程完成。
 
-安装方式（三选一）：
+安装方式（选一）：
 
 - **从 GitHub 安装（发布渠道）**：按根目录 [INSTALL.md](../../INSTALL.md) 用发布 tag 解引用后的 40 位完整 commit 安装（`git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>`），支持后续「更新」能力。
+- **从 npm 安装**：包名 `@amindflow/dsh-search-chain`（`dsh plugin add @amindflow/dsh-search-chain` 或在宿主插件页输入该包名）。
+- **从 Discover 索引源安装**：在插件市场添加自建索引源 `https://raw.githubusercontent.com/AMindFlow/dsh-plugin-index/main/market-index.json`，选择「网页搜索链」。
 - 在 DSH 中打开 **Plugins** > **Add plugin**，选择本包所在的本地目录（开发自用）。
 - 由管理员通过插件管理工具安装：`install_bundle`，`target` 填写包目录的绝对路径。
+
+> **一个 profile 只装一个渠道。** DSH 以 npm 包名识别插件：Git 渠道的包名是 `dsh-search-chain`，npm 包是 `@amindflow/dsh-search-chain`——两者内容同源，但对宿主是两个不同的 bundle 身份。同一 profile 同时安装会出现两张卡片并争用同一配置行，请只保留其一；更换渠道时先卸载另一个。
 
 安装只注册搜索 provider `search-chain`，不会改写你现有的搜索或抓取选择。升级已安装的版本，见 [升级指南](upgrade.md)。
 

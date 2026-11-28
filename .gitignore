@@ -8,3 +8,4 @@ artifacts/
 
 # 本机协调/验证产物（插件包为可发布库，不提交锁文件）
 pnpm-lock.yaml
+*.tgz
