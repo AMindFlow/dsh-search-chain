@@ -21,7 +21,7 @@ test("G1 静态源扫：ft-oracle-* 测试与 helper 不得出现非保留域 UR
   for (const f of files) {
     const src = readFileSync(new URL(f, TEST_DIR), "utf8");
     for (const m of src.matchAll(/https?:\/\/([^\s"'`)\/?#]+)/g)) {
-      const bare = m[1].replace(/^\[([^\]]*)\]$/, "$1").split("@").pop().split(":")[0];
+      const bare = m[1].replace(/^\[([^\]]*)\]$/, "$1").split("@").pop().split(":")[0].replace(/\.+$/, "");
       const ok = !looksDomain(bare) || RESERVED_DOMAIN.test(bare);
       assert.ok(ok, `${f}: 非保留域出站字面量 ${m[0]}（域名 fixture 必须用 *.invalid/*.test/*.example，IP 形态放行）`);
     }
