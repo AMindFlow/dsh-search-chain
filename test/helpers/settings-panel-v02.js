@@ -124,6 +124,9 @@ export function makeSettingsState(overrides = {}) {
     deferMutate: false,
     mutateMode: "ok", // "ok" | "conflict" | "save-failed"
     credentialMode: "ok", // "ok" | "rejected" | "network"
+    // #88 第五批⑥（Refs #88）：可选——非空时 save-failed/conflict 的宿主消息尾部回显该串（模拟宿主把本次 URL 明文
+    // 原样塞进拒绝消息），供面板统一错误边界（safeMsg 脱敏）断言；默认空串 = 既有消息逐字不变（纯增补面）。
+    errorEcho: "",
     credentials: {},
     ...overrides,
   };
@@ -459,10 +462,12 @@ export function installSettingsFetch(state) {
         await new Promise((resolve) => held.push(resolve));
       }
       if (state.mutateMode === "save-failed") {
-        return jsonResponse({ ok: false, error: { code: "CONFIG_SAVE_FAILED", message: "synthetic save failure" } });
+        const msg = state.errorEcho ? `synthetic save failure (echo: ${state.errorEcho})` : "synthetic save failure";
+        return jsonResponse({ ok: false, error: { code: "CONFIG_SAVE_FAILED", message: msg } });
       }
       if (state.mutateMode === "conflict") {
-        return jsonResponse({ ok: false, error: { code: "CONFIG_CONFLICT", message: "revision mismatch" } });
+        const msg = state.errorEcho ? `revision mismatch (echo: ${state.errorEcho})` : "revision mismatch";
+        return jsonResponse({ ok: false, error: { code: "CONFIG_CONFLICT", message: msg } });
       }
       if (args.expectedRevision !== state.revision) {
         return jsonResponse({ ok: false, error: { code: "CONFIG_CONFLICT", message: "revision mismatch" } });

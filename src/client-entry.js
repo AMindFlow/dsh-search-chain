@@ -52,11 +52,14 @@ const POSIX_CREDENTIAL_REF = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const GLOBAL_PROXY_FIELD = /^globalproxy/i;
 // PX-001（Refs #88）：全局代理默认凭据引用名（镜像 src/constants.js，自包含文件不得 import）。
 const DEFAULT_GLOBAL_PROXY_REF = "search_chain_global_proxy";
+// #88 第四批 P0（Refs #88）：新地址恒生成新的唯一 ref（默认名仅首存）——mutate 失败不静默改活路由。
+let gpRefSeq = 0;
 // PX-012（Refs #88）：编辑器钉死单选选项（值/文案/data-role）。
+// #88 P2：三态控件旁注文案（跟随全局升级开关/永不改经全局代理/强制经全局代理绝不直连）。
 const PIN_OPTIONS = Object.freeze([
-  [PROXY_PINS.INHERIT, "继承（默认）", "pin-inherit"],
-  [PROXY_PINS.DIRECT_ONLY, "仅直连", "pin-direct"],
-  [PROXY_PINS.PROXY_ONLY, "仅代理", "pin-proxy"],
+  [PROXY_PINS.INHERIT, "继承（默认）：跟随全局升级开关", "pin-inherit"],
+  [PROXY_PINS.DIRECT_ONLY, "仅直连：永不改经全局代理", "pin-direct"],
+  [PROXY_PINS.PROXY_ONLY, "仅代理：强制经全局代理绝不直连", "pin-proxy"],
 ]);
 const HANDLED_ENTRY_FIELDS = ["id", "type", "name", "enabled", "credentialRef", "proxy", "proxyPin"];
 /** 表单管理的条目子字段（合并时覆盖；其余字段保留既有值）。 */
@@ -305,38 +308,50 @@ globalThis.window?.__ModuleLoader__?.load({
     // PX-001（Refs #88）：全局代理明文判形——字段族名 + 值含 "://" 或 "@"（引用名恒为 POSIX，不含二者）。
     const isGlobalProxyPlaintext = (v) => typeof v === "string" && (v.includes("://") || v.includes("@"));
 
-    /** 递归剥离明文字段（SECRET_FIELD 键）：ops 的 set 值绝不携带既有/表单的明文 key（P2-1）；
-     * PX-001：全局代理明文字段族同闭集剥离（Refs #88，CFG-W-003 规则并入）。 */
+    // #88 第二批①/③（Refs #88）：secret 字段名闭集（constants.js SECRET_KEY_CLOSURE 的行内镜像，零 import 约束）——
+    // legacy secret 族 + globalProxy 族；递归按字段名匹配，不做值形态扫描（避免误伤用户数据，边界记录于
+    // config-write-gate.md PX 修订注）；#86 credentialRefs 明文族 / #87 fetch key 明文族将注册进同名单元。
+    const isSecretClosureKey = (k) => SECRET_FIELD.test(k) || GLOBAL_PROXY_FIELD.test(k);
+    /** 合法形态豁免：唯一合法键 globalProxy（精确名）持 POSIX 凭据引用名（引用存放合法、明文不合法）。 */
+    const isLegitGlobalProxyRefValue = (k, v) =>
+      String(k).toLowerCase() === "globalproxy" &&
+      typeof v === "string" &&
+      v.trim() !== "" &&
+      POSIX_CREDENTIAL_REF.test(v.trim());
+
+    /** 递归收集命中 secret 闭集的字段路径（任意深度、任意位置；数组下标字符串化与 ops path 同形）。 */
+    function secretClosurePaths(value, path, out) {
+      if (value === null || typeof value !== "object") return out;
+      if (Array.isArray(value)) {
+        for (let i = 0; i < value.length; i++) secretClosurePaths(value[i], [...path, String(i)], out);
+        return out;
+      }
+      for (const [k, v] of Object.entries(value)) {
+        const p = [...path, k];
+        if (isSecretClosureKey(k) && !isLegitGlobalProxyRefValue(k, v)) out.push(p);
+        if (v !== null && typeof v === "object") secretClosurePaths(v, p, out);
+      }
+      return out;
+    }
+
+    /** 统一清理闭集 → unset ops（第一批 P0：legacy secret 族 + globalProxy 族一次跑全；第三批④：对最终候选层调用，删除流索引正确）。 */
+    function secretClosureCleanupOps(userLayer) {
+      return secretClosurePaths(isPlainObject(userLayer) ? userLayer : {}, [], []).map((path) => ({ op: "unset", path }));
+    }
+
+    /** 递归剥离明文字段（secret 闭集）：ops 的 set 值绝不携带既有/表单的闭集命中 key（P2-1 + #88 第二批①）；
+     * globalProxy 键的合法引用形态豁免（refs-only 契约）。 */
     function stripSecrets(v) {
       if (Array.isArray(v)) return v.map(stripSecrets);
       if (v !== null && typeof v === "object") {
         const out = {};
         for (const [k, child] of Object.entries(v)) {
-          if (SECRET_FIELD.test(k)) continue;
-          if (GLOBAL_PROXY_FIELD.test(k) && isGlobalProxyPlaintext(child)) continue;
+          if (isSecretClosureKey(k) && !isLegitGlobalProxyRefValue(k, child)) continue;
           out[k] = stripSecrets(child);
         }
         return out;
       }
       return v;
-    }
-
-    /** PX-001 明文清零：user 层（top/entry 任意层）残留的全局代理明文字段 → unset ops（值不出现在请求体，CFG-W-003 同形）。 */
-    function globalProxyCleanupOps(userLayer) {
-      const ops = [];
-      if (!isPlainObject(userLayer)) return ops;
-      for (const [k, v] of Object.entries(userLayer)) {
-        if (k === "entries") continue;
-        if (GLOBAL_PROXY_FIELD.test(k) && isGlobalProxyPlaintext(v)) ops.push({ op: "unset", path: [k] });
-      }
-      const entries = Array.isArray(userLayer.entries) ? userLayer.entries : [];
-      entries.forEach((e, i) => {
-        if (!isPlainObject(e)) return;
-        for (const [k, v] of Object.entries(e)) {
-          if (GLOBAL_PROXY_FIELD.test(k) && isGlobalProxyPlaintext(v)) ops.push({ op: "unset", path: ["entries", String(i), k] });
-        }
-      });
-      return ops;
     }
 
     /** 读闸等价预检的 scrub：base+user 合并目标中的全局代理明文不得让预检误抛（清零由清理 ops 承载）。 */
@@ -528,7 +543,8 @@ globalThis.window?.__ModuleLoader__?.load({
         const existing = entries.find((e) => e.id === id);
         if (rec.mode === "create") {
           if (existing) { conflicts.push({ text: `新条目「${label}」：当前设置已存在同 id 条目，按版本冲突处理`, kind: "version" }); continue; }
-          entries = [...entries, { id, type: rec.type, name: (rec.fields && rec.fields.name) ?? "", enabled: true, credentialRef: (rec.fields && rec.fields.credentialRef) ?? "" }];
+          // #88 第三批②：新建草稿的 proxyPin 一并复原。
+          entries = [...entries, { id, type: rec.type, name: (rec.fields && rec.fields.name) ?? "", enabled: true, credentialRef: (rec.fields && rec.fields.credentialRef) ?? "", proxyPin: (rec.fields && rec.fields.proxyPin) || PROXY_PINS.INHERIT }];
           keys[id] = rec.key ?? "";
           if (!editingId) editingId = id;
           continue;
@@ -538,8 +554,14 @@ globalThis.window?.__ModuleLoader__?.load({
           cache.delete(id);
           continue;
         }
+        // #88 第三批②（Refs #88）：proxyPin 随条目草稿缓存全量复原（重开/重挂回填，不静默丢）。
         entries = entries.map((e) => (e.id === id
-          ? { ...e, name: (rec.fields && rec.fields.name) ?? e.name, credentialRef: (rec.fields && rec.fields.credentialRef) ?? (e.credentialRef ?? "") }
+          ? {
+              ...e,
+              name: (rec.fields && rec.fields.name) ?? e.name,
+              credentialRef: (rec.fields && rec.fields.credentialRef) ?? (e.credentialRef ?? ""),
+              proxyPin: (rec.fields && rec.fields.proxyPin) || e.proxyPin || PROXY_PINS.INHERIT,
+            }
           : e));
         if (rec.key) keys[id] = rec.key;
         if (!editingId) editingId = id;
@@ -1107,7 +1129,8 @@ globalThis.window?.__ModuleLoader__?.load({
           key: "",
           baseRevision: cacheBaseRevision(m),
         };
-        rec.fields = { name: entry.name, credentialRef: entry.credentialRef ?? "" };
+        // #88 第三批②（Refs #88）：proxyPin 并入 SET-008 条目草稿缓存（改 A 钉死转 B 保存 → A 草稿不得静默丢）。
+        rec.fields = { name: entry.name, credentialRef: entry.credentialRef ?? "", proxyPin: entry.proxyPin ?? PROXY_PINS.INHERIT };
         rec.key = keyVal ?? "";
         draftCache.set(id, rec);
       };
@@ -1290,6 +1313,28 @@ globalThis.window?.__ModuleLoader__?.load({
       // 二轮修复（单写者）：提交整体在 commitChain 队列内执行——(a) 先 await 全部在途读回落进 latestRef；
       // (b) ops 从权威快照起算（buildOps(snap)，snap=最新持久投影）；(c) expectedRevision 取同一 snap（乐观锁）；
       // (d) 成功后乐观更新 latestRef 并 await load(true) 读回——队列内下一次提交必然从本轮之后的最新投影起算。
+      // ─────────────── #88 首批 P0 统一 ops builder（Refs #88，sol-review 同根因修） ───────────────
+      // 所有保存动作（离散/编辑器/全局升级区块）收敛同一终态语义：
+      // (1) baseOps = 意图 diff（含删除/重排等结构变更）；
+      // (2) 终层清理：对应用 baseOps 后的候选层跑 secret 闭集（legacy secret 族 + globalProxy 族，递归、按字段名）——
+      //     合法 set 已在候选层（引用值不命中闭集），后位 unset 永不会覆盖前位合法 op；
+      //     结构变更后在最终候选层上生成清理路径（第三批④：删除行不再按删除前下标清错行）；
+      // (3) 终态预检：对 ops 应用后的实际终态 validate（抛错形态转返回形）；
+      // (4) 调用方预检通过后才写凭据/mutate（第四批 P0 次序）。
+      const finalizeOps = (snap, baseOps) => {
+        const candidateUser = applyOpsToLayer(snap.user, baseOps);
+        const cleanup = secretClosureCleanupOps(candidateUser);
+        const ops = cleanup.length > 0 ? [...baseOps, ...cleanup] : baseOps;
+        const finalUser = cleanup.length > 0 ? applyOpsToLayer(candidateUser, cleanup) : candidateUser;
+        let check;
+        try {
+          check = validate({ ...(isPlainObject(snap.base) ? snap.base : {}), ...finalUser });
+        } catch (err) {
+          check = { ok: false, issues: [{ message: String((err && err.message) || err) }] };
+        }
+        return { ops, check };
+      };
+
       const commitDiscrete = (buildOps, successText, onGateReject) => {
         const m0 = model;
         if (lockRef.current || m0.phase !== "ready" || typeof m0.revision !== "number") return Promise.resolve(false);
@@ -1312,27 +1357,20 @@ globalThis.window?.__ModuleLoader__?.load({
             }));
             return false;
           }
-          // PX-001（Refs #88）：全局代理明文清零——并入 CFG-W-003 清理闭集，随有变更的保存路径落盘。
-          if (ops && ops.length > 0) ops.push(...globalProxyCleanupOps(snap.user));
           if (!ops || ops.length === 0) return true; // 意图未变化：无需写
-          // CFG-W-001 / CFG-W-002：所有离散写入在发出 mutate 前均须通过读闸等价预检。
-          const nextUser = applyOpsToLayer(snap.user, ops);
-          const nextEffective = { ...(isPlainObject(snap.base) ? snap.base : {}), ...nextUser };
-          // PX-001（Refs #88）：新字段族违规（写闸预检抛错形态）在离散路径同口径转为拒绝呈现，零 mutate。
-          let check;
-          try { check = validate(nextEffective); } catch (err) {
-            check = { ok: false, issues: [{ message: String((err && err.message) || err) }] };
-          }
-          if (!check.ok) {
+          // #88 首批 P0（Refs #88）：统一 ops builder——终层清理闭集（两族）+ 终态预检（CFG-W-001/002/003 + PX-001 同规则）。
+          const fin = finalizeOps(snap, ops);
+          if (!fin.check.ok) {
             if (!alive.current) return false;
             if (onGateReject) onGateReject(snap);
             setModel((m) => ({
               ...m,
               savedNotice: null,
-              sectionError: { text: "无法保存：配置未通过校验", issues: check.issues.map((i) => i.message) },
+              sectionError: { text: "无法保存：配置未通过校验", issues: fin.check.issues.map((i) => i.message) },
             }));
             return false;
           }
+          ops = fin.ops;
           if (lockRef.current) return false; // 队列排空后复核在途标志（排队期间可能已有新操作先行）
           setModel((m) => ({ ...m, busy: true, savedNotice: null, sectionError: null }));
           let response;
@@ -1401,7 +1439,7 @@ globalThis.window?.__ModuleLoader__?.load({
         setModel((m) => ({ ...m, sectionError: null, savedNotice: null, draft: { ...m.draft, useOfficial: target } }));
         commitDiscrete((m) => (effectiveOfficialOf(m) === target
           ? []
-          : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }, ...secretCleanupOps(m.user)]), null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变）
+          : [{ op: "set", path: ["useOfficialDeepSeekSearch"], value: target }]), null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变；清理闭集由 finalizeOps 终层统一附加，#88 首批 P0）
       };
 
       // 超时输入：失焦/回车 且 值有变化且合法 才提交（仅 timeoutMs 键）；成功后清 __global__ 草稿记录（SET-008）。
@@ -1425,7 +1463,7 @@ globalThis.window?.__ModuleLoader__?.load({
         // 新值落 user 层单键 override（与 official 开关同形，不连带具化条目列表）。
         const run = commitDiscrete((snap) => (effectiveTimeoutMsOf(snap) === parsed
           ? []
-          : [{ op: "set", path: ["timeoutMs"], value: parsed }, ...secretCleanupOps(snap.user)]), "已保存设置。");
+          : [{ op: "set", path: ["timeoutMs"], value: parsed }]), "已保存设置。"); // 清理闭集由 finalizeOps 终层统一附加（#88 首批 P0）
         run.then((ok) => { if (ok) draftCache.delete(DRAFT_CACHE_GLOBAL_KEY); }, () => {});
       };
 
@@ -1450,6 +1488,28 @@ globalThis.window?.__ModuleLoader__?.load({
             setModel((m) => ({ ...m, busy: false, escalationError: { text: message }, savedNotice: null, sectionError: null }));
             return false;
           };
+          // #88 第五批⑥（Refs #88）：统一错误边界——宿主拒绝消息可能回显本次 URL 明文（含认证）——
+          // 呈现前把本次 URL（完整形）替换为脱敏形、页内既有 key 值全脱敏；另对任意 http(s) URL 剥 userinfo（不留 path/query）。
+          // text/target/maskedTarget/safeMsg 声明于 try 之外：catch 面（凭据/宿主 RPC 抛异常）必须可达 safeMsg，
+          // 否则 try 内块级 const 在 catch 中 ReferenceError 被提交链吞掉，busy 恒置位、错误永不呈现。
+          const text = String(model.globalProxyText ?? "").trim();
+          let target = null;
+          let maskedTarget = "";
+          const safeMsg = (msg) => {
+            let out = String((msg && msg.message) || msg || "");
+            if (text !== "" && maskedTarget) {
+              // ① 完整形本次 URL（含 userinfo）先整体收敛为 scheme://host:port（脱 userinfo）；
+              // ② 宿主回显可能再带 path/query——按目标 host 前缀整体剥掉尾部（脱 path/query）。
+              out = out.split(text).join(maskedTarget);
+              const targetRe = new RegExp(`${maskedTarget.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:/[^\\s]*)?`, "g");
+              out = out.replace(targetRe, maskedTarget);
+            }
+            for (const secret of Object.values(model.keys)) {
+              if (typeof secret === "string" && secret.trim()) out = out.split(secret.trim()).join("[redacted]");
+            }
+            out = out.replace(/(https?:\/\/)[^/@\s]+@/g, "$1");
+            return out;
+          };
           try {
             if (!alive.current) return false;
             await drainReads();
@@ -1457,47 +1517,48 @@ globalThis.window?.__ModuleLoader__?.load({
             const snap = latestRef.current;
             if (!snap || typeof snap.revision !== "number") return fail("宿主投影缺少 revision，禁止保存（请重新打开设置）");
             const eff = { ...(isPlainObject(snap.base) ? snap.base : {}), ...(isPlainObject(snap.user) ? snap.user : {}) };
-            const text = String(model.globalProxyText ?? "").trim();
-            let target = null;
             if (text !== "") {
               try { target = new URL(text); } catch { return fail("全局代理地址须为绝对 HTTP(S) URL（如 http://host:port）"); }
               if (target.protocol !== "http:" && target.protocol !== "https:") return fail("全局代理地址须为 HTTP(S) URL");
+              maskedTarget = `${target.protocol}//${target.host}`;
             }
             const targetEsc = model.draft.escalationOn === true;
             const prevRef = typeof eff.globalProxy === "string" && eff.globalProxy !== "" ? eff.globalProxy : undefined;
-            const nextRef = text !== "" ? DEFAULT_GLOBAL_PROXY_REF : prevRef;
-            // 写闸预检（CFG-W-004）：先于凭据写——拒绝时零 credentials/set、零 mutate（PX-002/PX-011#4）。
-            const preCheck = validate(scrubGlobalProxyPlaintext({
-              ...eff,
-              proxyEscalation: targetEsc,
-              globalProxy: nextRef,
-            }));
-            if (!preCheck.ok) return fail(`无法保存：${preCheck.issues.map((i) => i.message).join("；")}`);
-            setModel((m) => ({ ...m, busy: true, savedNotice: null, sectionError: null, escalationError: null }));
-            const ops = [];
+            // #88 第四批 P0（Refs #88）：新地址恒生成新的唯一 ref（默认名仅首存）——凭据成功而 mutate 冲突/拒绝时，
+            // 配置层旧 ref/value/活路由全部不变（ref 随 mutate 原子切换），失败只留孤儿新 ref（宿主凭据服务可清理），
+            // 绝不读旧 secret 回滚。唯一名：POSIX 合法（字母数字下划线），模块级序号+时间戳基 36。
+            const nextRef = text !== ""
+              ? (prevRef ? `${DEFAULT_GLOBAL_PROXY_REF}_${(++gpRefSeq).toString(36)}${Date.now().toString(36)}` : DEFAULT_GLOBAL_PROXY_REF)
+              : prevRef;
+            // 统一 ops builder（#88 首批 P0）：baseOps 意图 diff → 终层清理闭集（两族）→ 实际终态预检——
+            // 构造/清理/终态 validate 全部先于 credentials/set（第四批 P0 次序；CFG-W-004 先于凭据写预检）。
+            const baseOps = [];
             const effEsc = eff.proxyEscalation === true;
-            if (targetEsc !== effEsc) ops.push({ op: "set", path: ["proxyEscalation"], value: targetEsc });
-            if (nextRef !== undefined && nextRef !== prevRef) ops.push({ op: "set", path: ["globalProxy"], value: nextRef });
-            if (text !== "") ops.push(...globalProxyCleanupOps(snap.user)); // PX-001 明文清零（Refs #88）
+            if (targetEsc !== effEsc) baseOps.push({ op: "set", path: ["proxyEscalation"], value: targetEsc });
+            if (nextRef !== undefined && nextRef !== prevRef) baseOps.push({ op: "set", path: ["globalProxy"], value: nextRef });
+                        const fin = finalizeOps(snap, baseOps);
+            if (!fin.check.ok) return fail(`无法保存：${fin.check.issues.map((i) => i.message).join("；")}`);
+            const ops = fin.ops;
+            setModel((m) => ({ ...m, busy: true, savedNotice: null, sectionError: null, escalationError: null }));
             const persist = async () => {
               if (ops.length === 0) return true;
               const response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: snap.revision });
               const result = unwrap(response);
               if (!alive.current) return false;
-              if (!result.ok) return fail(`保存失败：${result.message || "宿主拒绝该请求"}`);
+              if (!result.ok) return fail(safeMsg(`保存失败：${result.message || "宿主拒绝该请求"}`));
               try { latestRef.current = { ...snap, user: applyOpsToLayer(snap.user, ops) }; } catch { /* 失败由读回纠正 */ }
               return true;
             };
             if (text !== "") {
-              // 新地址：凭据服务先写（只写不读），随后 mutate（次序断言：credentials/set 先于 settings/mutate）。
-              const credResponse = await credentialRpc("set", { ref: DEFAULT_GLOBAL_PROXY_REF, value: text });
+              // 新地址：凭据服务先写（只写不读，只写新 ref），随后 mutate 原子切 ref（次序断言：credentials/set 先于 settings/mutate）。
+              const credResponse = await credentialRpc("set", { ref: nextRef, value: text });
               const credResult = unwrap(credResponse);
               if (!alive.current) return false;
-              if (!credResult.ok) return fail(`无法保存：${credResult.message || "凭据服务拒绝写入"}`);
+              if (!credResult.ok) return fail(safeMsg(`无法保存：${credResult.message || "凭据服务拒绝写入"}`));
               const ok = await persist();
               if (!ok) return false;
-              globalProxyRedacted.current[DEFAULT_GLOBAL_PROXY_REF] = `${target.protocol}//${target.host}`;
-              setModel((m) => ({ ...m, busy: false, savedNotice: { text: "已保存设置。" }, globalProxyText: "", draft: { ...m.draft, globalProxyRef: DEFAULT_GLOBAL_PROXY_REF } }));
+              globalProxyRedacted.current[nextRef] = maskedTarget;
+              setModel((m) => ({ ...m, busy: false, savedNotice: { text: "已保存设置。" }, globalProxyText: "", draft: { ...m.draft, globalProxyRef: nextRef } }));
               selfCommitPending = true;
               await load(true); // 单写者：读回必须在队列内下一提交构建 ops 前落定
               return true;
@@ -1514,10 +1575,7 @@ globalThis.window?.__ModuleLoader__?.load({
             return true;
           } catch (err) {
             if (!alive.current) return false;
-            let message = String((err && err.message) || err || "配置未通过校验");
-            for (const secret of Object.values(model.keys)) {
-              if (typeof secret === "string" && secret.trim()) message = message.replaceAll(secret.trim(), "[redacted]");
-            }
+            const message = safeMsg(String((err && err.message) || err || "配置未通过校验"));
             return fail(`保存失败：${message}`);
           }
         });
@@ -1525,7 +1583,10 @@ globalThis.window?.__ModuleLoader__?.load({
       // PX-012（Refs #88）：编辑器钉死三态变更（草稿字段；提交经条目级保存落盘）。
       const updateEditorPin = (id, value) => {
         if (lockRef.current) return;
+        const entry = model.draft.entries.find((e) => e.id === id);
         setModel((m) => ({ ...m, editorError: null, draft: { ...m.draft, entries: m.draft.entries.map((e) => (e.id === id ? { ...e, proxyPin: value } : e)) } }));
+        // #88 第三批②（Refs #88）：钉死变更同步进 SET-008 缓存（成功提交/显式取消时随条目记录清除）。
+        if (entry) syncEntryCache(model, id, { ...entry, proxyPin: value }, (model.keys && model.keys[id]) ?? "");
       };
       const hasOwnProxyValue = (p) => (typeof p === "string" ? p.trim() !== "" : Boolean(p && typeof p === "object"));
 
@@ -1568,7 +1629,9 @@ globalThis.window?.__ModuleLoader__?.load({
         commitDiscrete((m) => {
           const user = userEntriesOf(m);
           const uIdx = user.findIndex((e) => isPlainObject(e) && sameEntryId(e.id, entryId)); // #55：持久行 id 可能带首尾空白
-          if (uIdx >= 0) return [...secretCleanupOps(m.user, uIdx), { op: "unset", path: ["entries", String(uIdx)] }];
+          // #88 第三批④（Refs #88）：清理闭集不再在 builder 内按删除前下标生成（数组位移后清错行/宿主拒删风险）——
+          // 只产出结构 unset；余条目的清理由 finalizeOps 对删除后的最终候选层统一生成。
+          if (uIdx >= 0) return [{ op: "unset", path: ["entries", String(uIdx)] }];
           const list = effectiveEntriesOf(m);
           const idx = list.findIndex((e) => isPlainObject(e) && sameEntryId(e.id, entryId)); // #55
           if (idx < 0) return [];
@@ -1788,9 +1851,13 @@ globalThis.window?.__ModuleLoader__?.load({
               if (!credResult.ok) throw new Error(credResult.message || "凭据服务拒绝写入");
             }
             const candidate = writesKey ? candidateEntriesFor(snap, entry, credRef, proxyIntent) : preCandidate;
-            const ops = toOps({ entries: candidate }, { entries: userEntriesOf(snap) });
-            if (ops.length > 0) ops.push(...globalProxyCleanupOps(snap.user)); // PX-001 明文清零（Refs #88）
-            if (ops.length > 0) {
+            const baseOps = toOps({ entries: candidate }, { entries: userEntriesOf(snap) });
+            if (baseOps.length > 0) {
+              // #88 首批 P0（Refs #88）：统一 ops builder——终层清理闭集（两族，递归按字段名）+ 实际终态预检
+              // （拒绝抛错由外层 catch 转为编辑器错误呈现，零 mutate；意图未变化时不写、清理闭集只随有变更路径落盘）。
+              const fin = finalizeOps(snap, baseOps);
+              if (!fin.check.ok) throw new Error(`校验未通过：${fin.check.issues.map((i) => i.message).join("；")}`);
+              const ops = fin.ops;
               const response = await rpc("mutate", { ns: SEARCH_NS, ops, expectedRevision: snap.revision });
               const result = unwrap(response);
               if (!result.ok) throw new Error(result.message || "宿主拒绝该请求");
