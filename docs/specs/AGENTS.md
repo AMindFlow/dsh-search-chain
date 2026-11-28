@@ -29,3 +29,4 @@
 | DeepSeek Search API 与 Agentic Search | [deepseek.md](draft/deepseek.md) |
 | 顺序、预算与错误 | [fallback.md](draft/fallback.md) |
 | PAC worker OS 级最小权限沙箱 | [pac-worker-os-sandbox.md](draft/pac-worker-os-sandbox.md) |
+| fetch 接管与 SSRF 边界 | [fetch-takeover.md](draft/fetch-takeover.md) |
