@@ -271,7 +271,10 @@ export function createSearchChain(deps) {
           }
           // POOL-006①：池耗尽文案（「全部 N 把 key 失败」）仅限池形态且实际尝试 ≥2 把；
           // 单 key（含 1 元池、下层兜底单 key）维持 v0.2.0 基准文案，不得出现池字样。
-          const reason = outcome.fromPool && outcome.tried >= 2
+          // sol P1：已分类 TIMEOUT（error.code=ENTRY_TIMEOUT，如预算在途到期上抛）永不池措辞——
+          // TIMEOUT 不是轮替码，末次候选超时不代表「全部 key 失败」；race 分支另有判据，此处显式排除。
+          const poolWorded = outcome.fromPool && outcome.tried >= 2 && code !== ENTRY_CODES.TIMEOUT;
+          const reason = poolWorded
             ? `全部 ${outcome.tried} 把 key 失败：${FAILURE_REASON[code](entry, budgetMs)}`
             : FAILURE_REASON[code](entry, budgetMs);
           recordFailure(entry, code, reason, poolOf(outcome));
