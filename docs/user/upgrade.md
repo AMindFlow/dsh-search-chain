@@ -2,14 +2,16 @@
 
 0.2.0 起插件更名为 **FleetSeek**，包名 `dsh-search-chain` → `dsh-fleetseek`。对宿主这是新的 bundle 身份，但**配置数据不丢**：你的配置保存在 profile 的 `cordis.patch.yml`（`id: search-chain` 行），与 bundle 安装目录无关，本次更名不动行 id 与配置命名空间。
 
-迁移三步（约 1 分钟）：
+迁移三步（约 1 分钟；真机往返已验证：迁移前后配置区字节级一致）：
 
-1. **卸载旧身份**：`dsh plugin --profile <profile> remove dsh-search-chain`（或插件页卸载「网页搜索链 (dsh-search-chain)」）。
-2. **改写 profile 行引用**（一次性脚本，自带备份、可重复执行）：
+1. **卸载旧身份**：桌面（desktop）等由应用管理的 profile 请用 **应用内插件页**卸载「网页搜索链 (dsh-search-chain)」——此类 profile 由 Electron 应用独占管理，CLI 会拒绝；其他 profile 可 `dsh plugin --profile <profile> remove dsh-search-chain`。
+2. **安装新身份**：Git 渠道按 INSTALL.md 的 v0.2.0 commit，或 `dsh plugin --profile <profile> add dsh-fleetseek`（桌面走插件页添加/自建索引源）。
+3. **改写 profile 行引用**（一次性脚本，自带备份、可重复执行、任意时点可跑）：
    `node scripts/migrate-0.2.0.mjs ~/.dsh/profiles/<profile>`
-3. **安装新身份**：Git 渠道按 INSTALL.md 的 v0.2.0 commit，或 `dsh plugin --profile <profile> add dsh-fleetseek`，重启后确认条目、代理与开关原样在位。
 
-npm 旧包 `@amindflow/dsh-search-chain` 已 deprecate（提示指向 `dsh-fleetseek`），版本停在 0.1.4 不再更新；若此前用该包名安装过，同样按上面第 1 步卸载（remove 时用它的全名）。
+然后重启应用，确认条目、代理与开关原样在位。
+
+npm 旧包 `@amindflow/dsh-search-chain` 停在 0.1.4 不再更新（将标记 deprecate 并指向 `dsh-fleetseek`）；若此前用该包名安装过，同样按上面第 1 步卸载（remove 时用它的全名）。
 
 # 升级指南
 
