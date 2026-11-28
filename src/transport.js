@@ -477,6 +477,29 @@ function classifyProxy(entry) {
   throw new TransportError(CONFIG_INVALID, `条目${describeEntry(entry)}的代理配置类型无效`);
 }
 
+/** PX-003/PX-006/A-PX-1：解析链层注入的全局代理覆盖路由（不影响条目自有 proxy/PAC 路径）。 */
+function resolveOverrideMode(entry, override) {
+  if (override === undefined || override === null) return null;
+  if (typeof override !== "object" || (override.kind !== "proxy" && override.kind !== "https-proxy")) {
+    throw new TransportError(CONFIG_INVALID, `条目${describeEntry(entry)}的覆盖路由形态非法`);
+  }
+  const proxyUrl = typeof override.proxyUrl === "string" ? override.proxyUrl.trim() : "";
+  let u;
+  try {
+    u = new URL(proxyUrl);
+  } catch {
+    throw new TransportError(CONFIG_INVALID, `条目${describeEntry(entry)}的覆盖代理地址无效`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new TransportError(CONFIG_INVALID, `条目${describeEntry(entry)}的覆盖代理须为 HTTP(S) 地址`);
+  }
+  return {
+    kind: u.protocol === "https:" ? "https-proxy" : "proxy",
+    proxyUrl,
+    viaGlobal: override.viaGlobal === true,
+  };
+}
+
 /** 校验 host:port，拒绝 userinfo、路径与空端口。 */
 function validHostPort(hp) {
   if (!/^[A-Za-z0-9.-]+:\d{1,5}$/.test(hp)) return false;
@@ -522,7 +545,7 @@ export function createEntryTransport(entry, deps = {}) {
   if (typeof fetchFn !== "function") throw new TypeError("createEntryTransport 需要注入 fetch");
 
   const label = describeEntry(entry);
-  const mode = classifyProxy(entry);
+  const mode = resolveOverrideMode(entry, deps.routeOverride) ?? classifyProxy(entry);
   const now = () => (typeof clock?.now === "function" ? clock.now() : 0);
 
   let closed = false;
@@ -863,7 +886,9 @@ export function createEntryTransport(entry, deps = {}) {
   async function resolveRoute(url, signal) {
     if (mode.kind === "direct") return { kind: "direct" };
     if (mode.kind === "proxy" || mode.kind === "https-proxy") {
-      return { kind: mode.kind, proxyUrl: mode.proxyUrl };
+      return mode.viaGlobal
+        ? { kind: mode.kind, proxyUrl: mode.proxyUrl, viaGlobal: true }
+        : { kind: mode.kind, proxyUrl: mode.proxyUrl };
     }
     const pac = await loadPacFor(signal);
     if (signal?.aborted) throw abortError();
@@ -896,9 +921,12 @@ export function createEntryTransport(entry, deps = {}) {
       const via = route.viaPac ? "（PAC 直连）" : "";
       return raise(new TransportError(ENTRY_NETWORK_CODE, `条目${label}直连请求失败${via}（${reason}）`));
     }
-    const via = route.viaPac ? "PAC 代理" : "代理";
+    const via = route.viaPac ? "PAC 代理" : route.viaGlobal ? "全局代理" : "代理";
     return raise(
-      new TransportError(ENTRY_PROXY_CODE, `条目${label}经${via} ${endpointOf(route.proxyUrl)} 请求失败（${reason}）`),
+      new TransportError(
+        route.viaGlobal ? ENTRY_NETWORK_CODE : ENTRY_PROXY_CODE,
+        `条目${label}经${via} ${endpointOf(route.proxyUrl)} 请求失败（${reason}）`,
+      ),
     );
   }
 

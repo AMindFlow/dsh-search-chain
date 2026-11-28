@@ -28,6 +28,7 @@ import {
   KEY_ENV_BY_TYPE,
   LEGACY_YAML_SUPPLIERS,
   DEFAULT_TIMEOUT_MS,
+  PROXY_PINS,
   supplierOfToolType,
 } from "./constants.js";
 
@@ -169,6 +170,8 @@ export function createSearchChain(deps) {
     const rawConfig = (configSnapshot !== undefined ? configSnapshot : getConfig()) ?? {};
     const snapshotEntries = deepClone(Array.isArray(rawConfig.entries) ? rawConfig.entries : []);
     const totalBudget = normalizeBudget(rawConfig.timeoutMs);
+    const escalationEnabled = rawConfig.proxyEscalation === true;
+    const globalProxyRef = typeof rawConfig.globalProxy === "string" ? rawConfig.globalProxy.trim() : "";
     const startAt = clock.now();
 
     const query = request?.query;
@@ -240,6 +243,68 @@ export function createSearchChain(deps) {
           continue;
         }
 
+        const entryStartAt = clock.now();
+        const hasOwnProxy =
+          typeof entry.proxy === "string"
+            ? entry.proxy.trim() !== ""
+            : Boolean(entry.proxy && typeof entry.proxy === "object");
+        const pin =
+          !hasOwnProxy && (entry.proxyPin === PROXY_PINS.DIRECT_ONLY || entry.proxyPin === PROXY_PINS.PROXY_ONLY)
+            ? entry.proxyPin
+            : PROXY_PINS.INHERIT;
+
+        // PX-006（正交于全局升级开关）：未配置自有代理且钉死 proxyOnly 时，仅经 globalProxy 解析出的代理出站，绝不直连。
+        if (pin === PROXY_PINS.PROXY_ONLY) {
+          const gp = await resolveGlobalProxy(globalProxyRef);
+          if (externalSignal?.aborted || state.cancelled) throw abortError(externalSignal);
+          if (!gp.ok) {
+            recordFailure(
+              entry,
+              ENTRY_CODES.NETWORK,
+              "条目钉死仅代理：全局代理不可用（未配置、不可读或地址无效），未直连出站",
+            );
+            continue;
+          }
+          const pinBudget = Math.min(budgetMs - (clock.now() - entryStartAt), totalBudget - (clock.now() - startAt));
+          if (pinBudget <= 0) {
+            recordFailure(entry, ENTRY_CODES.NETWORK, "条目钉死仅代理：剩余预算不足，未执行全局代理出站");
+            continue;
+          }
+          const outcome = await runEntry(entry, {
+            query,
+            maxResults,
+            key,
+            budgetMs: pinBudget,
+            externalSignal,
+            state,
+            routeOpts: { kind: gp.kind, proxyUrl: gp.url, viaGlobal: true },
+          });
+          if (outcome.kind === "cancelled") throw abortError(externalSignal);
+          if (outcome.kind === "timeout") {
+            recordFailure(entry, ENTRY_CODES.TIMEOUT, `条目钉死仅代理：全局代理失败（${gp.target}，在途超时已取消）`);
+            continue;
+          }
+          if (outcome.kind === "error") {
+            const rawCode = isEntryPhaseCode(outcome.error?.code) ? outcome.error.code : null;
+            if (rawCode === null) throw outcome.error;
+            const code = rawCode === ENTRY_CODES.PROXY ? ENTRY_CODES.NETWORK : rawCode;
+            const reason =
+              code === ENTRY_CODES.NETWORK
+                ? `条目钉死仅代理：全局代理失败（${gp.target}，失败阶段：${rawCode}）`
+                : FAILURE_REASON[code](entry);
+            recordFailure(entry, code, reason);
+            if (code === ENTRY_CODES.CONTENT_POLICY) break;
+            continue;
+          }
+          const built = buildSuccessResult(entry, outcome.value, { maxResults, issues });
+          if (built.sources.length > 0) {
+            log?.("debug", "search-chain 条目命中", { entryId: entry.id, type: entry.type });
+            return built;
+          }
+          anyExplicitEmpty = true;
+          continue;
+        }
+
         const outcome = await runEntry(entry, { query, maxResults, key, budgetMs, externalSignal, state });
 
         if (outcome.kind === "cancelled") {
@@ -247,6 +312,16 @@ export function createSearchChain(deps) {
           throw abortError(externalSignal);
         }
         if (outcome.kind === "timeout") {
+          // PX-005（Refs #88，lead 裁决①）：直连失败恰在条目预算耗尽同 tick 落定时（race 胜负无关），
+          // 剩余 ≤0 不得发出升级请求：以预算要素文案落定（零升级出站）；升级条件不满足时 v0.2.0 纯 TIMEOUT 呈现原样。
+          const remAtTimeout = Math.min(
+            budgetMs - (clock.now() - entryStartAt),
+            totalBudget - (clock.now() - startAt),
+          );
+          if (!hasOwnProxy && pin === PROXY_PINS.INHERIT && escalationEnabled && globalProxyRef && remAtTimeout <= 0) {
+            recordFailure(entry, ENTRY_CODES.NETWORK, "直连失败；剩余预算不足，未执行全局代理升级");
+            continue;
+          }
           recordFailure(entry, ENTRY_CODES.TIMEOUT, FAILURE_REASON[ENTRY_CODES.TIMEOUT](entry, budgetMs));
           continue; // FB-003：剩余总预算允许时继续下一条
         }
@@ -255,6 +330,83 @@ export function createSearchChain(deps) {
           if (code === null) {
             // A5/FB-005：程序违约（无条目可降级的码，含 TRANSPORT_RELEASED）原样暴露，不包装、不再发起新上游请求。
             throw outcome.error;
+          }
+          // PX-002..PX-008：仅当开关开 + 无自有代理 + 继承态 + 直连 ENTRY_NETWORK 时，尝试至多一次全局代理升级。
+          if (!hasOwnProxy && pin === PROXY_PINS.INHERIT && escalationEnabled && code === ENTRY_CODES.NETWORK) {
+            const remBeforeResolve = Math.min(
+              budgetMs - (clock.now() - entryStartAt),
+              totalBudget - (clock.now() - startAt),
+            );
+            if (remBeforeResolve <= 0) {
+              recordFailure(entry, ENTRY_CODES.NETWORK, "直连失败；剩余预算不足，未执行全局代理升级");
+              continue;
+            }
+            const gp = await resolveGlobalProxy(globalProxyRef);
+            if (externalSignal?.aborted || state.cancelled) throw abortError(externalSignal);
+            if (!gp.ok) {
+              const reason =
+                gp.kind === "unreadable"
+                  ? "直连失败；全局升级已开启，全局代理凭据不可读，未执行升级（请在设置中重新保存全局代理地址）"
+                  : "直连失败；全局升级已开启，全局代理未配置或不可读，未执行升级（请在设置中重新保存全局代理地址）";
+              recordFailure(entry, ENTRY_CODES.NETWORK, reason);
+              continue;
+            }
+            const remAfterResolve = Math.min(
+              budgetMs - (clock.now() - entryStartAt),
+              totalBudget - (clock.now() - startAt),
+            );
+            if (remAfterResolve <= 0) {
+              recordFailure(entry, ENTRY_CODES.NETWORK, "直连失败；剩余预算不足，未执行全局代理升级");
+              continue;
+            }
+            log?.("debug", "search-chain 全局代理升级", { entryId: entry.id, type: entry.type, target: gp.target });
+            const escOutcome = await runEntry(entry, {
+              query,
+              maxResults,
+              key,
+              budgetMs: remAfterResolve,
+              externalSignal,
+              state,
+              routeOpts: { kind: gp.kind, proxyUrl: gp.url, viaGlobal: true },
+            });
+            if (escOutcome.kind === "cancelled") throw abortError(externalSignal);
+            if (escOutcome.kind === "timeout") {
+              recordFailure(
+                entry,
+                ENTRY_CODES.TIMEOUT,
+                `直连失败；经全局代理升级（${gp.target}）在途时条目预算到期（已取消）`,
+                "升级失败",
+              );
+              continue;
+            }
+            if (escOutcome.kind === "error") {
+              const escRawCode = isEntryPhaseCode(escOutcome.error?.code) ? escOutcome.error.code : null;
+              if (escRawCode === null) throw escOutcome.error;
+              const reportedPhase = escRawCode === ENTRY_CODES.PROXY ? ENTRY_CODES.NETWORK : escRawCode;
+              recordFailure(
+                entry,
+                ENTRY_CODES.NETWORK,
+                `直连失败；经全局代理升级仍失败（${gp.target}，失败阶段：${reportedPhase}）`,
+                "升级失败",
+              );
+              if (escRawCode === ENTRY_CODES.CONTENT_POLICY) break;
+              continue;
+            }
+            const escBuilt = buildSuccessResult(entry, escOutcome.value, {
+              maxResults,
+              issues,
+              escalationTarget: gp.target,
+            });
+            if (escBuilt.sources.length > 0) {
+              log?.("debug", "search-chain 条目命中（全局代理升级）", {
+                entryId: entry.id,
+                type: entry.type,
+                target: gp.target,
+              });
+              return escBuilt;
+            }
+            anyExplicitEmpty = true;
+            continue;
           }
           recordFailure(entry, code, FAILURE_REASON[code](entry));
           if (code === ENTRY_CODES.CONTENT_POLICY) break; // FB-001/FB-005：终止类，不降级
@@ -278,9 +430,9 @@ export function createSearchChain(deps) {
       return terminalResult();
     };
 
-    function recordFailure(entry, code, reason) {
+    function recordFailure(entry, code, reason, issueSummary) {
       attempts.push(attemptOf(entry, code, reason));
-      issues.push({ kind: "fail", name: entry.name, code });
+      issues.push(issueSummary ? { kind: "fail", name: entry.name, code, issueSummary } : { kind: "fail", name: entry.name, code });
       failed += 1;
       log?.("warn", "search-chain 条目失败", { entryId: entry.id, type: entry.type, code });
     }
@@ -350,7 +502,7 @@ export function createSearchChain(deps) {
      * 实际尝试一个条目（A6：transport.open → 适配器 ctx.fetch → close）。
      * @returns {Promise<{kind:"success", value:object}|{kind:"error", error:object}|{kind:"timeout"}|{kind:"cancelled"}>}
      */
-    async function runEntry(entry, { query, maxResults, key, budgetMs, externalSignal, state }) {
+    async function runEntry(entry, { query, maxResults, key, budgetMs, externalSignal, state, routeOpts }) {
       const backend = backends.get?.(entry.type);
       if (!backend || typeof backend.search !== "function") {
         // 目录与后端不一致属内部程序违约：无 code，原样暴露（FB-005）。
@@ -361,7 +513,7 @@ export function createSearchChain(deps) {
       // 无码/TRANSPORT_RELEASED 仍经同一分支裸上抛（不改全局位）。
       let handle;
       try {
-        handle = transport.open(entry);
+        handle = routeOpts !== undefined ? transport.open(entry, routeOpts) : transport.open(entry);
       } catch (error) {
         return { kind: "error", error };
       }
@@ -448,6 +600,31 @@ export function createSearchChain(deps) {
     });
   }
 
+  async function resolveGlobalProxy(ref) {
+    if (!ref || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref)) return { ok: false, kind: "missing" };
+    let hit;
+    try {
+      hit = await credentials?.resolve?.(ref);
+    } catch {
+      return { ok: false, kind: "unreadable" };
+    }
+    const raw = typeof hit?.value === "string" ? hit.value.trim() : "";
+    if (!raw) return { ok: false, kind: "missing" };
+    let u;
+    try {
+      u = new URL(raw);
+    } catch {
+      return { ok: false, kind: "invalid" };
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") return { ok: false, kind: "invalid" };
+    return {
+      ok: true,
+      url: raw,
+      kind: u.protocol === "https:" ? "https-proxy" : "proxy",
+      target: `${u.protocol}//${u.host}`,
+    };
+  }
+
   /** CFG-002 优先级：条目引用 → 进程环境变量 → DSH 托管记录 → 旧版 YAML 顶层。宿主对超语法引用抛 TypeError 时按未设置处理（R-1）。 */
   async function resolveKey(entry, envName) {
     const ref = typeof entry.credentialRef === "string" ? entry.credentialRef.trim() : "";
@@ -499,7 +676,7 @@ const SOURCE_FIELDS = ["title", "snippet", "summary", "publishedAt"];
  * FB-002 成功结果：按成功条目的供应商顺序保留有效来源；超过 maxResults 截断并置 truncated；
  * 此前有启用条目被跳过/失败时 content 首行标明实际使用的条目；纯来源适配器的供应商正文不透出。
  */
-function buildSuccessResult(entry, value, { maxResults, issues }) {
+function buildSuccessResult(entry, value, { maxResults, issues, escalationTarget }) {
   const rawSources = Array.isArray(value?.sources) ? value.sources : [];
   const sources = [];
   for (const s of rawSources) {
@@ -521,11 +698,15 @@ function buildSuccessResult(entry, value, { maxResults, issues }) {
   const adapterContent =
     !isSourcesOnly && typeof value?.content === "string" && value.content !== "" ? value.content : undefined;
   let content;
-  if (issues.length > 0) {
+  if (escalationTarget || issues.length > 0) {
     const parts = issues.map((it) =>
-      it.kind === "skip" ? `「${it.name}」缺少凭据（${it.envName}）` : `「${it.name}」${ISSUE_DESC[it.code]}`,
+      it.kind === "skip"
+        ? `「${it.name}」缺少凭据（${it.envName}）`
+        : `「${it.name}」${it.issueSummary ?? ISSUE_DESC[it.code]}`,
     );
-    const marker = `已由「${entry.name}」返回结果（此前${parts.join("；")}）`;
+    const viaClause = escalationTarget ? `经全局代理升级出站（${escalationTarget}）` : "";
+    const issueClause = parts.length > 0 ? `（此前${parts.join("；")}）` : "";
+    const marker = `已由「${entry.name}」${viaClause}返回结果${issueClause}`;
     content = adapterContent ? `${marker}\n${adapterContent}` : marker;
   } else {
     content = adapterContent;
