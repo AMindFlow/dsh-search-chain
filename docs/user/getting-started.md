@@ -17,7 +17,7 @@
 - 在 DSH 中打开 **Plugins** > **Add plugin**，选择本包所在的本地目录（开发自用）。
 - 由管理员通过插件管理工具安装：`install_bundle`，`target` 填写包目录的绝对路径。
 
-> **一个 profile 只装一个渠道。** DSH 以 npm 包名识别插件：Git 渠道的包名是 `dsh-search-chain`，npm 包是 `@amindflow/dsh-search-chain`——两者内容同源，但对宿主是两个不同的 bundle 身份。同一 profile 同时安装会出现两张卡片并争用同一配置行，请只保留其一；更换渠道时先卸载另一个。
+> **一个 profile 只装一个渠道。** DSH 以 npm 包名识别插件：Git 渠道的包名是 `dsh-search-chain`，npm 包是 `@amindflow/dsh-search-chain`——两者内容同源，但对宿主是两个不同的 bundle 身份。同一 profile 同时安装会出现两张卡片，且两套 bundle 声明同一个配置行（叠加行为宿主未定义），请只保留其一；更换渠道时先卸载另一个。
 
 安装只注册搜索 provider `search-chain`，不会改写你现有的搜索或抓取选择。升级已安装的版本，见 [升级指南](upgrade.md)。
 
