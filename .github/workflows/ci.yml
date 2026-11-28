@@ -2,13 +2,15 @@ name: ci
 
 on:
   push:
+    branches: [main]
   pull_request:
   merge_group:
 
 permissions:
   contents: read
 
-# 同一 PR/分支的 push 与 PR 事件共用一个跑位：后到者取消在跑者。
+# 分支提交只由 pull_request 跑位验证（push 触发器已限定 main，消除同分支 push 与 PR 双跑位）；
+# main 合并后仍由 push 跑位做合并后验证。并发组保留作 main 侧兜底：
 # T10-1 堆帽竞态实测：两个 test job 同 runner 并行时 RSS 兜底闸会先于 V8 OOM 落地（三次复现，均重跑即绿）。
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
