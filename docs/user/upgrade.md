@@ -11,7 +11,7 @@
 
 然后重启应用，确认条目、代理与开关原样在位。
 
-npm 旧包 `@amindflow/dsh-search-chain` 停在 0.1.4 不再更新（将标记 deprecate 并指向 `dsh-fleetseek`）；若此前用该包名安装过，同样按上面第 1 步卸载（remove 时用它的全名）。
+npm 旧包 `@amindflow/dsh-search-chain` 停在 0.1.4 不再更新，已标记 deprecate 指向 `dsh-fleetseek`；若此前用该包名安装过，同样按上面第 1 步卸载（remove 时用它的全名）。
 
 # 升级指南
 
