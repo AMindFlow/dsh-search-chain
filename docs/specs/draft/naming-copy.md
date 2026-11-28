@@ -38,7 +38,7 @@
 
 - **要求** 文案改写合入前必须实跑 `node scripts/oracle-style-50.mjs`，输出仍与 `src/` 注册目录一致（oracle 校验的对象是目录/形状，oracle 文件本身不可动，见 NAM-004）。若改写与 oracle 冲突，本条为阻塞项：不得改 oracle 迁就文案，必须停下上报 lead 裁决。
 - **来源** [#102 正文红线](https://github.com/AMindFlow/dsh-fleetseek/issues/102)；`scripts/oracle-style-50.mjs` 头注与 `src/client.js` 头注（改名须同 PR 同步 oracle 并给理由——本工作包不改导出面，不适用该豁免）。
-- **验收** PR 描述附实施当日 `node scripts/oracle-style-50.mjs` 的完整结尾输出（PASS 行与退出码 0）。草案阶段预判（基线 `2ad3cb7` 实跑，见 NAM-007 附表）：`CATALOG_TEXT` 为搜索目录条目文本，不含「链」措辞，`SECTION_TITLE` 改动是否进入 oracle 比对以实跑结果为准；实跑结论若为「oracle 比对 `SECTION_TITLE` 常量」，则实施 PR 需评估 oracle 是否在只读清单内冲突并上报。
+- **验收** PR 描述附实施当日 `node scripts/oracle-style-50.mjs` 的完整结尾输出（PASS 行与退出码 0）。基线 `2ad3cb7` 实跑（草案阶段）：脚本本身 PASS（零 FAIL、14 条 SKIP 如实登记、退出码 0）。**实测冲突已坐实（阻塞项，上报 lead，见开放问题 O-7）**：`CATALOG_TEXT` 确不含「链」（预判成立），但 oracle 脚本按可见文本「网页搜索链」定位设置抽屉分区（`navClick("网页搜索链")` 多处与正则 `/^(网页搜索链|Web\s*Search\s*Chain)$/i`），`SECTION_TITLE` 一旦改为「千帆网页搜索」，oracle 将命中不到导航行并整面 skip。改 oracle 违反 NAM-004 不可动红线，不改则 oracle 面失效——本冲突不裁决前，NAM-003 中 catalog.js:23 行不得实施。
 
 ## NAM-006 渠道同步后置
 
@@ -105,7 +105,7 @@
 
 ### oracle 预判与实跑
 
-`CATALOG_TEXT` 实 grep「链」计 0 处——预判 oracle 不校验含「链」目录文本。基线 `2ad3cb7` 实跑 `node scripts/oracle-style-50.mjs`：结果见 PR 描述（实跑进行中，结论以退出码与结尾输出为准）。
+`CATALOG_TEXT` 实 grep「链」计 0 处——oracle 校验的目录文本本身无「链」措辞。基线 `2ad3cb7` 实跑 `node scripts/oracle-style-50.mjs`：**PASS，零 FAIL，14 条 SKIP（既有验证缺口如实登记），退出码 0**。但实跑附带发现：oracle 以可见文本「网页搜索链」导航进面板（`navClick("网页搜索链")`、正则含「网页搜索链」），`SECTION_TITLE` 改名会令 oracle 面板不可达整面 skip——NAM-005 阻塞项 O-7，裁决前 catalog.js:23 不动（该行矩阵条目冻结，处数统计仍登记在册）。
 
 ## 开放问题（上报 lead，不阻塞本草案评审）
 
@@ -115,5 +115,6 @@
 - **O-4 运行时 reason 文案**：`src/search.js:343`「全链未获得有效来源…」、`src/official.js:40`「…未回退自定义链」等运行时错误文本含「链」，但不在 #102 范围清单内；而 troubleshooting.md 多处引用真实 reason 文本。若运行时文案不动，文档侧引用行只能原样引；是否扩大范围请 lead 裁决。
 - **O-5 client 产物镜像**：`src/client-entry.js` 为入库产物，含 `SECTION_TITLE` 与面板文案字符串副本及内嵌断言表；实施 PR 同步方式（重新构建 or 手工等量替换）与断言表中显示名相关判据是否需同步，待实施确认。
 - **O-6 Discover 标题时间差**：getting-started.md:16 引用 Discover 卡片标题；渠道同步（NAM-006）落地前线上仍是旧标题，文档先行更新是否可接受。草案按「发布阶段整体切」接受。
+- **O-7【阻塞】oracle 导航文本耦合**：`scripts/oracle-style-50.mjs`（不可动）按可见文本「网页搜索链」定位设置分区；`SECTION_TITLE` 改名即令 oracle 整面 skip。候选：① 裁决 oracle 的导航文本 3 处为「同步豁免」（client.js 头注已有「改名须同 PR 同步 oracle 并给理由」先例，与本改动性质相同）；② `SECTION_TITLE` 豁免改名；③ 新标题含可匹配前缀。NAM-005 要求此冲突裁决前不得实施 catalog.js:23。请 lead 裁决。
 
 
