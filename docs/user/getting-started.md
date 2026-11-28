@@ -15,7 +15,7 @@
 - **从 npm 安装**：`dsh plugin --profile <profile> add dsh-fleetseek`（或在宿主插件页输入包名 `dsh-fleetseek`）。
 - **从 Discover 索引源安装**：在插件市场添加自建索引源 `https://raw.githubusercontent.com/AMindFlow/dsh-plugin-index/main/market-index.json`，选择「FleetSeek 网页搜索链」。
 
-> **身份说明**：三个渠道现在是同一个包名 `dsh-fleetseek`，宿主识别为同一个插件，不会重复出现两张卡片。历史遗留的 `@amindflow/dsh-search-chain`（0.1.4 及以前）与旧 Git 渠道身份 `dsh-search-chain` 是另一个 bundle：从 0.1.x 升级请按 [upgrade.md](upgrade.md) 的迁移小节先卸载旧身份。旧 npm 包已 deprecate 并固定不再更新。
+> **身份说明**：三个渠道现在是同一个包名 `dsh-fleetseek`，宿主识别为同一个插件，不会重复出现两张卡片。历史遗留的 `@amindflow/dsh-search-chain`（0.1.4 及以前）与旧 Git 渠道身份 `dsh-search-chain` 是另一个 bundle：从 0.1.x 升级请按 [upgrade.md](upgrade.md) 的迁移小节先卸载旧身份。旧 npm 包 `@amindflow/dsh-search-chain` 停在 0.1.4 不再更新（将标记 deprecate 指向新包）。
 
     { "id": "bing-rss", "type": "bing", "enabled": true },
     { "id": "exa-backup", "type": "exa", "enabled": false }
