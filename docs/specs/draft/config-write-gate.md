@@ -44,3 +44,12 @@
 - **CFG-W-001 / CFG-W-002（浏览器端内联等价规则）**：`src/client-entry.js` 运行于 DSH 浏览器沙箱，零外部 `import`、零 Node 依赖，因此不得直接 `import src/config.js`。写闸在 `src/client-entry.js` 的 `Component.contract` 中内联维护与 `src/config.js` `normalizeConfig` 完全同构的纯函数归一化实现，并由测试套件中的「两闸等价钉」锁定双方行为不得漂移。
 - **CFG-W-003（面板写路径显式清理与 `toOps` 粒度保持）**：`contract.merge` / `contract.toOps` 的直接单测契约维持 D-1 字段级 diff 与「仅直接传入 stripped 目标时才产出 `unset`」语义，避免破坏已有单测锁定的纯函数接口；面板各保存路径在构建目标条目列表时对条目递归剥离 `SECRET_FIELD`（由 `toOps` 为位置不变的条目自动产出字段级 `unset`，对移动或新建条目随整条 `set` 自然剔除），离散顶层写路径与单行移除路径亦附带针对 `user.entries[*]` 残留 `SECRET_FIELD` 键的显式 `unset` 补丁。
 - **CFG-W-004（先于凭据写入预检）**：编辑器提交流程在调用 `/api/credentials/set` 之前先用占位合法引用对目标有效配置执行 `singleEntryDiff` 与写闸 `validate` 预检，确保配置本身不合法时不仅零 `settings/mutate`，也不产生孤儿凭据写入。
+
+## PX 修订注（Issue #88，事后附录）
+
+- **两闸等价预检按字段族分岔（CFG-W-001 细化）**：`proxyEscalation` / `globalProxy` / `entries[i].proxyPin` 新字段族引入（见 [proxy-escalation.md](proxy-escalation.md) PX-001/003/006/012）后，写闸预检（`Component.contract.validate` 前置 `assertPxWriteGate`）按字段族分岔：**新字段族违规抛错、legacy 族维持返回形态**（`{ ok: false, code: "CONFIG_INVALID", issues: [...] }` 形态逐字不变），Refs #88。抛错文案与读闸字段定位文案同文，双向等价不变：读闸归一化必拒则写闸预检必拒（抛错或返回形任一），读闸接受则写闸接受；`settings-write-gate` 的 legacy 矩阵（无守卫直调 validate）保持全绿即为该分岔的回归钉。
+- **全局代理明文字段族并入清理闭集（CFG-W-003 扩展）**：全局代理地址（含认证）只进宿主凭据服务（默认引用名 `search_chain_global_proxy`，只写不读回）；字段族 `globalProxy`（大小写不敏感匹配）取值为含 `://` 或 `@` 的字符串时判为明文，并入 CFG-W-003 清理闭集：任何有变更的保存路径（编辑/新建条目、启用切换、重排、移除其他条目、官方开关、超时）发出的 ops 须对 `user` 层顶层与条目级残留明文字段附带 `unset`，且请求体不得携带明文（无 `://`、无 userinfo）。读闸 `normalizeGlobalProxyRef` 对明文形态维持拒绝（返回形）。Refs #88。
+- **读路径与拒绝呈现对抛错形态的转形**：面板读路径（describe 读回、渲染期实时校验）与离散/升级区块的拒绝呈现，将新字段族违规的抛错形态转为返回形呈现（错误锚点沿用 `data-role="save-error"` + `role="alert"`，与成功提示互斥、草稿保留、零 mutate、零 credentials/set）；写路径契约面（`validate` 预检对新字段族抛错）不受该转形影响。Refs #88。
+
+- **来源** [GitHub Issue #88](https://github.com/AMindFlow/dsh-fleetseek/issues/88)、[CFG-W-001](#cfg-w-001-写闸与读闸双向等价)、[CFG-W-003](#cfg-w-003-写路径明文-key-清零)、[CFG-W-004](#cfg-w-004-错误语义与零出站)。
+- **验收** `test/settings-write-gate.test.js`（legacy 矩阵全绿）、`test/px-oracle-gates.test.js`（新字段族两闸双向等价与定位文案）、`test/px-panel.test.js`（PX-001#3 明文清零并入、PX-002#1 拒绝路径零凭据、PX-012#4 读路径不崩溃）；`npm test` 全量离线绿。
