@@ -21,6 +21,7 @@ import {
   TOOL_TYPES,
   TRUSTED_ENV_KEYS,
   supplierOfToolType,
+  stripSecretClosure,
 } from "./constants.js";
 
 // WP1 导出增量：常量面（值以主线 constants.js 为单一事实源）。
@@ -231,7 +232,9 @@ export async function writeConfig(settings, next) {
     await settings.editor.edit(settings.entry, (raw) => {
       const merged = { ...(raw ?? {}) };
       for (const k of OWN_CONFIG_KEYS) delete merged[k];
-      return { ...merged, ...structuredClone(normalized) };
+      // #88 第二批②（Refs #88）：raw 保留面先按 secret 字段名闭集递归剥离（任意深度）再 spread 保留其余未知键——
+      // PX-009 的降级保留故事只对非 secret 未知键成立（全局代理明文族任何位置不留存，与面板清理面同一闭集）。
+      return { ...stripSecretClosure(merged), ...structuredClone(normalized) };
     });
   } catch {
     throw new ConfigError(CONFIG_CODES.SAVE_FAILED, "保存搜索配置失败，已生效配置保持不变");

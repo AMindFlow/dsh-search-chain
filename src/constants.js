@@ -176,3 +176,59 @@ export function bodyTooLargeMessage(limit) {
 function utf8ByteLength(text) {
   return new TextEncoder().encode(text).byteLength;
 }
+
+// ─────────────── #88 secret 字段名闭集（读写闸/清理/保留面共享；Refs #88） ───────────────
+// 递归清零依据：按字段名闭集匹配，不做值形态扫描（不按 URL/凭据形状猜值，避免误伤用户数据；
+// 边界如实记录于 docs/specs/draft/config-write-gate.md PX 修订注）。
+// 扩展点：#86 credentialRefs 明文族 / #87 fetch key 明文族将注册为同名单元（追加正则）。
+const SECRET_KEY_LEGACY = /^(apikey|api_key|key|secret|token|password|auth|authorization)$/i;
+const GLOBAL_PROXY_KEY = /^globalproxy/i;
+const POSIX_CREDENTIAL_REF = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export const SECRET_KEY_CLOSURE = Object.freeze([SECRET_KEY_LEGACY, GLOBAL_PROXY_KEY]);
+
+export function isSecretClosureKey(key) {
+  return SECRET_KEY_CLOSURE.some((re) => re.test(String(key)));
+}
+
+/** 合法形态豁免：唯一合法键 globalProxy（精确名）持 POSIX 凭据引用名（引用存放合法、明文不合法）。
+ * 导出：闭集豁免语义是共享 helper 契约面（#86/#87 注册同名单元时同口径引用）。 */
+export function isLegitGlobalProxyRef(key, value) {
+  return (
+    String(key).toLowerCase() === "globalproxy" &&
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    POSIX_CREDENTIAL_REF.test(value.trim())
+  );
+}
+
+/**
+ * 递归收集 user 层（任意深度、任意位置）命中 secret 闭集的字段路径。
+ * 路径段：对象键原样、数组下标字符串化（与 ops path 形态一致）。
+ * 数组元素本身不作键匹配（下标不是字段名）；仅递归进入嵌套对象/数组。
+ */
+export function secretClosurePaths(value, path = [], out = []) {
+  if (value === null || typeof value !== "object") return out;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) secretClosurePaths(value[i], [...path, String(i)], out);
+    return out;
+  }
+  for (const [k, v] of Object.entries(value)) {
+    const p = [...path, k];
+    if (isSecretClosureKey(k) && !isLegitGlobalProxyRef(k, v)) out.push(p);
+    if (v !== null && typeof v === "object") secretClosurePaths(v, p, out);
+  }
+  return out;
+}
+
+/** 递归剥离 secret 闭集命中字段（任意深度），返回新结构（writeConfig 保留面；Refs #88 第二批②）。 */
+export function stripSecretClosure(value) {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => stripSecretClosure(v));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (isSecretClosureKey(k) && !isLegitGlobalProxyRef(k, v)) continue;
+    out[k] = stripSecretClosure(v);
+  }
+  return out;
+}
