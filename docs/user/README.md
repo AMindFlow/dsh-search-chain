@@ -1,6 +1,6 @@
 # 用户文档
 
-本目录面向安装和使用 dsh-search-chain 的用户。内容以当前提交实现为准；与开发规格（`docs/specs/draft/`）不一致的地方，以本目录为准描述实际行为。
+本目录面向安装和使用 dsh-fleetseek 的用户。内容以当前提交实现为准；与开发规格（`docs/specs/draft/`）不一致的地方，以本目录为准描述实际行为。
 
 - [快速开始](getting-started.md)：安装与启用、设置面板、配置条目的字段含义、凭据来源与优先级、DeepSeek 官方分支、`maxResults` 语义，以及当前已知限制（含代理/PAC 实际链路与响应体 2 MiB 上限）。
 - [排错指南](troubleshooting.md)：按错误码查看现象和可操作的处理办法，并说明如何读取 `details.attempts`。

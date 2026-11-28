@@ -37,9 +37,9 @@
 
 ## FB-006 条目执行期带码错误的降级与裸上抛
 
-- **要求** 条目执行期适配器上抛携带 `ENTRY_*` 或 `CONFIG_*`（含 `PAC_*`，见 [CFG-005](config-network.md#cfg-005-pac-代理路由)）码的错误时，链必须按条目级失败处理：以原码记入 `attempts`（沿用 FB-004 的尝试顺序），该条目计为失败并在总预算内继续下一条目；不得整链终止，也不得把原码压平为 `ENTRY_*` 归因码。`transport.open` 与代理建立期的 `CONFIG_*` 同属条目执行期，同样降级适用（[lead 裁决27](https://github.com/AMindFlow/dsh-search-chain/issues/13#issuecomment-7141533377)）。全链未获有效来源进入终态时，`WebError` 的 `details.attempts` 必须按尝试顺序携各条目的原码，不改写、不压平。
+- **要求** 条目执行期适配器上抛携带 `ENTRY_*` 或 `CONFIG_*`（含 `PAC_*`，见 [CFG-005](config-network.md#cfg-005-pac-代理路由)）码的错误时，链必须按条目级失败处理：以原码记入 `attempts`（沿用 FB-004 的尝试顺序），该条目计为失败并在总预算内继续下一条目；不得整链终止，也不得把原码压平为 `ENTRY_*` 归因码。`transport.open` 与代理建立期的 `CONFIG_*` 同属条目执行期，同样降级适用（[lead 裁决27](https://github.com/AMindFlow/dsh-fleetseek/issues/13#issuecomment-7141533377)）。全链未获有效来源进入终态时，`WebError` 的 `details.attempts` 必须按尝试顺序携各条目的原码，不改写、不压平。
 - **要求** 两类带码错误不受本条降级，必须裸上抛——原错误对象原样暴露，不包装、不改码，且不产生条目级 `attempts` 记录、无出站请求：全局 `CONFIG_*`（链级配置快照读取自身失败，发生在条目循环之前，无条目上下文）；`TRANSPORT_RELEASED`（停机释放后拒发，属 FB-005 程序违约暴露面，不是条目分类）。
-- **来源** [lead 裁决27（Issue #13 评论）](https://github.com/AMindFlow/dsh-search-chain/issues/13#issuecomment-7141533377)。
+- **来源** [lead 裁决27（Issue #13 评论）](https://github.com/AMindFlow/dsh-fleetseek/issues/13#issuecomment-7141533377)。
 - **验收** 用条目替身分别抛 `ENTRY_PROXY`、`CONFIG_INVALID`、`PAC_ROUTE_FAILED`，核对降级到下一条目、成功结果照常返回、成功路径的尝试记录保留原码。构造两条目全败（一条目执行期 `CONFIG_INVALID` 加一条目网络失败），核对终态 `WebError.details.attempts` 按尝试顺序分别携两条原码。令链级配置读取自身抛 `CONFIG_INVALID`，核对原错误对象原样上抛、零条目执行、无 `attempts`。注入 `TRANSPORT_RELEASED`，核对同样裸上抛、不降级。令 `transport.open` 抛 `CONFIG_INVALID`（代理无效），核对降级到下一条目且成功路径的 `attempts` 保留原码。
 
 ## 设计决定

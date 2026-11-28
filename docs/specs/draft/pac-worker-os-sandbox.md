@@ -5,7 +5,7 @@
 ## OSB-001 平台适用范围、能力探测与回退
 
 - **要求** 仅当运行平台为 `process.platform === "darwin"` 且 `/usr/bin/sandbox-exec` 能力探测通过时，`src/transport.js` 才必须使用 `/usr/bin/sandbox-exec -p <profile>` 包裹 PAC 求值 worker。能力探测必须在进程生命周期内最多执行一次并缓存结果（按运行时路径实路径与 worker 路径缓存）。若运行于非 `darwin` 平台、`/usr/bin/sandbox-exec` 缺失、路径 `realpath` 解析失败或能力探测失败（包括外层进程已处于更严格沙箱导致 `sandbox_apply: Operation not permitted`，或该运行时组合无法以最小豁免集正常完成空转 IPC 往返），实现必须自动回退到现状直 spawn（`spawnProcess(process.execPath, [...])`），且对外路由结果、`TransportError` 错误码与错误文本必须与未包裹时逐字节一致，不得让合法 PAC 求值变脆。
-- **来源** [GitHub Issue #64](https://github.com/AMindFlow/dsh-search-chain/issues/64)、codex Security Review finding `4715314739`。
+- **来源** [GitHub Issue #64](https://github.com/AMindFlow/dsh-fleetseek/issues/64)、codex Security Review finding `4715314739`。
 - **验收**
   1. 通过注入 `deps.spawnProcess` 桩分别验证：`darwin` 且能力探测通过时，`spawnProcess` 首参为 `"/usr/bin/sandbox-exec"`，参数前缀为 `["-p", profile, execPath, "--max-old-space-size=24", workerPath]`；非 `darwin` 或探测失败时首参为 `process.execPath` 且不含 `-p`。
   2. 连续触发多次未命中缓存的 PAC 求值时，能力探测只执行一次并复用缓存结论。
@@ -18,7 +18,7 @@
   2. 放行首跳执行：`process-exec` 仅允许 `process.execPath` 经 `realpath` 解析后的规范路径（`literal`）；
   3. 放行路径解析与代码加载：`process.execPath` 及其 `realpath`、worker 脚本及其所属包根/宿主 `node_modules` 挂载路径沿途所有目录节点放行 `file-read-metadata`，包根目录与 worker 路径放行 `file-read*`；系统 dyld 公共面（`/usr/lib`、`/System/Library`、`/Library/Apple`、`/usr/share`、`/private/var/db/dyld` 等系统映射/只读面）及 `/dev/null`、`/dev/zero`、`/dev/random`、`/dev/urandom`、`/dev/fd` 放行必要读取与 `file-map-executable`；Electron-as-node 运行时（位于 `.app/Contents/MacOS/` 下）额外放行同包 `.app/Contents/Frameworks` 整目录只读与 `file-map-executable`；
   4. 放行 V8 JIT 与运行时基础系统调用：`dynamic-code-generation`、`sysctl-read`、`mach-lookup` 最小必要集合（含诊断/通知与 Crashpad/CF 最小服务名）。
-- **来源** [GitHub Issue #64](https://github.com/AMindFlow/dsh-search-chain/issues/64)、codex Security Review finding `4715314739`。
+- **来源** [GitHub Issue #64](https://github.com/AMindFlow/dsh-fleetseek/issues/64)、codex Security Review finding `4715314739`。
 - **验收**
   1. 在 `darwin` 真机（非嵌套沙箱）下运行包裹后的 worker，验证其内部尝试写文件（如临时文件/工作区文件）、建立出站 TCP/UDP 网络连接或监听端口、调用 `child_process.spawn`/`fork` 均被操作系统拒绝（返回 `EACCES` 或 `EPERM`）。
   2. 合法 `FindProxyForURL`（`DIRECT`、`PROXY`、标准助手及沙箱密封用例）在包裹模式下行为不变，且 `ps -o rss=` 与超时/`SIGKILL` 强杀正常工作。
@@ -26,7 +26,7 @@
 ## OSB-003 继承 IPC 通道与纵深防御边界保持
 
 - **要求** Seatbelt profile 的网络封禁规则（`deny network*`）不得阻断父子进程间通过已继承文件描述符（`stdio[3]="ipc"` / `NODE_CHANNEL_FD` socketpair）收发 IPC 消息，也不得破坏父进程断开时 worker 触发 `disconnect` 自救退出的行为。既有 `node:vm` 密封与金丝雀自检、`--max-old-space-size=24` 堆帽、144 MiB 父侧 RSS 看门狗、2000 ms 墙钟上限与模块级单槽位串行闸必须全部维持既有行为不变。
-- **来源** [GitHub Issue #64](https://github.com/AMindFlow/dsh-search-chain/issues/64)、[CFG-005](config-network.md#cfg-005-pac-代理路由)。
+- **来源** [GitHub Issue #64](https://github.com/AMindFlow/dsh-fleetseek/issues/64)、[CFG-005](config-network.md#cfg-005-pac-代理路由)。
 - **验收** 包裹模式下完整运行 `test/pac-sandbox.test.js`，包括 IPC 往返、`disconnect` 自救、逃逸拦截、堆帽 OOM、RSS 看门狗与 `closeAll()` 强杀用例，全部通过且行为与直 spawn 一致。
 
 ## 设计决定

@@ -78,7 +78,7 @@ export function createFakeHost(opts = {}) {
   const hostShape = opts.hostShape === true;
   const { entry, fiber } = makeEntryForm(
     opts.entry?.id ?? "search-chain",
-    opts.entry?.name ?? "dsh-search-chain",
+    opts.entry?.name ?? "dsh-fleetseek",
     "search-chain",
   );
   const services = {};

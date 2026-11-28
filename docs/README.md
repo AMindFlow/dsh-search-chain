@@ -10,8 +10,8 @@
 
 | 用途 | 标识 |
 | --- | --- |
-| GitHub 仓库 | [AMindFlow/dsh-search-chain](https://github.com/AMindFlow/dsh-search-chain) |
-| dsh bundle 包名 | `dsh-search-chain` |
+| GitHub 仓库 | [AMindFlow/dsh-fleetseek](https://github.com/AMindFlow/dsh-fleetseek) |
+| dsh bundle 包名 | `dsh-fleetseek` |
 | dsh 搜索 provider ID、插件配置行 ID | `search-chain` |
 
 实现基线采用 dsh 的 Node 24 宿主、JavaScript ESM 和 `node:test`。本机安装的 dsh `0.2.2-rc.5` 已用来静态核对注册、选择和工具预算。发布时由实际安装测试决定 `engines.dsh` 的范围。

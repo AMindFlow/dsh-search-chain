@@ -66,8 +66,8 @@ mkdirSync(PROFILE, { recursive: true });
 writeFileSync(join(PROFILE, "package.json"), JSON.stringify({
   name: "verify-desktop-43-profile",
   private: true,
-  dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-search-chain"] } },
-  dependencies: { "dsh-search-chain": `link:${REPO_ROOT}` },
+  dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-fleetseek"] } },
+  dependencies: { "dsh-fleetseek": `link:${REPO_ROOT}` },
 }, null, 2) + "\n");
 // 注：bundle 必须进 bundles 数组才会装载（link 依赖本身不激活）；装载后包自带 dsh.bundle.patch
 // （src/cordis.patch.yml）插入 search-chain 行——正是 #43 现场：该行的 runtime.Config 进 describe。

@@ -1,6 +1,6 @@
-# 安装与更新（dsh-search-chain）
+# 安装与更新（dsh-fleetseek）
 
-面向仓库协作者与试用者。安装走 Git 固定提交，与同仓库生态（dsh-auto-retitle）一致；npm 包名 `dsh-search-chain` 已被无关包占用，请勿尝试 npm 渠道。
+面向仓库协作者与试用者。安装走 Git 固定提交，与同仓库生态（dsh-auto-retitle）一致；npm 包名 `dsh-fleetseek` 已被无关包占用，请勿尝试 npm 渠道。
 
 ## 前提（一次性）
 
@@ -14,20 +14,20 @@
 取发布 tag 指向的完整 commit：
 
 ```bash
-git ls-remote --tags https://github.com/AMindFlow/dsh-search-chain.git
+git ls-remote --tags https://github.com/AMindFlow/dsh-fleetseek.git
 # 取最新 refs/tags/v0.1.*^{} 那一行的 40 位 SHA（^{} 解引用后的 commit，不是 tag 对象本身）
 ```
 
 **方式 A · 交给你的 DSH 装**（推荐，桌面版/网页版皆可）——把这句话发给 DeepSeek Harness（Standard 模式，它会用插件管理器安装并要求你确认）：
 
-> 用 plugin_manager 的 install_bundle 安装 `git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>`。
+> 用 plugin_manager 的 install_bundle 安装 `git+https://github.com/AMindFlow/dsh-fleetseek.git#<SHA>`。
 
-**方式 B · 桌面插件页**：Plugins → Add plugin → 输入 `git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>` → 安装 → 启用。
+**方式 B · 桌面插件页**：Plugins → Add plugin → 输入 `git+https://github.com/AMindFlow/dsh-fleetseek.git#<SHA>` → 安装 → 启用。
 
 **方式 C · 命令行**（终端用户/CI）：
 
 ```bash
-npx -y @deepseek-ai/dsh plugin --profile <profile名> add "git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>"
+npx -y @deepseek-ai/dsh plugin --profile <profile名> add "git+https://github.com/AMindFlow/dsh-fleetseek.git#<SHA>"
 ```
 
 profile 不存在会自动创建；成功后 `<profile>/package.json` 的 dependencies 与 `dsh.profile.bundles` 均写入本插件，重启 DSH 生效。
@@ -47,7 +47,7 @@ profile 不存在会自动创建；成功后 `<profile>/package.json` 的 depend
 
 ## 验证装好了
 
-1. 插件页出现 dsh-search-chain 卡片，详情页可读。
+1. 插件页出现 dsh-fleetseek 卡片，详情页可读。
 2. 「设置」页出现与「模型」同级的「网页搜索链」面板；添加一个你有凭据的条目（如 Bing RSS，无需 key）保存并重开后读回一致。
 3. 新开会话发一条 `timeRange: "week"` 的搜索。若走了本链，结果带 `[n]` 编号引用；宿主工具时间线显示 web_search 完成。凭据缺失时收到可读的配置错误而非静默官方回退。
 

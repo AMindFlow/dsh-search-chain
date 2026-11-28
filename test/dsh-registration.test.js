@@ -121,7 +121,7 @@ test("DSH-001/DSH-003 配套：配置行声明存在且 id=search-chain（cordis
     return;
   }
   assert.match(text, /^\s*-?\s*id:\s*search-chain\s*$/m, "配置行 id 必须为 search-chain");
-  assert.match(text, /dsh-search-chain/, "配置行归属 bundle dsh-search-chain");
+  assert.match(text, /dsh-fleetseek/, "配置行归属 bundle dsh-fleetseek");
 });
 
 test("DSH-001/P3：我行按对象身份匹配——克隆行（同形状不同对象）不得被认作 fiber.entry", async (t) => {

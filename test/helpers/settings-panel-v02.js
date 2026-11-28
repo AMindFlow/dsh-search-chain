@@ -22,7 +22,7 @@
 
 import assert from "node:assert/strict";
 
-export const PACKAGE_ID = "dsh-search-chain";
+export const PACKAGE_ID = "dsh-fleetseek";
 export const SECTION_SLOT = "settings.section";
 export const SECTION_ID = "search-chain";
 export const SECTION_ORDER = 30;

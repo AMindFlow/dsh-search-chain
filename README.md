@@ -1,5 +1,6 @@
-# dsh-search-chain · 网页搜索链
+# FleetSeek · 网页搜索链
 
+**出网边界最严格的多源搜索链**：把 Bing RSS、Brave、Exa、Tavily、OpenAI、Gemini、DeepSeek 的免费/低额搜索能力组成一条有序回退链——聚合高额度、始终可用的 web_search；同时每个条目的出网路径独立受控：直连或指定代理，支持 PAC 并由 OS 沙箱强制执行，**绝不静默换路径**。密钥只进宿主凭据服务（只写不读），保存即校验、明文自动清零。
 **多 provider 降级，确保搜索工具可用且好用**：把 Bing RSS、Brave、Exa、Tavily、OpenAI、Gemini、DeepSeek 的搜索能力组成一条有序链，利用各厂商的免费额度聚合出一个高额度、始终可用的 web_search——结果质量比裸 Bing 网页或 web_fetch 单抓更好，一个厂商没额度、超时或无结果时自动降级到下一个。
 
 为 DeepSeek Harness（DSH）提供搜索 provider 插件「网页搜索链」。你在设置面板添加、启停和排序条目（条目 = 供应商 × 端点），每次搜索按保存顺序逐个尝试，前一个失败或无结果才降级——不是并行聚合，不给结果掺水。DeepSeek 官方 API 会话可在宿主官方搜索和自定义链之间切换。
@@ -9,11 +10,11 @@
 先取最新发布的完整 commit（官方规则：钉 40 位 commit 才有「更新」能力）：
 
 ```bash
-git ls-remote https://github.com/AMindFlow/dsh-search-chain.git 'refs/tags/v*'
+git ls-remote https://github.com/AMindFlow/dsh-fleetseek.git 'refs/tags/v*'
 # 取最新 v* 的 refs/tags/v<版本>^{} 行的 40 位 SHA（^{} 解引用后的 commit，不是 tag 对象）
 ```
 
-然后在 DSH 里说：**用 plugin_manager 的 install_bundle 安装 `git+https://github.com/AMindFlow/dsh-search-chain.git#<SHA>`**。想装好后可在 Discover 里一键更新，把索引源 `https://raw.githubusercontent.com/AMindFlow/dsh-plugin-index/main/market-index.json` 加进插件页「自定义插件索引」。详细前提与回退见 [INSTALL.md](INSTALL.md)。
+然后在 DSH 里说：**用 plugin_manager 的 install_bundle 安装 `git+https://github.com/AMindFlow/dsh-fleetseek.git#<SHA>`**。想装好后可在 Discover 里一键更新，把索引源 `https://raw.githubusercontent.com/AMindFlow/dsh-plugin-index/main/market-index.json` 加进插件页「自定义插件索引」。详细前提与回退见 [INSTALL.md](INSTALL.md)。
 
 装好后：启用插件 → 「设置 → 网页搜索链」添加一个你有凭据的条目（Bing RSS 免 key 可先试）→ 把 `web.searchProvider` 设为 `search-chain` → 新会话搜一次，结果带 `[n]` 编号引用即已生效。
 
@@ -27,7 +28,7 @@ git ls-remote https://github.com/AMindFlow/dsh-search-chain.git 'refs/tags/v*'
 
 ## 已知限制
 
-worker 内存目前是用户态两层边界，OS 级配额在 [#64](https://github.com/AMindFlow/dsh-search-chain/issues/64)；npm 裸名已被无关包占用，安装请走 Git 钉 commit。
+worker 内存目前是用户态两层边界，OS 级配额在 [#64](https://github.com/AMindFlow/dsh-fleetseek/issues/64)；npm 裸名已被无关包占用，安装请走 Git 钉 commit。
 
 ## 文档
 

@@ -8,7 +8,7 @@ import * as C from "./helpers/contract.js";
 import { loadFixture, listFixtures, FIXTURE_NAMES, fixturePath } from "./helpers/fixtures.js";
 
 test("项目标识与 docs/README.md 一致", () => {
-  assert.equal(C.BUNDLE_NAME, "dsh-search-chain");
+  assert.equal(C.BUNDLE_NAME, "dsh-fleetseek");
   assert.equal(C.PROVIDER_ID, "search-chain");
 });
 

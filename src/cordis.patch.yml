@@ -1,5 +1,5 @@
 - insert:
     - id: search-chain
-      name: 'dsh-search-chain'
+      name: 'dsh-fleetseek'
       # 可编辑种子（v0.1 唯一编辑入口）：entries 为数组（类型注记见 src/index.js Config.entries: array）
       config: { entries: [] }

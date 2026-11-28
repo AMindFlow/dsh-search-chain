@@ -79,7 +79,7 @@
 import assert from "node:assert/strict";
 
 /** 项目标识（docs/README.md「项目标识」表）。 */
-export const BUNDLE_NAME = "dsh-search-chain";
+export const BUNDLE_NAME = "dsh-fleetseek";
 export const PROVIDER_ID = "search-chain";
 
 /**

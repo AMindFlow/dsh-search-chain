@@ -1,3 +1,16 @@
+## 0.1.x → 0.2.0（更名为 FleetSeek）
+
+0.2.0 起插件更名为 **FleetSeek**，包名 `dsh-search-chain` → `dsh-fleetseek`。对宿主这是新的 bundle 身份，但**配置数据不丢**：你的配置保存在 profile 的 `cordis.patch.yml`（`id: search-chain` 行），与 bundle 安装目录无关，本次更名不动行 id 与配置命名空间。
+
+迁移三步（约 1 分钟）：
+
+1. **卸载旧身份**：`dsh plugin --profile <profile> remove dsh-search-chain`（或插件页卸载「网页搜索链 (dsh-search-chain)」）。
+2. **改写 profile 行引用**（一次性脚本，自带备份、可重复执行）：
+   `node scripts/migrate-0.2.0.mjs ~/.dsh/profiles/<profile>`
+3. **安装新身份**：Git 渠道按 INSTALL.md 的 v0.2.0 commit，或 `dsh plugin --profile <profile> add dsh-fleetseek`，重启后确认条目、代理与开关原样在位。
+
+npm 旧包 `@amindflow/dsh-search-chain` 已 deprecate（提示指向 `dsh-fleetseek`），版本停在 0.1.4 不再更新；若此前用该包名安装过，同样按上面第 1 步卸载（remove 时用它的全名）。
+
 # 升级指南
 
 本页说明从 0.x 开发版升级到本版（路线图中的首个可发布里程碑 `v0.1.0`，发布前以最终候选提交为准）时需要知道的变化，以及手动检查清单。
@@ -14,7 +27,7 @@
 | 托管引用（第三层） | 通过 `readRecord(环境变量名)` 读取 `api-key` 记录 | 通过 `resolve(环境变量名)` 读取托管引用，不再读取记录 | 原先保存在 `api-key` 记录（如 `<owner>/<id>`）中的 key 不再被读取。需要以环境变量名为引用名重新保存，或改用条目引用。 |
 | `credentialRef` 语法 | 引用名原样使用 | 只接受 `^[A-Za-z_][A-Za-z0-9_]*$`；无效旧引用视为未设置并继续查找后续来源 | 含冒号等旧引用不会被读取。检查环境变量及后续来源；在设置面板输入新 key 可生成合法新引用，或改填已有合法引用。 |
 | 明文 key 字段 | 条目中的 `apiKey` 等字段可能仍在配置中 | 键名匹配 `apikey`、`api_key`、`key`、`secret`、`token`、`password`、`auth`、`authorization`（大小写不敏感）的字段在读取时丢弃且不会被使用；经设置面板完成任意保存时会自动从磁盘条目中清除 | 旧配置中的明文 key 不再生效、也不会迁移到凭据服务。经设置面板保存一次即可从磁盘清零，并另行通过 key 输入框或环境变量补录 key（检查清单第 3 步）。 |
-| 旧版 YAML 凭据层 | 生产入口在仓库历史中从未传入旧版 YAML | **v0.1 不自动导入旧版 YAML**：链侧代码层保留，但生产装配不传数据源，永不生效 | 依赖 `openai`、`tavily`、`deepseek` 顶层 YAML 项的，需在配置表单、环境变量或托管引用中手动重建。TODO（发布验收）：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)。 |
+| 旧版 YAML 凭据层 | 生产入口在仓库历史中从未传入旧版 YAML | **v0.1 不自动导入旧版 YAML**：链侧代码层保留，但生产装配不传数据源，永不生效 | 依赖 `openai`、`tavily`、`deepseek` 顶层 YAML 项的，需在配置表单、环境变量或托管引用中手动重建。TODO（发布验收）：[Issue #13](https://github.com/AMindFlow/dsh-fleetseek/issues/13)。 |
 | 注入声明 `inject` | 早期版本为 `["web", "configEditor"]`；之后为 `["web", "configEditor", "credentials"]` | `["web", "configEditor", "credentials", "agents"]` | 新增 `agents`，用于 DeepSeek 官方分支读取当前会话的路由。宿主必须提供这些服务，缺失时的宿主行为未在本仓库实机验证。升级后请重新启用插件，并在新会话中验证。 |
 | PAC 与配置错误 | 条目执行期的 `PAC_*` 和 `CONFIG_*` 错误会中断整次搜索 | 作为条目级失败记录到 attempts（原码保留），然后继续下一个条目；条目 open 期的带码错误（如代理形状问题）同样降级（`6963535`，FB-006 裁决 27）。全局配置错误和 `TRANSPORT_RELEASED` 仍直接抛出 | **v0.1 变化提示**：一个条目的 PAC 失败不再让整次搜索失败。如果你之前靠这种失败来阻止搜索，需要改为关闭该条目。排查时查看 attempts。 |
 | 响应体上限 | 供应商正文与 PAC 全量读取，无字节上限 | PAC 与七家供应商正文统一 2 MiB 上限（`584fc66`，`MAX_RESPONSE_BYTES`；bing 的 `MAX_BODY_BYTES` 为同源常量别名）：超限早停，PAC 记 `PAC_FETCH_FAILED`、2xx 正文超限记 `ENTRY_BAD_RESPONSE` | 正常大小的响应不受影响；持续返回超大正文的条目会以异常响应失败。 |
@@ -29,7 +42,7 @@
 
 - 代理，以及 PAC 命中代理的路由，以 `ENTRY_PROXY` 失败：零出站、不会自动改走直连。与旧版相比语义更明确（原码入 attempts 并逐条目降级）；PAC 文件本身会真实直连下载并求值，返回 `DIRECT` 时可正常直连出站。该行为已有本地回环复测佐证：[复测 fixture](evidence/proxy-retest-v0.1.mjs)、[复测输出](evidence/proxy-retest-v0.1.log)。
 - 设置页「网页搜索链」区域提供完整设置面板；明文 key 仅通过 credentials/set 写入新的宿主引用，旧引用和移除条目不触发凭据删除。
-- v0.1 不自动导入旧版 YAML 凭据（TODO：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)）。
+- v0.1 不自动导入旧版 YAML 凭据（TODO：[Issue #13](https://github.com/AMindFlow/dsh-fleetseek/issues/13)）。
 - `QUOTA_LIMITED` 和 Gemini 的消息级额度判定仍待证认。
 
 ## 3. 手动检查清单
@@ -41,7 +54,7 @@
 3. **检查明文 key**：如果条目中含有 `apiKey`、`key`、`token` 等字段，读取时它们会被忽略，也不会迁移到凭据服务；经设置面板完成任意一次保存后，这些残留明文字段会自动从配置条目中清除。请重新编辑条目并在 key 输入框补录凭据，或改用环境变量/凭据引用提供 key。
 4. **检查 `credentialRef`**：引用必须符合 `^[A-Za-z_][A-Za-z0-9_]*$`。冒号形旧值视为未设置；可在面板输入 key 生成新引用，或改填已有合法引用。
 5. **检查托管 key**：如果 key 之前保存在 `api-key` 记录中，需要以对应的环境变量名作为引用名，在宿主凭据服务中重新保存。本仓库未提供这一步的界面，入口以宿主为准。
-6. **检查旧版 YAML**：v0.1 不自动导入旧版 YAML。如果依赖 `openai`、`tavily`、`deepseek` 的顶层 YAML 项，把这些 key 手动迁移到条目引用、环境变量或托管引用（TODO：[Issue #13](https://github.com/AMindFlow/dsh-search-chain/issues/13)）。
+6. **检查旧版 YAML**：v0.1 不自动导入旧版 YAML。如果依赖 `openai`、`tavily`、`deepseek` 的顶层 YAML 项，把这些 key 手动迁移到条目引用、环境变量或托管引用（TODO：[Issue #13](https://github.com/AMindFlow/dsh-fleetseek/issues/13)）。
 7. **检查代理条目**：`proxy` 为固定 HTTP(S) 代理 URL 的条目当前必以 `ENTRY_PROXY` 失败（零出站）。`proxy` 为 PAC 的条目会真实下载并求值 PAC：结果为 `DIRECT` 时可正常直连出站，命中 `PROXY`/`HTTPS` 指令时同样以 `ENTRY_PROXY` 失败。如果直连可用，删除 `proxy` 或让 PAC 对这些目标返回 `DIRECT`；否则接受这一限制，并把这些条目关闭或排到后面。
 8. **检查注入服务**：确认宿主提供 `web`、`configEditor`、`credentials`、`agents` 四个服务。缺失时的表现以实机为准。
 9. **逐类型验证**：对每个启用的条目类型各发起一次搜索，确认返回来源，或得到与 key 无关的明确错误（参见 [排错指南](troubleshooting.md)）。
