@@ -153,9 +153,11 @@ test("POOL-009⑤b 池上限：8 槽可用、第 9 槽不可达（禁用/不出�
     const view = await loadSection("pool-panel-cap");
     let tree = await settle(view);
     tree = await openAddEditor(view, tree, "tavily");
-    for (let i = 0; i < 8; i += 1) {
+    // 骨架修正（lead 裁决 2026-11-29，(b) 形式，#105 已备案）：初始槽=1 由 SET-002 v02 钉死，
+    // 原「第 k 次点击后=k」与 ①追加语义互斥；改为 7 次点击断 i+2（第 7 次后=8 槽）。
+    for (let i = 0; i < 7; i += 1) {
       tree = await click(view, tree, POOL_ROLE.add);
-      assert.equal(keyFields(tree).length, i + 1, `第 ${i + 1} 槽可用（上限 8）`);
+      assert.equal(keyFields(tree).length, i + 2, `第 ${i + 2} 槽可用（上限 8）`);
     }
     const addBtn = byRole(tree, POOL_ROLE.add)[0];
     const blocked = !addBtn || addBtn.props.disabled === true;

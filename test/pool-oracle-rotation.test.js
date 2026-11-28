@@ -23,7 +23,9 @@ import {
  * 池条目链测试台：openai 类型换成「会真实出站」薄后端（每把 key 一次提交），
  * 其余类型走脚本后端。credentialRefs 数组透传进已保存快照（POOL-001 通过后语义）。
  */
-function poolHarness({ letters = "AB", timeoutMs, extraEntries = [], steps = {}, env = {}, seedExtra = {} }) {
+// oracle-skeleton-fix（lead 裁决 (b)）：helper 参数补 `= {}` 默认——POOL-004① 无参调用，
+// 原对象模式解构 undefined 恒抛 TypeError，用例不可通过；断言零改动。
+function poolHarness({ letters = "AB", timeoutMs, extraEntries = [], steps = {}, env = {}, seedExtra = {} } = {}) {
   const entries = [
     { id: "p", type: "openai", name: "池条目", enabled: true, credentialRefs: refPoolOf(letters) },
     ...extraEntries,

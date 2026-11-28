@@ -95,7 +95,10 @@ test("POOL-006③ 脱敏全表面：attempts/content/日志对合成 key 正则�
   assert.match(JSON.stringify(rotationEvents[0]), /"p"/, "事件须定位条目 id");
 
   // 耗尽路径同样脱敏 + 事件数 = 2
-  const h2 = poolHarness("ABC");
+  // oracle-skeleton-fix（lead 裁决 (b)）：与本用例 L87 同款解构——poolHarness 返回 { h, issuing }，
+  // 原行未解构直接取 h2.fetchFn 恒为 undefined；"ABC" 位置参经 refPoolOf/credentialSeedFor
+  // 展开为 3 元池（A/B/C），可观察语义与规格一致（首轮 1 条轮替事件、耗尽 2 条）。断言零改动。
+  const { h: h2 } = poolHarness("ABC");
   scriptAttempts(h2.fetchFn, { 1: 401, 2: 429, 3: "ok:1" });
   await h2.runToValue(h2.search());
   assertNoPoolKeys(assert, `${h2.logCapture.text()}`, ["A", "B", "C"], "轮替日志");
