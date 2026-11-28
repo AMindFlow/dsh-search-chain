@@ -16,9 +16,12 @@ import {
   KEY_ENV_BY_TYPE,
   KEYLESS_TYPES,
   LEGACY_YAML_SUPPLIERS,
+  PROXY_PINS,
+  PROXY_PIN_VALUES,
   TOOL_TYPES,
   TRUSTED_ENV_KEYS,
   supplierOfToolType,
+  stripSecretClosure,
 } from "./constants.js";
 
 // WP1 导出增量：常量面（值以主线 constants.js 为单一事实源）。
@@ -30,6 +33,8 @@ export {
   LEGACY_YAML_SUPPLIERS,
   CONFIG_CODES,
   DEFAULT_TIMEOUT_MS,
+  PROXY_PINS,
+  PROXY_PIN_VALUES,
 };
 
 /** 配置类错误：携带 CONFIG_CODES 之一的 code，message 不含任何凭据。 */
@@ -42,7 +47,8 @@ export class ConfigError extends Error {
 }
 
 const SECRET_FIELD = /^(apikey|api_key|key|secret|token|password|auth|authorization)$/i;
-const HANDLED_ENTRY_FIELDS = new Set(["id", "type", "name", "enabled", "credentialRef", "proxy"]);
+const POSIX_CREDENTIAL_REF = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const HANDLED_ENTRY_FIELDS = new Set(["id", "type", "name", "enabled", "credentialRef", "proxy", "proxyPin"]);
 
 function invalid(message) {
   return new ConfigError(CONFIG_CODES.INVALID, message);
@@ -109,6 +115,18 @@ function normalizeEntry(raw, index) {
   const proxy = normalizeProxy(raw.proxy, where);
   if (proxy !== undefined) out.proxy = proxy;
 
+  let proxyPin = PROXY_PINS.INHERIT;
+  if (raw.proxyPin !== undefined) {
+    if (typeof raw.proxyPin !== "string" || !PROXY_PIN_VALUES.includes(raw.proxyPin)) {
+      throw invalid(`${where}.proxyPin 必须是 "inherit" | "directOnly" | "proxyOnly"`);
+    }
+    proxyPin = raw.proxyPin;
+  }
+  if (proxy !== undefined && proxyPin !== PROXY_PINS.INHERIT) {
+    throw invalid(`${where}.proxyPin 与条目自有 proxy 互斥（已有自有代理时仅允许 inherit）`);
+  }
+  out.proxyPin = proxyPin;
+
   // 其余参数只保留原始标量；对象与明文 key 字段一律丢弃（CFG-003：明文 key 不落盘）。
   for (const [k, v] of Object.entries(raw)) {
     if (HANDLED_ENTRY_FIELDS.has(k) || SECRET_FIELD.test(k)) continue;
@@ -117,9 +135,28 @@ function normalizeEntry(raw, index) {
   return out;
 }
 
+function normalizeGlobalProxyRef(raw) {
+  if (raw === undefined || raw === "") return undefined;
+  if (typeof raw !== "string") {
+    throw invalid("globalProxy 只允许保存凭据引用名（禁止非字符串或 null），请改由设置面板保存全局代理地址");
+  }
+  const s = raw.trim();
+  if (s === "") {
+    throw invalid("globalProxy 不得为空白字符串（未配置请省略，或在设置面板保存）");
+  }
+  if (s.includes("://") || s.includes("@")) {
+    throw invalid("globalProxy 只允许保存凭据引用名（禁止明文代理 URL），请改由设置面板保存全局代理地址");
+  }
+  if (!POSIX_CREDENTIAL_REF.test(s)) {
+    throw invalid("globalProxy 只允许保存 POSIX 凭据引用名（禁止明文地址或非法字符），请改由设置面板保存全局代理地址");
+  }
+  return s;
+}
+
 /**
  * 校验并规范化已保存形状（CFG-004）。非法输入抛 ConfigError(CONFIG_INVALID)。
- * 缺省：entries=[]、useOfficialDeepSeekSearch=true（SET-005）、timeoutMs=25000（FB-003）。
+ * 缺省：entries=[]、useOfficialDeepSeekSearch=true（SET-005）、timeoutMs=25000（FB-003）、
+ * proxyEscalation=false（PX-001）、globalProxy 省略。
  */
 export function normalizeConfig(raw) {
   if (raw === undefined || raw === null) raw = {};
@@ -142,7 +179,19 @@ export function normalizeConfig(raw) {
     throw invalid("timeoutMs 必须是正整数毫秒");
   }
 
-  return { entries, useOfficialDeepSeekSearch: useOfficial, timeoutMs };
+  const proxyEscalation = raw.proxyEscalation === undefined ? false : raw.proxyEscalation;
+  if (typeof proxyEscalation !== "boolean") {
+    throw invalid("proxyEscalation 必须是布尔值");
+  }
+
+  const globalProxy = normalizeGlobalProxyRef(raw.globalProxy);
+  if (proxyEscalation === true && globalProxy === undefined) {
+    throw invalid("proxyEscalation 开启前请先配置并保存全局代理地址");
+  }
+
+  const out = { entries, useOfficialDeepSeekSearch: useOfficial, timeoutMs, proxyEscalation };
+  if (globalProxy !== undefined) out.globalProxy = globalProxy;
+  return out;
 }
 
 function deepFreeze(value) {
@@ -163,7 +212,13 @@ export function readConfig(settings) {
 }
 
 /** 本插件在 override 层自有的顶层配置键（normalizeConfig 输出键集）；写入时整体替换，其余键（未知/他插件）保留。 */
-const OWN_CONFIG_KEYS = ["entries", "useOfficialDeepSeekSearch", "timeoutMs"];
+export const OWN_CONFIG_KEYS = Object.freeze([
+  "entries",
+  "useOfficialDeepSeekSearch",
+  "timeoutMs",
+  "proxyEscalation",
+  "globalProxy",
+]);
 
 /**
  * 校验后经 configEditor 写入（CFG-004）。非法输入在写入前即抛错；
@@ -177,7 +232,9 @@ export async function writeConfig(settings, next) {
     await settings.editor.edit(settings.entry, (raw) => {
       const merged = { ...(raw ?? {}) };
       for (const k of OWN_CONFIG_KEYS) delete merged[k];
-      return { ...merged, ...structuredClone(normalized) };
+      // #88 第二批②（Refs #88）：raw 保留面先按 secret 字段名闭集递归剥离（任意深度）再 spread 保留其余未知键——
+      // PX-009 的降级保留故事只对非 secret 未知键成立（全局代理明文族任何位置不留存，与面板清理面同一闭集）。
+      return { ...stripSecretClosure(merged), ...structuredClone(normalized) };
     });
   } catch {
     throw new ConfigError(CONFIG_CODES.SAVE_FAILED, "保存搜索配置失败，已生效配置保持不变");

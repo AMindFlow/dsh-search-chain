@@ -28,6 +28,7 @@ import {
   KEY_ENV_BY_TYPE,
   LEGACY_YAML_SUPPLIERS,
   DEFAULT_TIMEOUT_MS,
+  PROXY_PINS,
   supplierOfToolType,
 } from "./constants.js";
 
@@ -60,6 +61,9 @@ const CONFIG_PHASE_DESC = {
  * 其余类型按各适配规格返回的 content 透传。
  */
 const SOURCES_ONLY_TYPES = new Set(["bing"]);
+
+/** #88 第五批⑤（Refs #88）：全局引用 resolve 与预算截止竞速的耗尽哨兵（模块级——工厂体在 return 后全用提升函数声明，局部 const 不可达）。 */
+const RESOLVE_EXPIRED = Symbol("global-proxy-resolve-expired");
 
 /** 条目级失败 → 可核查的脱敏 reason（CFG-003：只写条目与配置项，不带上游原文）。 */
 const FAILURE_REASON = {
@@ -169,6 +173,8 @@ export function createSearchChain(deps) {
     const rawConfig = (configSnapshot !== undefined ? configSnapshot : getConfig()) ?? {};
     const snapshotEntries = deepClone(Array.isArray(rawConfig.entries) ? rawConfig.entries : []);
     const totalBudget = normalizeBudget(rawConfig.timeoutMs);
+    const escalationEnabled = rawConfig.proxyEscalation === true;
+    const globalProxyRef = typeof rawConfig.globalProxy === "string" ? rawConfig.globalProxy.trim() : "";
     const startAt = clock.now();
 
     const query = request?.query;
@@ -193,6 +199,7 @@ export function createSearchChain(deps) {
     let failed = 0;
     let stoppedByBudget = false;
     let anyExplicitEmpty = false; // FB-004：是否有已尝试条目明确无结果
+    let escalationFailed = false; // #88 第三批①：是否有全局代理升级实际出站且失败（终态 WebError 带「升级失败」要素；OFF 态不可达，逐字 legacy）
 
     const run = async () => {
       for (let i = 0; i < snapshotEntries.length; i++) {
@@ -240,6 +247,74 @@ export function createSearchChain(deps) {
           continue;
         }
 
+        const entryStartAt = clock.now();
+        const hasOwnProxy =
+          typeof entry.proxy === "string"
+            ? entry.proxy.trim() !== ""
+            : Boolean(entry.proxy && typeof entry.proxy === "object");
+        const pin =
+          !hasOwnProxy && (entry.proxyPin === PROXY_PINS.DIRECT_ONLY || entry.proxyPin === PROXY_PINS.PROXY_ONLY)
+            ? entry.proxyPin
+            : PROXY_PINS.INHERIT;
+
+        // PX-006（正交于全局升级开关）：未配置自有代理且钉死 proxyOnly 时，仅经 globalProxy 解析出的代理出站，绝不直连。
+        if (pin === PROXY_PINS.PROXY_ONLY) {
+          // PX #88 第五批⑤：钉死路径同受条目/总剩余预算与宿主取消约束（悬挂 resolve 不得越预算）。
+          const gp = await resolveGlobalProxy(
+            globalProxyRef,
+            Math.min(budgetMs - (clock.now() - entryStartAt), totalBudget - (clock.now() - startAt)),
+            externalSignal,
+          );
+          if (externalSignal?.aborted || state.cancelled) throw abortError(externalSignal);
+          if (!gp.ok) {
+            recordFailure(
+              entry,
+              ENTRY_CODES.NETWORK,
+              "条目钉死仅代理：全局代理不可用（未配置、不可读或地址无效），未直连出站",
+            );
+            continue;
+          }
+          const pinBudget = Math.min(budgetMs - (clock.now() - entryStartAt), totalBudget - (clock.now() - startAt));
+          if (pinBudget <= 0) {
+            recordFailure(entry, ENTRY_CODES.NETWORK, "条目钉死仅代理：剩余预算不足，未执行全局代理出站");
+            continue;
+          }
+          const outcome = await runEntry(entry, {
+            query,
+            maxResults,
+            key,
+            budgetMs: pinBudget,
+            externalSignal,
+            state,
+            routeOpts: { kind: gp.kind, proxyUrl: gp.url, viaGlobal: true },
+          });
+          if (outcome.kind === "cancelled") throw abortError(externalSignal);
+          if (outcome.kind === "timeout") {
+            recordFailure(entry, ENTRY_CODES.TIMEOUT, `条目钉死仅代理：全局代理失败（${gp.target}，在途超时已取消）`);
+            continue;
+          }
+          if (outcome.kind === "error") {
+            const rawCode = isEntryPhaseCode(outcome.error?.code) ? outcome.error.code : null;
+            if (rawCode === null) throw outcome.error;
+            const code = rawCode === ENTRY_CODES.PROXY ? ENTRY_CODES.NETWORK : rawCode;
+            // #88 第三批③：非 NETWORK 相位失败同样保留原码，并带钉死要素（强制代理事实+脱敏目标+安全原因）。
+            const reason =
+              code === ENTRY_CODES.NETWORK
+                ? `条目钉死仅代理：全局代理失败（${gp.target}，失败阶段：${rawCode}）`
+                : `条目钉死仅代理：全局代理失败（${gp.target}，${FAILURE_REASON[code](entry)}）`;
+            recordFailure(entry, code, reason);
+            if (code === ENTRY_CODES.CONTENT_POLICY) break;
+            continue;
+          }
+          const built = buildSuccessResult(entry, outcome.value, { maxResults, issues });
+          if (built.sources.length > 0) {
+            log?.("debug", "search-chain 条目命中", { entryId: entry.id, type: entry.type });
+            return built;
+          }
+          anyExplicitEmpty = true;
+          continue;
+        }
+
         const outcome = await runEntry(entry, { query, maxResults, key, budgetMs, externalSignal, state });
 
         if (outcome.kind === "cancelled") {
@@ -247,6 +322,16 @@ export function createSearchChain(deps) {
           throw abortError(externalSignal);
         }
         if (outcome.kind === "timeout") {
+          // PX-005（Refs #88，lead 裁决①）：直连失败恰在条目预算耗尽同 tick 落定时（race 胜负无关），
+          // 剩余 ≤0 不得发出升级请求：以预算要素文案落定（零升级出站）；升级条件不满足时 v0.2.0 纯 TIMEOUT 呈现原样。
+          const remAtTimeout = Math.min(
+            budgetMs - (clock.now() - entryStartAt),
+            totalBudget - (clock.now() - startAt),
+          );
+          if (!hasOwnProxy && pin === PROXY_PINS.INHERIT && escalationEnabled && globalProxyRef && remAtTimeout <= 0) {
+            recordFailure(entry, ENTRY_CODES.NETWORK, "直连失败；剩余预算不足，未执行全局代理升级");
+            continue;
+          }
           recordFailure(entry, ENTRY_CODES.TIMEOUT, FAILURE_REASON[ENTRY_CODES.TIMEOUT](entry, budgetMs));
           continue; // FB-003：剩余总预算允许时继续下一条
         }
@@ -255,6 +340,93 @@ export function createSearchChain(deps) {
           if (code === null) {
             // A5/FB-005：程序违约（无条目可降级的码，含 TRANSPORT_RELEASED）原样暴露，不包装、不再发起新上游请求。
             throw outcome.error;
+          }
+          // PX-002..PX-008：仅当开关开 + 无自有代理 + 继承态 + 直连 ENTRY_NETWORK 时，尝试至多一次全局代理升级。
+          if (!hasOwnProxy && pin === PROXY_PINS.INHERIT && escalationEnabled && code === ENTRY_CODES.NETWORK) {
+            const remBeforeResolve = Math.min(
+              budgetMs - (clock.now() - entryStartAt),
+              totalBudget - (clock.now() - startAt),
+            );
+            if (remBeforeResolve <= 0) {
+              recordFailure(entry, ENTRY_CODES.NETWORK, "直连失败；剩余预算不足，未执行全局代理升级");
+              continue;
+            }
+            // #88 第五批⑤：升级 resolve 与 remBeforeResolve 截止竞速；耗尽按不可读面收敛（零出站）。
+            const gp = await resolveGlobalProxy(globalProxyRef, remBeforeResolve, externalSignal);
+            if (externalSignal?.aborted || state.cancelled) throw abortError(externalSignal);
+            if (!gp.ok) {
+              const reason =
+                gp.kind === "expired"
+                  ? "直连失败；剩余预算不足，未执行全局代理升级"
+                  : gp.kind === "unreadable"
+                    ? "直连失败；全局升级已开启，全局代理凭据不可读，未执行升级（请在设置中重新保存全局代理地址）"
+                    : "直连失败；全局升级已开启，全局代理未配置或不可读，未执行升级（请在设置中重新保存全局代理地址）";
+              recordFailure(entry, ENTRY_CODES.NETWORK, reason);
+              continue;
+            }
+            const remAfterResolve = Math.min(
+              budgetMs - (clock.now() - entryStartAt),
+              totalBudget - (clock.now() - startAt),
+            );
+            if (remAfterResolve <= 0) {
+              recordFailure(entry, ENTRY_CODES.NETWORK, "直连失败；剩余预算不足，未执行全局代理升级");
+              continue;
+            }
+            log?.("debug", "search-chain 全局代理升级", { entryId: entry.id, type: entry.type, target: gp.target });
+            const escOutcome = await runEntry(entry, {
+              query,
+              maxResults,
+              key,
+              budgetMs: remAfterResolve,
+              externalSignal,
+              state,
+              routeOpts: { kind: gp.kind, proxyUrl: gp.url, viaGlobal: true },
+            });
+            if (escOutcome.kind === "cancelled") throw abortError(externalSignal);
+            if (escOutcome.kind === "timeout") {
+              escalationFailed = true;
+              recordFailure(
+                entry,
+                ENTRY_CODES.TIMEOUT,
+                `直连失败；经全局代理升级（${gp.target}）在途时条目预算到期（已取消）`,
+                "升级失败",
+              );
+              continue;
+            }
+            if (escOutcome.kind === "error") {
+              const escRawCode = isEntryPhaseCode(escOutcome.error?.code) ? escOutcome.error.code : null;
+              if (escRawCode === null) throw escOutcome.error;
+              const reportedPhase = escRawCode === ENTRY_CODES.PROXY ? ENTRY_CODES.NETWORK : escRawCode;
+              escalationFailed = true;
+              recordFailure(
+                entry,
+                ENTRY_CODES.NETWORK,
+                `直连失败；经全局代理升级仍失败（${gp.target}，失败阶段：${reportedPhase}）`,
+                "升级失败",
+              );
+              if (escRawCode === ENTRY_CODES.CONTENT_POLICY) break;
+              continue;
+            }
+            const escBuilt = buildSuccessResult(entry, escOutcome.value, {
+              maxResults,
+              issues,
+              escalationTarget: gp.target,
+            });
+            if (escBuilt.sources.length > 0) {
+              log?.("debug", "search-chain 条目命中（全局代理升级）", {
+                entryId: entry.id,
+                type: entry.type,
+                target: gp.target,
+              });
+              return escBuilt;
+            }
+            // #88（lead 升裁·空结果可见性）：升级路径已实际出网但返回空——改道事实必须可查（attempts 呈现面）；
+            // 空成功终态对象形状由 FB-004 deepEqual 锁死，不得加键，故事实只入 attempts（失败终态经 WebError details 可见）。
+            attempts.push(
+              attemptOf(entry, "ESCALATED_EMPTY", `直连失败；经全局代理升级（${gp.target}）已出站但未返回结果`),
+            );
+            anyExplicitEmpty = true;
+            continue;
           }
           recordFailure(entry, code, FAILURE_REASON[code](entry));
           if (code === ENTRY_CODES.CONTENT_POLICY) break; // FB-001/FB-005：终止类，不降级
@@ -278,9 +450,9 @@ export function createSearchChain(deps) {
       return terminalResult();
     };
 
-    function recordFailure(entry, code, reason) {
+    function recordFailure(entry, code, reason, issueSummary) {
       attempts.push(attemptOf(entry, code, reason));
-      issues.push({ kind: "fail", name: entry.name, code });
+      issues.push(issueSummary ? { kind: "fail", name: entry.name, code, issueSummary } : { kind: "fail", name: entry.name, code });
       failed += 1;
       log?.("warn", "search-chain 条目失败", { entryId: entry.id, type: entry.type, code });
     }
@@ -328,11 +500,13 @@ export function createSearchChain(deps) {
           ),
         );
       }
+      // #88 第三批①：升级实际出站且失败终态带「升级失败」要素（仅呈现面）；OFF 态 escalationFailed 恒 false，逐字 legacy。
+      const escNote = escalationFailed ? "，含经全局代理升级仍失败条目" : "";
       if (stoppedByBudget) {
         return Promise.reject(
           new WebError(
             CHAIN_CODES.BUDGET_EXHAUSTED,
-            `总预算 ${totalBudget}ms 已耗尽且未获得有效来源（见 details.attempts 的逐条原因）`,
+            `总预算 ${totalBudget}ms 已耗尽且未获得有效来源${escNote}（见 details.attempts 的逐条原因）`,
             attempts,
           ),
         );
@@ -340,7 +514,7 @@ export function createSearchChain(deps) {
       return Promise.reject(
         new WebError(
           CHAIN_CODES.UPSTREAM_FAILURES,
-          "全链未获得有效来源：尝试过的条目均失败或被跳过（见 details.attempts 的逐条原因）",
+          `全链未获得有效来源：尝试过的条目均失败或被跳过${escNote}（见 details.attempts 的逐条原因）`,
           attempts,
         ),
       );
@@ -350,7 +524,7 @@ export function createSearchChain(deps) {
      * 实际尝试一个条目（A6：transport.open → 适配器 ctx.fetch → close）。
      * @returns {Promise<{kind:"success", value:object}|{kind:"error", error:object}|{kind:"timeout"}|{kind:"cancelled"}>}
      */
-    async function runEntry(entry, { query, maxResults, key, budgetMs, externalSignal, state }) {
+    async function runEntry(entry, { query, maxResults, key, budgetMs, externalSignal, state, routeOpts }) {
       const backend = backends.get?.(entry.type);
       if (!backend || typeof backend.search !== "function") {
         // 目录与后端不一致属内部程序违约：无 code，原样暴露（FB-005）。
@@ -361,7 +535,7 @@ export function createSearchChain(deps) {
       // 无码/TRANSPORT_RELEASED 仍经同一分支裸上抛（不改全局位）。
       let handle;
       try {
-        handle = transport.open(entry);
+        handle = routeOpts !== undefined ? transport.open(entry, routeOpts) : transport.open(entry);
       } catch (error) {
         return { kind: "error", error };
       }
@@ -448,6 +622,62 @@ export function createSearchChain(deps) {
     });
   }
 
+  /** #88 第五批⑤（Refs #88）：全局引用 resolve 不得越过条目/总剩余预算，也不得逃脱宿主取消——
+   * 与预算截止（受控时钟定时器）及宿主 abort 信号竞速；耗尽即按不可读收敛（零出站）。 */
+  async function raceWithinBudget(promise, budgetLeftMs, signal) {
+    if (!promise || typeof promise.then !== "function") return promise;
+    let timerId;
+    const deadline = new Promise((resolve) => {
+      if (typeof budgetLeftMs === "number" && budgetLeftMs > 0) {
+        timerId = clock.setTimeout(() => resolve(RESOLVE_EXPIRED), budgetLeftMs);
+      } else {
+        resolve(RESOLVE_EXPIRED); // 剩余 ≤ 0：不等待任何 resolve
+      }
+    });
+    let abortListener;
+    const abortP = signal
+      ? new Promise((resolve) => {
+          if (signal.aborted) return resolve(RESOLVE_EXPIRED);
+          abortListener = () => resolve(RESOLVE_EXPIRED);
+          signal.addEventListener("abort", abortListener, { once: true });
+        })
+      : null;
+    let winner;
+    try {
+      winner = await Promise.race([promise, deadline, ...(abortP ? [abortP] : [])]);
+    } finally {
+      if (timerId !== undefined) clock.clearTimeout(timerId);
+      if (abortListener) signal.removeEventListener("abort", abortListener);
+    }
+    return winner;
+  }
+
+  async function resolveGlobalProxy(ref, budgetLeftMs, signal) {
+    if (!ref || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref)) return { ok: false, kind: "missing" };
+    let hit;
+    try {
+      hit = await raceWithinBudget(credentials?.resolve?.(ref), budgetLeftMs, signal);
+    } catch {
+      return { ok: false, kind: "unreadable" };
+    }
+    if (hit === RESOLVE_EXPIRED) return { ok: false, kind: "expired" };
+    const raw = typeof hit?.value === "string" ? hit.value.trim() : "";
+    if (!raw) return { ok: false, kind: "missing" };
+    let u;
+    try {
+      u = new URL(raw);
+    } catch {
+      return { ok: false, kind: "invalid" };
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") return { ok: false, kind: "invalid" };
+    return {
+      ok: true,
+      url: raw,
+      kind: u.protocol === "https:" ? "https-proxy" : "proxy",
+      target: `${u.protocol}//${u.host}`,
+    };
+  }
+
   /** CFG-002 优先级：条目引用 → 进程环境变量 → DSH 托管记录 → 旧版 YAML 顶层。宿主对超语法引用抛 TypeError 时按未设置处理（R-1）。 */
   async function resolveKey(entry, envName) {
     const ref = typeof entry.credentialRef === "string" ? entry.credentialRef.trim() : "";
@@ -499,7 +729,7 @@ const SOURCE_FIELDS = ["title", "snippet", "summary", "publishedAt"];
  * FB-002 成功结果：按成功条目的供应商顺序保留有效来源；超过 maxResults 截断并置 truncated；
  * 此前有启用条目被跳过/失败时 content 首行标明实际使用的条目；纯来源适配器的供应商正文不透出。
  */
-function buildSuccessResult(entry, value, { maxResults, issues }) {
+function buildSuccessResult(entry, value, { maxResults, issues, escalationTarget }) {
   const rawSources = Array.isArray(value?.sources) ? value.sources : [];
   const sources = [];
   for (const s of rawSources) {
@@ -521,11 +751,15 @@ function buildSuccessResult(entry, value, { maxResults, issues }) {
   const adapterContent =
     !isSourcesOnly && typeof value?.content === "string" && value.content !== "" ? value.content : undefined;
   let content;
-  if (issues.length > 0) {
+  if (escalationTarget || issues.length > 0) {
     const parts = issues.map((it) =>
-      it.kind === "skip" ? `「${it.name}」缺少凭据（${it.envName}）` : `「${it.name}」${ISSUE_DESC[it.code]}`,
+      it.kind === "skip"
+        ? `「${it.name}」缺少凭据（${it.envName}）`
+        : `「${it.name}」${it.issueSummary ?? ISSUE_DESC[it.code]}`,
     );
-    const marker = `已由「${entry.name}」返回结果（此前${parts.join("；")}）`;
+    const viaClause = escalationTarget ? `经全局代理升级出站（${escalationTarget}）` : "";
+    const issueClause = parts.length > 0 ? `（此前${parts.join("；")}）` : "";
+    const marker = `已由「${entry.name}」${viaClause}返回结果${issueClause}`;
     content = adapterContent ? `${marker}\n${adapterContent}` : marker;
   } else {
     content = adapterContent;

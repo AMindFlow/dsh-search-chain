@@ -59,6 +59,14 @@ export const CONFLICT_CODE = "CONFIG_CONFLICT";
 /** FB-003 默认总预算（镜像 contract.js DEFAULT_TIMEOUT_MS；面板不暴露该控件，仅读取时兜底）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
 
+/** PX-006 条目级 proxyPin 三态枚举（镜像 src/constants.js 与 test/helpers/contract.js）。 */
+export const PROXY_PINS = Object.freeze({
+  INHERIT: "inherit",
+  DIRECT_ONLY: "directOnly",
+  PROXY_ONLY: "proxyOnly",
+});
+export const PROXY_PIN_VALUES = Object.freeze(Object.values(PROXY_PINS));
+
 /**
  * CAT-001 目录（每类型一行）。
  * fields 语义（oracle 头注）：含 "credential" = 需要 key 字段；deepseek 两模式含 "mode"；

@@ -42,11 +42,13 @@
                        // legacyYaml = 供应商名→顶层 key 的解析映射或 undefined；env 为注入的进程环境映射
 //                       { key } 或 null（CFG-002 优先级；凭据文件不可读/损坏抛 CREDENTIALS_UNREADABLE；
 //                       纯空白一律视为缺失；只允许读 TRUSTED_ENV_KEYS 中的环境变量名）
-//    src/transport.js: export function createEntryTransport(entry, { fetch, clock, log }) →
+//    src/transport.js: export function createEntryTransport(entry, { fetch, clock, log, routeOverride? }) →
 //                       { fetch(url, init), close(), closeAll() }
 //                     transport 产出的 init 带 `route` 标记
 //                       { kind: "direct"|"proxy"|"https-proxy", proxyUrl?, viaPac?, pacIndex?,
-//                         pacSource?, pacRevision?, phase? } 以便假 fetch 断言路由。
+//                         pacSource?, pacRevision?, phase?, viaGlobal? } 以便假 fetch 断言路由。
+//                     // route.viaGlobal?: boolean — #88（PX-003/005/006）：仅测试侧与传输层路由观测字段，
+//                     // 当请求经全局代理升级或 proxyOnly 出站时为 true（A-PX-1 / lead 裁决 b）。
 //    src/index.js    : export const PROVIDER_ID = "search-chain";
 //                     export const Config;  // 行配置 schema（宿主装载时校验 config 行）
 //                     export function apply(ctx, config, testDeps?)
@@ -177,6 +179,15 @@ export const CONFIG_CODES = Object.freeze({
 
 /** FB-003 默认总预算（毫秒）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
+
+/** PX-006 条目级 proxyPin 三态枚举（镜像 src/constants.js PROXY_PINS / PROXY_PIN_VALUES）。 */
+export const PROXY_PINS = Object.freeze({
+  INHERIT: "inherit",
+  DIRECT_ONLY: "directOnly",
+  PROXY_ONLY: "proxyOnly",
+});
+export const PROXY_PIN_VALUES = Object.freeze(Object.values(PROXY_PINS));
+export const DEFAULT_GLOBAL_PROXY_REF = "search_chain_global_proxy";
 
 /**
  * A5 适配器能力声明——展示用途：chain/测试不消费本常量判 contentMode。
@@ -317,6 +328,7 @@ export function makeSources(count, base) {
 /** 造一份已保存配置快照（CFG-004）。 */
 export function makeSavedConfig(entries, extra = {}) {
   return {
+    ...extra,
     entries,
     useOfficialDeepSeekSearch: extra.useOfficialDeepSeekSearch ?? true,
     ...(extra.timeoutMs !== undefined ? { timeoutMs: extra.timeoutMs } : {}),

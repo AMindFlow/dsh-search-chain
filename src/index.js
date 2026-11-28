@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 // 本版本交付可用代理：直连维持 globalThis.fetch，代理路由经 ProxyAgent 隧道；直连不另建 undici Agent 的
 // 口径出入在规格文中注明，决策来源 = Issue #61 用户指令）。
 import { fetch as undiciFetch, ProxyAgent } from "undici";
-import { CONFIG_CODES, ENTRY_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID, TOOL_TYPES } from "./constants.js";
+import { CONFIG_CODES, ENTRY_CODES, OFFICIAL_ROUTE_ID, PROVIDER_ID, PROXY_PIN_VALUES, TOOL_TYPES } from "./constants.js";
 import { ConfigError, readConfig } from "./config.js";
 import { createLazyHostOfficial } from "./official.js";
 import { createSearchChain } from "./search.js";
@@ -88,6 +88,7 @@ const ENTRY = z
     enabled: z.boolean(),
     credentialRef: z.string().role("credential-ref"),
     proxy: z.union([z.string(), z.object({ pac: z.string() })]),
+    proxyPin: z.union(PROXY_PIN_VALUES.map((p) => z.const(p))),
   })
   .required();
 
@@ -96,6 +97,8 @@ export const Config = z
     entries: z.array(ENTRY).volatile(),
     useOfficialDeepSeekSearch: z.boolean().volatile(),
     timeoutMs: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).volatile(),
+    proxyEscalation: z.boolean().volatile(),
+    globalProxy: z.string().volatile(),
   })
   .required();
 
@@ -105,7 +108,7 @@ export const Config = z
  * 此处只保留输入中已存在的键，缺键不进入 value。仅改 validate 的输出对象，schema 节点本身不变。
  * 实现为节点上的不可枚举自有 ~standard（toJSON 的 refs 序列化不受影响）。
  */
-const CONFIG_OWN_KEYS = ["entries", "useOfficialDeepSeekSearch", "timeoutMs"];
+const CONFIG_OWN_KEYS = ["entries", "useOfficialDeepSeekSearch", "timeoutMs", "proxyEscalation", "globalProxy"];
 const baseStandard = Config["~standard"];
 Object.defineProperty(Config, "~standard", {
   configurable: true,
@@ -255,7 +258,7 @@ function createProductionChain(ctx, { getConfig, fetchFn, clock, log }) {
   return createSearchChain({
     getConfig,
     backends: productionBackends(),
-    transport: { open: (entry) => createEntryTransport(entry, { fetch: fetchFn, clock, log }) },
+    transport: { open: (entry, routeOpts) => createEntryTransport(entry, { fetch: fetchFn, clock, log, routeOverride: routeOpts }) },
     credentials: hostCredentials(ctx),
     env: globalThis.process?.env ?? {},
     clock,

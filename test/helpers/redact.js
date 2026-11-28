@@ -69,14 +69,17 @@ export function assertNoRawBody(t, value, label) {
 /** 日志采集器：作为 deps.log 注入，随后对 text() 做脱敏断言。 */
 export function createLogCapture() {
   const entries = [];
+  const lines = [];
   const log = (level, message, ...rest) => {
     entries.push({ level, message, rest });
+    lines.push(`${level} ${message} ${rest.map((r) => safe(r)).join(" ")}`);
   };
   return {
     log,
     entries,
+    lines,
     text() {
-      return entries.map((e) => `${e.level} ${e.message} ${e.rest.map((r) => safe(r)).join(" ")}`).join("\n");
+      return lines.join("\n");
     },
   };
 }
