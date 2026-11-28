@@ -153,14 +153,18 @@ export async function startStubEndpoint({ script = () => ({ status: 200, body: "
   };
 }
 
-/** fetch 面配置装具：走既有 makeSavedConfig 的 extra 透传，附加 FT-003 三键。 */
-export function makeFetchConfig({ fetchTakeover, fetchEntries, fetchOfficialFallback, entries = [], ...rest } = {}) {
-  return makeSavedConfig(entries, {
+/** fetch 面配置装具：makeSavedConfig 会丢弃未知 extra，三键直接铺在其结果上；参数防护（误传数组会解构到 Array.prototype.entries）。 */
+export function makeFetchConfig(opts = {}) {
+  if (opts === null || typeof opts !== "object" || Array.isArray(opts)) {
+    throw new TypeError("makeFetchConfig 只接受选项对象");
+  }
+  const { fetchTakeover, fetchEntries, fetchOfficialFallback, entries = [], ...rest } = opts;
+  return {
+    ...makeSavedConfig(entries, rest),
     ...(fetchTakeover !== undefined ? { fetchTakeover } : {}),
     ...(fetchEntries !== undefined ? { fetchEntries } : {}),
     ...(fetchOfficialFallback !== undefined ? { fetchOfficialFallback } : {}),
-    ...rest,
-  });
+  };
 }
 
 /** 典型敏感片段 URL 装饰：拒绝文案脱敏断言的可辨识 query/fragment/path。 */
