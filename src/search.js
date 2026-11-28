@@ -62,6 +62,9 @@ const CONFIG_PHASE_DESC = {
  */
 const SOURCES_ONLY_TYPES = new Set(["bing"]);
 
+/** #88 第五批⑤（Refs #88）：全局引用 resolve 与预算截止竞速的耗尽哨兵（模块级——工厂体在 return 后全用提升函数声明，局部 const 不可达）。 */
+const RESOLVE_EXPIRED = Symbol("global-proxy-resolve-expired");
+
 /** 条目级失败 → 可核查的脱敏 reason（CFG-003：只写条目与配置项，不带上游原文）。 */
 const FAILURE_REASON = {
   [ENTRY_CODES.CREDENTIALS]: (entry) =>
@@ -196,6 +199,7 @@ export function createSearchChain(deps) {
     let failed = 0;
     let stoppedByBudget = false;
     let anyExplicitEmpty = false; // FB-004：是否有已尝试条目明确无结果
+    let escalationFailed = false; // #88 第三批①：是否有全局代理升级实际出站且失败（终态 WebError 带「升级失败」要素；OFF 态不可达，逐字 legacy）
 
     const run = async () => {
       for (let i = 0; i < snapshotEntries.length; i++) {
@@ -255,7 +259,12 @@ export function createSearchChain(deps) {
 
         // PX-006（正交于全局升级开关）：未配置自有代理且钉死 proxyOnly 时，仅经 globalProxy 解析出的代理出站，绝不直连。
         if (pin === PROXY_PINS.PROXY_ONLY) {
-          const gp = await resolveGlobalProxy(globalProxyRef);
+          // PX #88 第五批⑤：钉死路径同受条目/总剩余预算与宿主取消约束（悬挂 resolve 不得越预算）。
+          const gp = await resolveGlobalProxy(
+            globalProxyRef,
+            Math.min(budgetMs - (clock.now() - entryStartAt), totalBudget - (clock.now() - startAt)),
+            externalSignal,
+          );
           if (externalSignal?.aborted || state.cancelled) throw abortError(externalSignal);
           if (!gp.ok) {
             recordFailure(
@@ -288,10 +297,11 @@ export function createSearchChain(deps) {
             const rawCode = isEntryPhaseCode(outcome.error?.code) ? outcome.error.code : null;
             if (rawCode === null) throw outcome.error;
             const code = rawCode === ENTRY_CODES.PROXY ? ENTRY_CODES.NETWORK : rawCode;
+            // #88 第三批③：非 NETWORK 相位失败同样保留原码，并带钉死要素（强制代理事实+脱敏目标+安全原因）。
             const reason =
               code === ENTRY_CODES.NETWORK
                 ? `条目钉死仅代理：全局代理失败（${gp.target}，失败阶段：${rawCode}）`
-                : FAILURE_REASON[code](entry);
+                : `条目钉死仅代理：全局代理失败（${gp.target}，${FAILURE_REASON[code](entry)}）`;
             recordFailure(entry, code, reason);
             if (code === ENTRY_CODES.CONTENT_POLICY) break;
             continue;
@@ -341,13 +351,16 @@ export function createSearchChain(deps) {
               recordFailure(entry, ENTRY_CODES.NETWORK, "直连失败；剩余预算不足，未执行全局代理升级");
               continue;
             }
-            const gp = await resolveGlobalProxy(globalProxyRef);
+            // #88 第五批⑤：升级 resolve 与 remBeforeResolve 截止竞速；耗尽按不可读面收敛（零出站）。
+            const gp = await resolveGlobalProxy(globalProxyRef, remBeforeResolve, externalSignal);
             if (externalSignal?.aborted || state.cancelled) throw abortError(externalSignal);
             if (!gp.ok) {
               const reason =
-                gp.kind === "unreadable"
-                  ? "直连失败；全局升级已开启，全局代理凭据不可读，未执行升级（请在设置中重新保存全局代理地址）"
-                  : "直连失败；全局升级已开启，全局代理未配置或不可读，未执行升级（请在设置中重新保存全局代理地址）";
+                gp.kind === "expired"
+                  ? "直连失败；剩余预算不足，未执行全局代理升级"
+                  : gp.kind === "unreadable"
+                    ? "直连失败；全局升级已开启，全局代理凭据不可读，未执行升级（请在设置中重新保存全局代理地址）"
+                    : "直连失败；全局升级已开启，全局代理未配置或不可读，未执行升级（请在设置中重新保存全局代理地址）";
               recordFailure(entry, ENTRY_CODES.NETWORK, reason);
               continue;
             }
@@ -371,6 +384,7 @@ export function createSearchChain(deps) {
             });
             if (escOutcome.kind === "cancelled") throw abortError(externalSignal);
             if (escOutcome.kind === "timeout") {
+              escalationFailed = true;
               recordFailure(
                 entry,
                 ENTRY_CODES.TIMEOUT,
@@ -383,6 +397,7 @@ export function createSearchChain(deps) {
               const escRawCode = isEntryPhaseCode(escOutcome.error?.code) ? escOutcome.error.code : null;
               if (escRawCode === null) throw escOutcome.error;
               const reportedPhase = escRawCode === ENTRY_CODES.PROXY ? ENTRY_CODES.NETWORK : escRawCode;
+              escalationFailed = true;
               recordFailure(
                 entry,
                 ENTRY_CODES.NETWORK,
@@ -405,6 +420,11 @@ export function createSearchChain(deps) {
               });
               return escBuilt;
             }
+            // #88（lead 升裁·空结果可见性）：升级路径已实际出网但返回空——改道事实必须可查（attempts 呈现面）；
+            // 空成功终态对象形状由 FB-004 deepEqual 锁死，不得加键，故事实只入 attempts（失败终态经 WebError details 可见）。
+            attempts.push(
+              attemptOf(entry, "ESCALATED_EMPTY", `直连失败；经全局代理升级（${gp.target}）已出站但未返回结果`),
+            );
             anyExplicitEmpty = true;
             continue;
           }
@@ -480,11 +500,13 @@ export function createSearchChain(deps) {
           ),
         );
       }
+      // #88 第三批①：升级实际出站且失败终态带「升级失败」要素（仅呈现面）；OFF 态 escalationFailed 恒 false，逐字 legacy。
+      const escNote = escalationFailed ? "，含经全局代理升级仍失败条目" : "";
       if (stoppedByBudget) {
         return Promise.reject(
           new WebError(
             CHAIN_CODES.BUDGET_EXHAUSTED,
-            `总预算 ${totalBudget}ms 已耗尽且未获得有效来源（见 details.attempts 的逐条原因）`,
+            `总预算 ${totalBudget}ms 已耗尽且未获得有效来源${escNote}（见 details.attempts 的逐条原因）`,
             attempts,
           ),
         );
@@ -492,7 +514,7 @@ export function createSearchChain(deps) {
       return Promise.reject(
         new WebError(
           CHAIN_CODES.UPSTREAM_FAILURES,
-          "全链未获得有效来源：尝试过的条目均失败或被跳过（见 details.attempts 的逐条原因）",
+          `全链未获得有效来源：尝试过的条目均失败或被跳过${escNote}（见 details.attempts 的逐条原因）`,
           attempts,
         ),
       );
@@ -600,14 +622,45 @@ export function createSearchChain(deps) {
     });
   }
 
-  async function resolveGlobalProxy(ref) {
+  /** #88 第五批⑤（Refs #88）：全局引用 resolve 不得越过条目/总剩余预算，也不得逃脱宿主取消——
+   * 与预算截止（受控时钟定时器）及宿主 abort 信号竞速；耗尽即按不可读收敛（零出站）。 */
+  async function raceWithinBudget(promise, budgetLeftMs, signal) {
+    if (!promise || typeof promise.then !== "function") return promise;
+    let timerId;
+    const deadline = new Promise((resolve) => {
+      if (typeof budgetLeftMs === "number" && budgetLeftMs > 0) {
+        timerId = clock.setTimeout(() => resolve(RESOLVE_EXPIRED), budgetLeftMs);
+      } else {
+        resolve(RESOLVE_EXPIRED); // 剩余 ≤ 0：不等待任何 resolve
+      }
+    });
+    let abortListener;
+    const abortP = signal
+      ? new Promise((resolve) => {
+          if (signal.aborted) return resolve(RESOLVE_EXPIRED);
+          abortListener = () => resolve(RESOLVE_EXPIRED);
+          signal.addEventListener("abort", abortListener, { once: true });
+        })
+      : null;
+    let winner;
+    try {
+      winner = await Promise.race([promise, deadline, ...(abortP ? [abortP] : [])]);
+    } finally {
+      if (timerId !== undefined) clock.clearTimeout(timerId);
+      if (abortListener) signal.removeEventListener("abort", abortListener);
+    }
+    return winner;
+  }
+
+  async function resolveGlobalProxy(ref, budgetLeftMs, signal) {
     if (!ref || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref)) return { ok: false, kind: "missing" };
     let hit;
     try {
-      hit = await credentials?.resolve?.(ref);
+      hit = await raceWithinBudget(credentials?.resolve?.(ref), budgetLeftMs, signal);
     } catch {
       return { ok: false, kind: "unreadable" };
     }
+    if (hit === RESOLVE_EXPIRED) return { ok: false, kind: "expired" };
     const raw = typeof hit?.value === "string" ? hit.value.trim() : "";
     if (!raw) return { ok: false, kind: "missing" };
     let u;
