@@ -1231,9 +1231,15 @@ test("T10-1 堆帽 24 MiB：无限分配内存恶意脚本 → V8 OOM 快速以 
     Array.isArray(capturedArgs) && capturedArgs.includes("--max-old-space-size=24"),
     `spawn 参数须携带 24 MiB 堆帽 --max-old-space-size=24，实际：${JSON.stringify(capturedArgs)}`,
   );
+  // 内存边界两层都是设计内强制路径：24 MiB V8 堆帽自爆 → SIGABRT；
+  // 144 MiB RSS 看门狗（或宿主 cgroup OOM 先手）→ SIGKILL。
+  // 退出信号只标识哪层赢下竞态；安全契约由上方 TransportError/PAC_EVAL_FAILED/
+  // <8s/零出站断言钉死。三者之外（超时正常退出或 code 0）才是本测试要拒的。
   assert.ok(
-    exitInfo.signal === "SIGABRT" || (exitInfo.code !== null && exitInfo.code !== 0),
-    `堆帽 OOM 应使 worker 异常终止而非超时正常退出，实际：${JSON.stringify(exitInfo)}`,
+    exitInfo.signal === "SIGABRT" ||
+      exitInfo.signal === "SIGKILL" ||
+      (exitInfo.code !== null && exitInfo.code !== 0),
+    `堆帽 OOM 应使 worker 被 V8 堆帽或 RSS 看门狗异常终止而非超时正常退出，实际：${JSON.stringify(exitInfo)}`,
   );
   assert.equal(fetchFn.count(TARGET), 0, "求值失败后不得向目标出站");
 });
