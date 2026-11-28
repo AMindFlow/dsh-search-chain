@@ -43,10 +43,13 @@ const TOOL_TYPES = [
   "deepseek-agentic-search",
 ];
 const DEFAULT_TIMEOUT_MS = 25000;
+// #86 POOL-001/003：单条目凭据池（credentialRefs）上限（单一事实源 src/constants.js POOL_MAX；
+// 本文件为客户端内联镜像——client-entry 不 import src/，同步义务见 config-write-gate.md 修订注）。
+const POOL_MAX = 8;
 const SECRET_FIELD = /^(apikey|api_key|key|secret|token|password|auth|authorization)$/i;
-const HANDLED_ENTRY_FIELDS = ["id", "type", "name", "enabled", "credentialRef", "proxy"];
+const HANDLED_ENTRY_FIELDS = ["id", "type", "name", "enabled", "credentialRef", "credentialRefs", "proxy"];
 /** 表单管理的条目子字段（合并时覆盖；其余字段保留既有值）。 */
-const MANAGED_ENTRY_KEYS = ["id", "type", "name", "enabled", "credentialRef"];
+const MANAGED_ENTRY_KEYS = ["id", "type", "name", "enabled", "credentialRef", "credentialRefs"];
 /** 表单管理的顶层键：保存时恒产出 set（即便值未变）。 */
 const MANAGED_TOP_KEYS = ["useOfficialDeepSeekSearch", "timeoutMs"];
 
@@ -105,6 +108,41 @@ globalThis.window?.__ModuleLoader__?.load({
       throw invalid(`${w} 形态非法（须为代理 URL 字符串或 { pac }）`);
     }
 
+    // POOL-001/003/010（#86）凭据池双闸写侧：与 src/config.js normalizeCredentialRefs 逐字同形
+    // （文案与检查序一致；两闸双向全等由 pool-oracle-gates 钉）。
+    function normalizeCredentialRefs(rawRefs, { where, type, hasCredentialRef }) {
+      if (rawRefs === undefined) return undefined;
+      const isArray = Array.isArray(rawRefs);
+      if (hasCredentialRef && isArray && rawRefs.length > 0) {
+        throw invalid(`${where}.credentialRef 与 credentialRefs 互斥（两字段不得共存，请保留其一）`);
+      }
+      if (type === "bing" && isArray && rawRefs.length > 0) {
+        throw invalid(`${where} bing 类型免 key，不得配置 credentialRefs`);
+      }
+      if (!isArray) {
+        throw invalid(`${where}.credentialRefs 必须是数组（0–${POOL_MAX} 个凭据引用名）`);
+      }
+      if (rawRefs.length > POOL_MAX) {
+        throw invalid(`${where}.credentialRefs 超出池上限：实际 ${rawRefs.length} 个，上限 ${POOL_MAX} 个`);
+      }
+      const refs = [];
+      for (let j = 0; j < rawRefs.length; j += 1) {
+        const el = rawRefs[j];
+        if (typeof el !== "string" || el.trim() === "") {
+          throw invalid(`${where}.credentialRefs[${j}] 必须是非空白字符串（凭据引用名）`);
+        }
+        refs.push(el.trim());
+      }
+      for (let j = 0; j < refs.length; j += 1) {
+        for (let k = 0; k < j; k += 1) {
+          if (refs[j] === refs[k]) {
+            throw invalid(`${where}.credentialRefs[${j}] 与池内其他元素 trim 后重复（池内引用重复）`);
+          }
+        }
+      }
+      return refs.length > 0 ? refs : undefined;
+    }
+
     function normalizeEntry(raw, index) {
       const where = `entries[${index}]`;
       if (!isPlainObject(raw)) throw invalid(`${where} 必须是对象`);
@@ -123,6 +161,13 @@ globalThis.window?.__ModuleLoader__?.load({
         }
         out.credentialRef = raw.credentialRef.trim();
       }
+      // POOL-001/003/010：credentialRefs 池形态（旧形态单引用零变化；合法空数组省略该键）。
+      const refs = normalizeCredentialRefs(raw.credentialRefs, {
+        where,
+        type: raw.type,
+        hasCredentialRef: out.credentialRef !== undefined,
+      });
+      if (refs !== undefined) out.credentialRefs = refs;
       const proxy = normalizeProxy(raw.proxy, where);
       if (proxy !== undefined) out.proxy = proxy;
       for (const [k, v] of Object.entries(raw)) {
@@ -151,15 +196,21 @@ globalThis.window?.__ModuleLoader__?.load({
     }
 
     function validate(raw) {
+      let normalized;
       try {
-        return { ok: true, config: normalizeConfig(raw) };
+        normalized = normalizeConfig(raw);
       } catch (e) {
+        // #86 分叉规则（同 #88 PX 修订注所立）：新契约字段族（credentialRefs）违规 = 预检抛错，
+        // 写闸预检面（preCheck/commit 预检）直接 catch 呈现；legacy 字段违规维持返回形态 { ok:false, code, issues }。
+        if (e && typeof e.message === "string" && e.message.includes("credentialRefs")) throw e;
         return {
           ok: false,
           code: "CONFIG_INVALID",
           issues: [{ message: String((e && e.message) || "配置未通过校验") }],
         };
       }
+      // #86 Oracle 钉（POOL-001 两闸双向逐字段一致）：成功直接返回归一化配置（≡ 读闸 normalizeConfig 输出）。
+      return normalized;
     }
 
     function mergeEntry(prior, formEntry) {
@@ -479,6 +530,15 @@ globalThis.window?.__ModuleLoader__?.load({
       };
     }
 
+    // #86 POOL-008②/008④：离散提交（开关/重排/移除）的落盘行整形——
+    // 草稿默认占位 credentialRef:"" 不得复活成持久行键（POOL-008②「共存零落盘」）；
+    // credentialRefs 盘上形态原样携带（含损坏形态——写闸预检按盘上形态整单裁决，草稿层不得规整/丢弃）。
+    function persistCleanRow(e) {
+      const row = stripSecrets(isPlainObject(e) ? { ...e } : e);
+      if (row.credentialRef === "") delete row.credentialRef;
+      return row;
+    }
+
     function draftFrom(config) {
       const entries = Array.isArray(config.entries) ? config.entries.filter(isPlainObject) : [];
       return {
@@ -490,7 +550,7 @@ globalThis.window?.__ModuleLoader__?.load({
           }
           // proxy is a supported structured field; strip secret-shaped nested keys defensively.
           if (Object.prototype.hasOwnProperty.call(e, "proxy")) passthrough.proxy = stripSecrets(e.proxy);
-          return {
+          const row = {
             ...passthrough,
             id: String(e.id),
             type: typeof e.type === "string" ? e.type : TOOL_TYPES[0],
@@ -498,6 +558,9 @@ globalThis.window?.__ModuleLoader__?.load({
             enabled: e.enabled !== false,
             credentialRef: typeof e.credentialRef === "string" ? e.credentialRef : "",
           };
+          // #86 POOL-001/008④：credentialRefs 盘上形态显式进草稿（不经标量透传——数组会被丢，损坏形态即漏过写闸）。
+          if (e.credentialRefs !== undefined) row.credentialRefs = e.credentialRefs;
+          return row;
         }),
         useOfficial: config.useOfficialDeepSeekSearch !== false,
         timeoutText: config.timeoutMs === undefined ? "" : String(config.timeoutMs),
@@ -989,8 +1052,15 @@ globalThis.window?.__ModuleLoader__?.load({
             return;
           }
           const effective = { ...proj.base, ...proj.user };
-          const check = validate(effective);
-          const normalized = check.ok ? check.config : effective;
+          // #86 分叉规则：池字段族违规 validate 抛错——读回面就地转 legacy 返回形态（面板可见校验告警，
+          // 渲染链不得被拒绝对象击穿）；legacy 违规本就是返回形态。成功直返归一化配置。
+          let check;
+          try {
+            check = validate(effective);
+          } catch (e) {
+            check = { ok: false, code: "CONFIG_INVALID", issues: [{ message: String((e && e.message) || "配置未通过校验") }] };
+          }
+          const normalized = check && check.ok === false ? effective : check;
           // 二轮修复：权威快照同 tick 写入（先于 setModel）——任何 await 本 done 链尾的路径，读 latestRef 必为最新已读回视图。
           latestRef.current = { user: proj.user, base: proj.base, revision: proj.revision };
           setModel((m) => {
@@ -1028,9 +1098,12 @@ globalThis.window?.__ModuleLoader__?.load({
               }
             } else {
               // 初始挂载：SET-008 重挂校验（版本一致→回填+自动重开；冲突/外部删除→顶部告警，保留草稿，不静默丢弃/重放）。
+              // #86 分叉规则：仅 legacy 返回形态 { ok:false } 走校验告警分支（成功直返归一化对象）。
               sectionError = typeof proj.revision !== "number"
                 ? { text: "宿主投影缺少 revision，禁止保存（请重新打开设置）", issues: [] }
-                : check.ok ? null : { text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) };
+                : check && check.ok === false
+                  ? { text: "当前配置未通过校验，请修正后保存", issues: check.issues.map((i) => i.message) }
+                  : null;
               const overlay = draftCacheApply(draftCache, proj, draft);
               if (overlay) {
                 draft = overlay.draft;
@@ -1167,10 +1240,23 @@ globalThis.window?.__ModuleLoader__?.load({
           }
           if (!ops || ops.length === 0) return true; // 意图未变化：无需写
           // CFG-W-001 / CFG-W-002：所有离散写入在发出 mutate 前均须通过读闸等价预检。
+          // #86 分叉规则：池字段族违规在此抛错（同 buildOps 预检失败面呈现）；legacy 违规走返回形态分支。
           const nextUser = applyOpsToLayer(snap.user, ops);
           const nextEffective = { ...(isPlainObject(snap.base) ? snap.base : {}), ...nextUser };
-          const check = validate(nextEffective);
-          if (!check.ok) {
+          let check;
+          try {
+            check = validate(nextEffective);
+          } catch (err) {
+            if (!alive.current) return false;
+            if (onGateReject) onGateReject(snap);
+            setModel((m) => ({
+              ...m,
+              savedNotice: null,
+              sectionError: { text: `无法保存：${String((err && err.message) || err || "配置未通过校验")}`, issues: [] },
+            }));
+            return false;
+          }
+          if (check && check.ok === false) {
             if (!alive.current) return false;
             if (onGateReject) onGateReject(snap);
             setModel((m) => ({
@@ -1289,7 +1375,7 @@ globalThis.window?.__ModuleLoader__?.load({
           const idx = list.findIndex((e) => isPlainObject(e) && sameEntryId(e.id, entryId)); // #55：entryId 为草稿（trim）形态，持久行可能带首尾空白
           if (idx < 0) return []; // 未提交新条目无持久化变更
           if ((list[idx].enabled !== false) === target) return []; // 意图未变化：无需写（对照有效值）
-          const cleanList = list.map((e) => stripSecrets(isPlainObject(e) && sameEntryId(e.id, entryId) ? { ...e, enabled: target } : e));
+          const cleanList = list.map((e) => persistCleanRow(isPlainObject(e) && sameEntryId(e.id, entryId) ? { ...e, enabled: target } : e));
           return toOps({ entries: cleanList }, { entries: userEntriesOf(m) });
         }, null); // v3 用户反馈（V3-3）：开关免提示——开关状态呈现即反馈（落盘语义不变）
       };
@@ -1320,7 +1406,7 @@ globalThis.window?.__ModuleLoader__?.load({
           const idx = list.findIndex((e) => isPlainObject(e) && sameEntryId(e.id, entryId)); // #55
           if (idx < 0) return [];
           const hasUserEntries = isPlainObject(m && m.user) && Array.isArray(m.user.entries);
-          const remaining = list.filter((e) => !(isPlainObject(e) && sameEntryId(e.id, entryId))).map(stripSecrets);
+          const remaining = list.filter((e) => !(isPlainObject(e) && sameEntryId(e.id, entryId))).map(persistCleanRow);
           return toOps({ entries: remaining }, hasUserEntries ? { entries: user } : {});
         }, "已保存设置。", (snap) => {
           const restored = draftFrom({ entries: effectiveEntriesOf(snap) }).entries;
@@ -1346,8 +1432,8 @@ globalThis.window?.__ModuleLoader__?.load({
         commitDiscrete((m) => {
           const user = userEntriesOf(m);
           const list = effectiveEntriesOf(m);
-          const cleanList = list.map(stripSecrets);
-          // 先跑读闸等价校验（捕捉重复 id / null 字段 / 非对象项），防止在非法配置上静默吞错返回 []。
+          const cleanList = list.map(persistCleanRow);
+          // 先跑读闸等价校验（捕捉重复 id / null 字段 / 非对象项、#86 损坏池形态），防止在非法配置上静默吞错返回 []。
           normalizeConfig({ entries: cleanList });
           const present = new Set(cleanList.map((e) => normEntryId(e.id))); // #55：持久行 id 可能带首尾空白，草稿 id 为 trim 形态
           const targetIds = ids.filter((id) => present.has(normEntryId(id)));
@@ -1514,8 +1600,10 @@ globalThis.window?.__ModuleLoader__?.load({
             const preCandidate = candidateEntriesFor(snap, entry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef, proxyIntent);
             const baseObj = isPlainObject(snap.base) ? snap.base : {};
             const userObj = isPlainObject(snap.user) ? snap.user : {};
+            // #86 分叉规则：池字段族违规 validate 直接抛错（本 try 的 catch 面呈现，零凭据写入）；
+            // legacy 违规返回 { ok:false } 走既有文案分支。
             const preCheck = validate({ ...baseObj, ...{ ...userObj, entries: preCandidate } });
-            if (!preCheck.ok) throw new Error(`校验未通过：${preCheck.issues.map((i) => i.message).join("；")}`);
+            if (preCheck && preCheck.ok === false) throw new Error(`校验未通过：${preCheck.issues.map((i) => i.message).join("；")}`);
             if (!singleEntryDiff({ entries: effectiveEntriesOf(snap) }, preCandidate, boundId)) {
               throw new Error("提交目标与编辑器绑定条目不一致（持久快照漂移），本次写入已拒绝；请重新保存");
             }
@@ -1734,8 +1822,14 @@ globalThis.window?.__ModuleLoader__?.load({
         // V5-7（Issue #58）：触碰后的代理值同样进实时校验门（与名称门/凭据门同判据）——
         // normalizeProxy 文案经 issues 原样呈现，非法值期间提交钮禁用（提交时兜底同判据）。
         const proxyIntent = proxyIntentOf(editorEntry.id);
-        const check = validate({ ...model.base, ...{ ...model.user, entries: candidateEntriesFor(model, editorEntry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef, proxyIntent) } });
-        if (!check.ok) return { text: "无法提交：配置校验未通过", issues: check.issues.map((i) => i.message) };
+        // #86 分叉规则：池字段族违规 validate 抛错（渲染期不得外逃，就地转 issues 呈现）。
+        let check;
+        try {
+          check = validate({ ...model.base, ...{ ...model.user, entries: candidateEntriesFor(model, editorEntry, writesKey ? "SEARCH_CHAIN_CREDENTIAL_REF" : credRef, proxyIntent) } });
+        } catch (e) {
+          return { text: "无法提交：配置校验未通过", issues: [String((e && e.message) || "配置未通过校验")] };
+        }
+        if (check && check.ok === false) return { text: "无法提交：配置校验未通过", issues: check.issues.map((i) => i.message) };
         return null;
       })();
       const editorProblem = model.editorError || editorBlock;

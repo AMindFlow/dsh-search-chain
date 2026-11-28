@@ -16,6 +16,7 @@ import {
   KEY_ENV_BY_TYPE,
   KEYLESS_TYPES,
   LEGACY_YAML_SUPPLIERS,
+  POOL_MAX,
   TOOL_TYPES,
   TRUSTED_ENV_KEYS,
   supplierOfToolType,
@@ -26,6 +27,7 @@ export {
   TOOL_TYPES,
   KEY_ENV_BY_TYPE,
   KEYLESS_TYPES,
+  POOL_MAX,
   TRUSTED_ENV_KEYS,
   LEGACY_YAML_SUPPLIERS,
   CONFIG_CODES,
@@ -42,7 +44,46 @@ export class ConfigError extends Error {
 }
 
 const SECRET_FIELD = /^(apikey|api_key|key|secret|token|password|auth|authorization)$/i;
-const HANDLED_ENTRY_FIELDS = new Set(["id", "type", "name", "enabled", "credentialRef", "proxy"]);
+const HANDLED_ENTRY_FIELDS = new Set(["id", "type", "name", "enabled", "credentialRef", "credentialRefs", "proxy"]);
+
+/**
+ * POOL-001/003/010（#86）凭据池双闸读侧：credentialRefs 形态裁决（写闸镜像在 client-entry
+ * contract.normalizeEntry，文案与检查序必须逐字一致——两闸双向全等由 pool-oracle-gates 钉）。
+ * 检查序：互斥 → bing 免 key → 数组 → 上限 → 元素 → trim 去重。
+ * @returns {string[]|undefined} trim 后原序引用；空/缺省返回 undefined（省略该键）。
+ */
+function normalizeCredentialRefs(rawRefs, { where, type, hasCredentialRef }) {
+  if (rawRefs === undefined) return undefined;
+  const isArray = Array.isArray(rawRefs);
+  if (hasCredentialRef && isArray && rawRefs.length > 0) {
+    throw invalid(`${where}.credentialRef 与 credentialRefs 互斥（两字段不得共存，请保留其一）`);
+  }
+  if (type === "bing" && isArray && rawRefs.length > 0) {
+    throw invalid(`${where} bing 类型免 key，不得配置 credentialRefs`);
+  }
+  if (!isArray) {
+    throw invalid(`${where}.credentialRefs 必须是数组（0–${POOL_MAX} 个凭据引用名）`);
+  }
+  if (rawRefs.length > POOL_MAX) {
+    throw invalid(`${where}.credentialRefs 超出池上限：实际 ${rawRefs.length} 个，上限 ${POOL_MAX} 个`);
+  }
+  const refs = [];
+  for (let j = 0; j < rawRefs.length; j += 1) {
+    const el = rawRefs[j];
+    if (typeof el !== "string" || el.trim() === "") {
+      throw invalid(`${where}.credentialRefs[${j}] 必须是非空白字符串（凭据引用名）`);
+    }
+    refs.push(el.trim());
+  }
+  for (let j = 0; j < refs.length; j += 1) {
+    for (let k = 0; k < j; k += 1) {
+      if (refs[j] === refs[k]) {
+        throw invalid(`${where}.credentialRefs[${j}] 与池内其他元素 trim 后重复（池内引用重复）`);
+      }
+    }
+  }
+  return refs.length > 0 ? refs : undefined;
+}
 
 function invalid(message) {
   return new ConfigError(CONFIG_CODES.INVALID, message);
@@ -106,6 +147,14 @@ function normalizeEntry(raw, index) {
     }
     out.credentialRef = raw.credentialRef.trim();
   }
+  // POOL-001/003/010：credentialRefs 池形态（旧形态 credentialRef 单引用行为零变化；
+  // 合法空数组等同省略——旧形态条目不得被注入 credentialRefs 键）。
+  const refs = normalizeCredentialRefs(raw.credentialRefs, {
+    where,
+    type: raw.type,
+    hasCredentialRef: out.credentialRef !== undefined,
+  });
+  if (refs !== undefined) out.credentialRefs = refs;
   const proxy = normalizeProxy(raw.proxy, where);
   if (proxy !== undefined) out.proxy = proxy;
 
