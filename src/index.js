@@ -87,6 +87,11 @@ const ENTRY = z
     name: z.string(),
     enabled: z.boolean(),
     credentialRef: z.string().role("credential-ref"),
+    // #86 POOL：多 key 池引用数组（0–8 个凭据引用名；与 credentialRef 互斥归 normalizeConfig 深校验，
+    // schema 面只做形状/类型/上限）。role 不设（沿用 credentialRef 单节点 role 约定，旧节点零改动）。
+    // schemastery 数组节点内置 meta.default=[]（缺键 parse 会凭空注入 []）；.default(undefined)
+    // 显式撤销该缺省——schema 面不补默认值（SET-005/FB-003 分界不变，缺省归 normalizeConfig）。
+    credentialRefs: z.array(z.string()).max(8).default(undefined),
     proxy: z.union([z.string(), z.object({ pac: z.string() })]),
   })
   .required();
