@@ -1,6 +1,6 @@
 {
   "name": "dsh-search-chain",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "description": "DSH 网页搜索链插件（自定义多供应商回退链）",
