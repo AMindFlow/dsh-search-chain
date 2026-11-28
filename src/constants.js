@@ -92,6 +92,16 @@ export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 /** FB-003 默认总预算（毫秒）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
 
+/** PX-006 条目级 proxyPin 三态枚举（与 test/helpers/contract.js、src/settings/catalog.js 同步）。 */
+export const PROXY_PINS = Object.freeze({
+  INHERIT: "inherit",
+  DIRECT_ONLY: "directOnly",
+  PROXY_ONLY: "proxyOnly",
+});
+export const PROXY_PIN_VALUES = Object.freeze(Object.values(PROXY_PINS));
+/** PX-001 默认全局代理凭据引用名（POSIX 标识符）。 */
+export const DEFAULT_GLOBAL_PROXY_REF = "search_chain_global_proxy";
+
 /** 传输层释放语义码（src/transport.js fetch() 的 closed 分支）。 */
 export const TRANSPORT_CODES = Object.freeze({
   RELEASED: "TRANSPORT_RELEASED",

@@ -80,6 +80,15 @@ export const ROLE = Object.freeze({
   saveStatus: "save-status",
   saveError: "save-error",
   timeout: "timeout",
+  // A-PX-2（#88 面板新锚点，仅增键）：全局升级区块 + 条目卡钉死控件。
+  escalationToggle: "escalation-toggle",
+  escalationSave: "escalation-save",
+  globalProxyInput: "global-proxy-input",
+  globalProxyStatus: "global-proxy-status",
+  pinDirect: "pin-direct",
+  pinInherit: "pin-inherit",
+  pinProxy: "pin-proxy",
+  pinBadge: "pin-badge",
 });
 
 export function clone(v) {
