@@ -443,7 +443,16 @@ globalThis.window?.__ModuleLoader__?.load({
       if (!cache || !proj || typeof proj.revision !== "number" || cache.size === 0) return null;
       let entries = draft.entries;
       const keys = {};
-      const poolKeys = {}; // #86 POOL-009：槽位 key 缓冲复原（entryId → 槽位值数组，只写不回显）
+      const poolKeys = {}; // #86 POOL-009 + sol P0：槽位缓冲复原（entryId → 带身份槽位数组，只写不回显）
+      const credDirty = {}; // sol P1：显式触碰/增删标志复原（删槽/清空意图不靠明文非空反推）
+      // 槽位记录归一：对象 {value, keptRef} 原样（身份保留）；旧形态字符串值 → 无身份新槽
+      // （历史缓存降级语义：留空=丢弃、填入=新 ref，不做身份臆测）。
+      const normSlots = (raw) => {
+        if (!Array.isArray(raw) || raw.length === 0) return undefined;
+        return raw.map((s) => (isPlainObject(s)
+          ? { value: typeof s.value === "string" ? s.value : "", keptRef: typeof s.keptRef === "string" && s.keptRef !== "" ? s.keptRef : null }
+          : { value: typeof s === "string" ? s : "", keptRef: null }));
+      };
       let editingId = null;
       const conflicts = [];
       for (const [id, rec] of cache) {
@@ -459,7 +468,9 @@ globalThis.window?.__ModuleLoader__?.load({
           if (existing) { conflicts.push({ text: `新条目「${label}」：当前设置已存在同 id 条目，按版本冲突处理`, kind: "version" }); continue; }
           entries = [...entries, { id, type: rec.type, name: (rec.fields && rec.fields.name) ?? "", enabled: true, credentialRef: (rec.fields && rec.fields.credentialRef) ?? "" }];
           keys[id] = rec.key ?? "";
-          poolKeys[id] = Array.isArray(rec.poolKeys) ? rec.poolKeys.slice() : [rec.key ?? ""];
+          const createdSlots = normSlots(rec.poolKeys) ?? [{ value: rec.key ?? "", keptRef: null }];
+          poolKeys[id] = createdSlots;
+          if (rec.credDirty) credDirty[id] = true;
           if (!editingId) editingId = id;
           continue;
         }
@@ -477,8 +488,9 @@ globalThis.window?.__ModuleLoader__?.load({
             })()
           : e));
         if (rec.key) keys[id] = rec.key;
-        if (Array.isArray(rec.poolKeys) && rec.poolKeys.length) poolKeys[id] = rec.poolKeys.slice();
-        else if (rec.key) poolKeys[id] = [rec.key];
+        const editedSlots = normSlots(rec.poolKeys) ?? (rec.key ? [{ value: rec.key, keptRef: null }] : undefined);
+        if (editedSlots) poolKeys[id] = editedSlots;
+        if (rec.credDirty) credDirty[id] = true;
         if (!editingId) editingId = id;
         if (typeof rec.baseRevision !== "number" || rec.baseRevision !== proj.revision) {
           conflicts.push({ text: `条目「${label}」：起草后设置版本已变化；提交即按最新版本写入，或点击取消丢弃草稿`, kind: "version" });
@@ -489,6 +501,7 @@ globalThis.window?.__ModuleLoader__?.load({
         draft: { ...draft, entries, timeoutText: globalRec ? globalRec.timeoutText : draft.timeoutText },
         keys,
         poolKeys,
+        credDirty,
         editingId,
         conflicts,
       };
@@ -506,6 +519,9 @@ globalThis.window?.__ModuleLoader__?.load({
       reorderFocusTarget,
       // 四轮修复（B-007/009/019 污染源）：新建/编辑提交名称门（纯函数面，测试直测）。
       entryNameGate,
+      // sol P0/P1：凭据形态纯函数面（槽位稳定身份映射 + 显式触碰）：重挂复原→提交链直测
+      // （组件内「卸载→重挂」不可达，SET-008 复原提交语义按此面单测，同 draftCacheApply 先例）。
+      credFormOf,
     });
 
     // ───────────────────────────── 组件 ─────────────────────────────
@@ -945,14 +961,15 @@ globalThis.window?.__ModuleLoader__?.load({
      * - credentialRef 输入相对持久值被改动 且 key 区未触碰 → single(新值)（v0.2.0：ref 输入=显式 legacy 形态）；
      * - key 区未触碰 且 有存量引用 → pool(existingRefs)：legacy 单引用 = 1 元池惰性迁移（POOL-002③，
      *   同提交附带旧键 unset）；池条目 = 池原样（零 diff）；
-     * - key 区触碰 → 按槽位录入序：非空槽位 = 新 ref（同值槽位共享同一 ref，POOL-009⑤ 去重语义，
-     *   重复 ref 由写闸 preCheck 拒）；空槽位 = 保留存量池同序号引用（序号无存量 = 丢弃该槽）；
+     * - key 区触碰 → 按槽位录入序（sol P0 稳定身份）：非空槽位 = 新 ref（同值槽位共享同一 ref，
+     *   POOL-009⑤ 去重语义，重复 ref 由写闸 preCheck 拒；新值顶替该槽位身份）；空槽位 = 保留槽位
+     *   自带身份 keptRef（原引用），无身份（新槽）= 丢弃该槽——不再按删除后的新下标回绑存量序；
      *   持久池条目恒 pool 形态（删槽后单留存仍为 1 元池，POOL-009②）；legacy/新建：
      *   1 引用 = single（v0.2.0 单 key 形态不变）、≥2 = pool、0 = 无字段。
      * @param {object} entry 草稿行（credentialRef 输入现值）
      * @param {object|null} persisted 持久行（引用存量真值源；新建=null）
-     * @param {string[]} slotVals 槽位值（只写缓冲）
-     * @param {boolean} keyTouched key 区是否被触碰（输入/增槽/删槽/SET-008 复原非空值）
+     * @param {Array<string|{value:string, keptRef:string|null}>} slotVals 槽位缓冲（只写；对象带身份）
+     * @param {boolean} keyTouched key 区是否被触碰（显式标志：输入/增槽/删槽/SET-008 复原 credDirty）
      * @param {(value: string, ord: number) => string} newRefOf 新值→ref 生成器（提交=受控唯一；渲染门=占位符）
      */
     function credFormOf(entry, persisted, slotVals, keyTouched, newRefOf) {
@@ -966,15 +983,19 @@ globalThis.window?.__ModuleLoader__?.load({
       if (!keyTouched) return existingRefs.length > 0 ? { kind: "pool", refs: existingRefs } : null;
       const refs = [];
       const valueRef = new Map();
-      (Array.isArray(slotVals) ? slotVals : []).forEach((raw, i) => {
-        const v = (typeof raw === "string" ? raw : "").trim();
+      (Array.isArray(slotVals) ? slotVals : []).forEach((raw) => {
+        // sol P0：按稳定身份映射——空槽位保留槽位自带的 keptRef（原引用），不再按删除后的
+        // 新下标回绑 existingRefs[i]（旧 bug：池 [A,B,C] 删头保存掉的是 C 而非 A）。
+        const s = isPlainObject(raw) ? raw : null;
+        const v = (s ? (typeof s.value === "string" ? s.value : "") : (typeof raw === "string" ? raw : "")).trim();
         if (v === "") {
-          if (i < existingRefs.length) refs.push(existingRefs[i]); // 空槽位保留存量同序号引用
+          const kept = s && typeof s.keptRef === "string" ? s.keptRef.trim() : "";
+          if (kept !== "") refs.push(kept); // 空槽位=保留原引用身份；无身份（新槽）=丢弃该槽
           return;
         }
         let r = valueRef.get(v);
         if (r === undefined) { r = newRefOf(v, refs.length); valueRef.set(v, r); }
-        refs.push(r);
+        refs.push(r); // 非空值=新受控 ref（同值槽位共享；新值顶替该槽位身份）
       });
       if (persistedIsPool) return refs.length > 0 ? { kind: "pool", refs } : null;
       if (refs.length === 1) return { kind: "single", ref: refs[0] };
@@ -1088,7 +1109,7 @@ globalThis.window?.__ModuleLoader__?.load({
       const cacheBaseRevision = (m) => (typeof latestRef.current.revision === "number"
         ? latestRef.current.revision
         : (typeof m.revision === "number" ? m.revision : undefined));
-      const syncEntryCache = (m, id, entry, keyVal, poolSlots) => {
+      const syncEntryCache = (m, id, entry, keyVal, poolSlots, credDirty) => {
         if (!entry) return;
         const rec = draftCache.get(id) || {
           mode: entryIsPersisted(m, entry) ? "edit" : "create",
@@ -1102,6 +1123,8 @@ globalThis.window?.__ModuleLoader__?.load({
         if (Array.isArray(entry.credentialRefs) && entry.credentialRefs.length > 0) rec.fields.credentialRefs = entry.credentialRefs.slice();
         rec.key = keyVal ?? "";
         if (Array.isArray(poolSlots) && poolSlots.length > 0) rec.poolKeys = poolSlots.slice();
+        // sol P1：显式触碰/增删标志随缓存存——复原提交的删槽/清空意图不依赖明文是否非空反推。
+        if (credDirty) rec.credDirty = true;
         draftCache.set(id, rec);
       };
       const syncGlobalCache = (m, timeoutText) => {
@@ -1145,10 +1168,10 @@ globalThis.window?.__ModuleLoader__?.load({
             const mergeOverlayBuffers = (overlay) => {
               const poolKeys = { ...m.poolKeys };
               const credTouched = { ...m.credTouched };
-              for (const [id, slots] of Object.entries(overlay.poolKeys || {})) {
-                poolKeys[id] = slots;
-                if (slots.some((v) => typeof v === "string" && v.trim() !== "")) credTouched[id] = true;
-              }
+              for (const [id, slots] of Object.entries(overlay.poolKeys || {})) poolKeys[id] = slots;
+              // sol P1：触碰复原只认显式标志（rec.credDirty）——删槽后全空保存不得被「明文为空」
+              // 反推成未触碰（否则删槽意图在重挂后静默丢失，保存零 mutate）。
+              for (const id of Object.keys(overlay.credDirty || {})) credTouched[id] = true;
               return { poolKeys, credTouched };
             };
             let editingId = keepStatus ? m.editingId : null;
@@ -1395,26 +1418,32 @@ globalThis.window?.__ModuleLoader__?.load({
           // #86 POOL-009：非 key 字段变更同样同步槽位缓冲（SET-008 记录不丢 key 草稿）。
           const nextEntry = { ...entry, [field]: value };
           const slots = poolSlotsOf(nextEntry);
-          const keyVal = slots.map((v) => (typeof v === "string" ? v : "")).find((v) => v.trim() !== "") ?? "";
+          const keyVal = slots.map((s) => (s && typeof s.value === "string" ? s.value : "")).find((v) => v.trim() !== "") ?? "";
           syncEntryCache(model, id, nextEntry, keyVal, slots);
         }
       };
-      // #86 POOL-009：池槽位默认数——keyed 类型 = 持久池规模（≥1），其余 1（legacy 单槽）；
-      // 免 key 类型（bing）= 0 槽（编辑器无 key 输入与槽位动作，POOL-010① 面板面）。
+      // #86 POOL-009 + sol P0（稳定身份）：槽位 = { value: 只写明文, keptRef: 既有引用身份 | null }。
+      // keptRef 把槽位与持久引用绑定：删槽=连身份一起删、保存按身份映射 ref 序列（不再按删除后
+      // 的新下标重绑）；新槽/新建条目 keptRef=null（留空=丢弃、填入=新受控 ref）。
+      // 默认数——keyed 类型 = 持久池规模（≥1，逐引用带身份），无池时 1（legacy 单槽带 credentialRef
+      // 身份；新建条目=null）；免 key 类型（bing）= 0 槽（POOL-010① 面板面）。
       const defaultPoolSlots = (entry) => {
         if (!entry || !KEYED_TYPES.includes(entry.type)) return [];
         const refs = Array.isArray(entry.credentialRefs) ? entry.credentialRefs.filter((r) => typeof r === "string" && r !== "") : [];
-        return new Array(Math.min(Math.max(refs.length, 1), POOL_MAX)).fill("");
+        if (refs.length > 0) return refs.slice(0, POOL_MAX).map((ref) => ({ value: "", keptRef: ref }));
+        const legacyRef = typeof entry.credentialRef === "string" && entry.credentialRef !== "" ? entry.credentialRef : null;
+        return [{ value: "", keptRef: legacyRef }];
       };
       const poolSlotsOf = (entry) => {
         if (!entry) return [];
         const rec = model.poolKeys[entry.id];
-        return Array.isArray(rec) && rec.length > 0 ? rec : defaultPoolSlots(entry);
+        return Array.isArray(rec) && rec.length > 0 && isPlainObject(rec[0]) ? rec : defaultPoolSlots(entry);
       };
-      // SET-008 同步：key 记录保留首非空槽位值（legacy 兼容面），新增 poolKeys 槽位数组。
-      const syncPoolCache = (entry, id, slots) => {
-        const keyVal = slots.map((v) => (typeof v === "string" ? v : "")).find((v) => v.trim() !== "") ?? "";
-        syncEntryCache(model, id, entry, keyVal, slots);
+      // SET-008 同步：key 记录保留首非空槽位值（legacy 兼容面）；poolKeys 存带身份槽位；
+      // credDirty=显式触碰/增删标志（sol P1：复原提交须保留删槽语义，不得从明文是否非空反推）。
+      const syncPoolCache = (entry, id, slots, credDirty) => {
+        const keyVal = slots.map((s) => (s && typeof s.value === "string" ? s.value : "")).find((v) => v.trim() !== "") ?? "";
+        syncEntryCache(model, id, entry, keyVal, slots, credDirty);
       };
       const updatePoolKey = (id, idx, value) => {
         if (lockRef.current) return;
@@ -1423,9 +1452,9 @@ globalThis.window?.__ModuleLoader__?.load({
         const cur = poolSlotsOf(entry);
         if (!Number.isInteger(idx) || idx < 0 || idx >= cur.length) return;
         const next = cur.slice();
-        next[idx] = typeof value === "string" ? value : "";
+        next[idx] = { ...next[idx], value: typeof value === "string" ? value : "" }; // 身份不动，只写值
         setModel((m) => ({ ...m, editorError: null, poolKeys: { ...m.poolKeys, [id]: next }, credTouched: { ...m.credTouched, [id]: true } }));
-        syncPoolCache(entry, id, next);
+        syncPoolCache(entry, id, next, true);
       };
       const addPoolSlot = (id) => {
         if (lockRef.current) return;
@@ -1433,9 +1462,9 @@ globalThis.window?.__ModuleLoader__?.load({
         if (!entry) return;
         const cur = poolSlotsOf(entry);
         if (cur.length >= POOL_MAX) return; // POOL-009⑤b：8 槽为上限（按钮同判据禁用）
-        const next = [...cur, ""];
+        const next = [...cur, { value: "", keptRef: null }]; // 新槽无身份：留空=丢弃、填入=新 ref
         setModel((m) => ({ ...m, editorError: null, poolKeys: { ...m.poolKeys, [id]: next }, credTouched: { ...m.credTouched, [id]: true } }));
-        syncPoolCache(entry, id, next);
+        syncPoolCache(entry, id, next, true);
       };
       const removePoolSlot = (id, idx) => {
         if (lockRef.current) return;
@@ -1443,9 +1472,9 @@ globalThis.window?.__ModuleLoader__?.load({
         if (!entry) return;
         const cur = poolSlotsOf(entry);
         if (cur.length <= 1 || !Number.isInteger(idx)) return; // keyed 条目恒保留至少 1 槽
-        const next = cur.filter((_, i) => i !== idx);
+        const next = cur.filter((_, i) => i !== idx); // sol P0：身份随槽位删除，剩余槽位身份不重绑
         setModel((m) => ({ ...m, editorError: null, poolKeys: { ...m.poolKeys, [id]: next }, credTouched: { ...m.credTouched, [id]: true } }));
-        syncPoolCache(entry, id, next);
+        syncPoolCache(entry, id, next, true);
       };
       // V5-7（Issue #58）：代理输入变更——只更新明文缓冲并清除该编辑器错误态。
       // 缓冲不进 SET-008 草稿缓存（缓存记录 shape 不变）；后台读回/切换条目不清缓冲（与 keys 同）。
@@ -1643,7 +1672,7 @@ globalThis.window?.__ModuleLoader__?.load({
         const name = entry.name === oldLabel ? newLabel : entry.name;
         // #86 POOL-009：厂商切换时槽位缓冲同保（缓存记录 key 面取首非空槽位值，legacy 兼容）。
         const curSlots = Array.isArray(model.poolKeys[id]) && model.poolKeys[id].length > 0 ? model.poolKeys[id] : [];
-        const keyVal = curSlots.map((v) => (typeof v === "string" ? v : "")).find((v) => v.trim() !== "") ?? (typeof model.keys[id] === "string" ? model.keys[id] : "");
+        const keyVal = curSlots.map((s) => (s && typeof s.value === "string" ? s.value : "")).find((v) => v.trim() !== "") ?? (typeof model.keys[id] === "string" ? model.keys[id] : "");
         setModel((m) => ({
           ...m,
           editorError: null,
@@ -1722,8 +1751,9 @@ globalThis.window?.__ModuleLoader__?.load({
         const slotVals = Array.isArray(model.poolKeys[boundId]) && model.poolKeys[boundId].length > 0
           ? model.poolKeys[boundId]
           : (typeof model.keys[boundId] === "string" && model.keys[boundId] !== "" ? [model.keys[boundId]] : []);
-        const keyTouched = Boolean(model.credTouched?.[boundId])
-          || slotVals.some((v) => (typeof v === "string" ? v : "").trim() !== "");
+        // sol P1：触碰判定只认显式标志 credTouched（输入/增槽/删槽/SET-008 复原置位），
+        // 不从明文是否非空反推——删槽后全空仍须按「已触碰」重放删除意图。
+        const keyTouched = Boolean(model.credTouched?.[boundId]);
         // V5-7（Issue #58）：代理三态意图（未触碰=原样保留/清空=删除/非空=写入）；非法形态由下方
         // validate（normalizeProxy 权威）拦截，错误文案经 catch 落到既有保存错误面。
         const proxyIntent = proxyIntentOf(boundId);
@@ -1806,7 +1836,7 @@ globalThis.window?.__ModuleLoader__?.load({
             if (!alive.current) return;
             // #86：错误文案脱敏面含全部槽位明文（不只单 key 缓冲）；失败不触碰任何已持久路由/池值。
             let message = String((err && err.message) || err || "保存失败");
-            const secrets = [...Object.values(model.keys), ...Object.values(model.poolKeys || {}).flat()];
+            const secrets = [...Object.values(model.keys), ...Object.values(model.poolKeys || {}).flat().map((s) => (s && typeof s.value === "string" ? s.value : ""))];
             for (const secret of secrets) {
               if (typeof secret === "string" && secret.trim()) message = message.replaceAll(secret.trim(), "[redacted]");
             }
@@ -1995,8 +2025,8 @@ globalThis.window?.__ModuleLoader__?.load({
         // #86 POOL-009：凭据门与提交共用 credFormOf 判据（渲染门新 ref 用占位符，零副作用）；
         // 同值槽位占位符去重后呈重复 ref → validate 池违规禁提交（POOL-009⑤ 实时面）。
         const rSlotVals = poolSlotsOf(editorEntry);
-        const rKeyTouched = Boolean(model.credTouched?.[editorEntry.id])
-          || rSlotVals.some((v) => (typeof v === "string" ? v : "").trim() !== "");
+        // sol P1：与提交同判据——触碰只认显式标志，不从明文非空反推（删槽后全空仍禁不得按未触碰放行）。
+        const rKeyTouched = Boolean(model.credTouched?.[editorEntry.id]);
         // 免 key 类型（bing）ref 输入不进渲染面 → 缓存 ref 不阻塞（v5 切厂商面，与 v0.2.0 同语义）。
         const rRefInput = KEYED_TYPES.includes(editorEntry.type) ? (editorEntry.credentialRef ?? "").trim() : "";
         if (!rKeyTouched && rRefInput && !POSIX_REF.test(rRefInput)) {
@@ -2050,24 +2080,34 @@ globalThis.window?.__ModuleLoader__?.load({
         KEYED_TYPES.includes(editorEntry.type) ? (() => {
           const slots = poolSlotsOf(editorEntry);
           return React.createElement("div", { className: "sc-key-slots" },
-            slots.map((v, i) => React.createElement("label", { className: "sc-field", key: `key-slot-${i}` },
-              React.createElement("span", { className: "sc-field-label" }, i === 0 ? "API key（仅写入，不会回显）" : `第 ${i + 1} 把 key（仅写入，不会回显）`),
-              React.createElement("div", { className: "sc-key-slot-row" },
-                React.createElement("input", {
-                  className: "sc-input", type: "password", autoComplete: "new-password",
-                  "data-role": "field", "data-field": "key", "data-slot": String(i), "data-entry-id": editorEntry.id, disabled: locked,
-                  value: v,
-                  placeholder: i === 0 ? "输入新 key；留空则保留现有凭据" : "输入新 key；留空则丢弃该槽",
-                  onChange: (ev) => updatePoolKey(editorEntry.id, i, ev.target.value),
-                }),
-                slots.length > 1 ? React.createElement("button", {
-                  className: "sc-button sc-button-secondary", type: "button",
-                  "data-role": "key-remove", "data-entry-id": editorEntry.id, "data-slot": String(i),
-                  disabled: locked || model.busy || model.editorBusy,
-                  onClick: () => removePoolSlot(editorEntry.id, i),
-                }, "移除") : null,
-              ),
-            )),
+            slots.map((s, i) => {
+              // sol P0/P2：逐槽状态——已存槽（带引用身份 keptRef）显示「已保存（只写）」状态标
+              // 且 placeholder 提示留空保留；新槽（无身份）placeholder 提示留空丢弃。值恒只写不回显。
+              const sv = isPlainObject(s) ? (typeof s.value === "string" ? s.value : "") : (typeof s === "string" ? s : "");
+              const kept = !!(isPlainObject(s) && typeof s.keptRef === "string" && s.keptRef !== "");
+              return React.createElement("label", { className: "sc-field", key: `key-slot-${i}` },
+                React.createElement("span", { className: "sc-field-label" }, i === 0 ? "API key（仅写入，不会回显）" : `第 ${i + 1} 把 key（仅写入，不会回显）`),
+                React.createElement("div", { className: "sc-key-slot-row" },
+                  React.createElement("input", {
+                    className: "sc-input", type: "password", autoComplete: "new-password",
+                    "data-role": "field", "data-field": "key", "data-slot": String(i), "data-entry-id": editorEntry.id, disabled: locked,
+                    value: sv,
+                    placeholder: kept ? "已有槽：留空保留" : "新槽：留空丢弃",
+                    onChange: (ev) => updatePoolKey(editorEntry.id, i, ev.target.value),
+                  }),
+                  kept ? React.createElement("span", {
+                    className: "sc-key-slot-status", "data-role": "key-slot-status", "data-state": "saved",
+                    "data-entry-id": editorEntry.id, "data-slot": String(i),
+                  }, "已保存（只写）") : null,
+                  slots.length > 1 ? React.createElement("button", {
+                    className: "sc-button sc-button-secondary", type: "button",
+                    "data-role": "key-remove", "data-entry-id": editorEntry.id, "data-slot": String(i),
+                    disabled: locked || model.busy || model.editorBusy,
+                    onClick: () => removePoolSlot(editorEntry.id, i),
+                  }, "移除") : null,
+                ),
+              );
+            }),
             React.createElement("button", {
               className: "sc-button sc-button-secondary", type: "button",
               "data-role": "key-add", "data-entry-id": editorEntry.id,
