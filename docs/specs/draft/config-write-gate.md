@@ -44,3 +44,14 @@
 - **CFG-W-001 / CFG-W-002（浏览器端内联等价规则）**：`src/client-entry.js` 运行于 DSH 浏览器沙箱，零外部 `import`、零 Node 依赖，因此不得直接 `import src/config.js`。写闸在 `src/client-entry.js` 的 `Component.contract` 中内联维护与 `src/config.js` `normalizeConfig` 完全同构的纯函数归一化实现，并由测试套件中的「两闸等价钉」锁定双方行为不得漂移。
 - **CFG-W-003（面板写路径显式清理与 `toOps` 粒度保持）**：`contract.merge` / `contract.toOps` 的直接单测契约维持 D-1 字段级 diff 与「仅直接传入 stripped 目标时才产出 `unset`」语义，避免破坏已有单测锁定的纯函数接口；面板各保存路径在构建目标条目列表时对条目递归剥离 `SECRET_FIELD`（由 `toOps` 为位置不变的条目自动产出字段级 `unset`，对移动或新建条目随整条 `set` 自然剔除），离散顶层写路径与单行移除路径亦附带针对 `user.entries[*]` 残留 `SECRET_FIELD` 键的显式 `unset` 补丁。
 - **CFG-W-004（先于凭据写入预检）**：编辑器提交流程在调用 `/api/credentials/set` 之前先用占位合法引用对目标有效配置执行 `singleEntryDiff` 与写闸 `validate` 预检，确保配置本身不合法时不仅零 `settings/mutate`，也不产生孤儿凭据写入。
+
+## #86 POOL 修订注（多 key 池写闸增量，Refs #86）
+
+- **validate 分叉形态（成功形态相对 v0.2.0 为 BREAKING 变更，PR #105 交付记录须明示）**：`Component.contract.validate` 自 v0.2.1 起为三向分叉——
+  - 成功：**直接返回归一化配置对象**（v0.2.0 返回 `{ ok: true, config }` 包装）；归一化输出 ≡ 读闸 `normalizeConfig`（POOL-001 两闸双向逐字段一致钉）；
+  - 池字段族（`credentialRefs`）违规：**抛错**（写闸预检面就地 catch 呈现；分叉规则同 #88 PX 修订注所立）；
+  - legacy 字段违规：维持返回 `{ ok: false, code: "CONFIG_INVALID", issues }`。
+  全部包装点（try/catch 将池抛错转为 legacy/可见错误面）四处：① 载入路径 effective 预检 ② `commitReorder` 预检 ③ `submitEditor` preCheck（外层 catch 呈现）④ `editorBlock` 渲染门（try/catch 转 issues）。#88 与 `client-entry.js` 的合并协调以此四处为锚点（代码已加锚点注释）。
+- **CFG-W-002 null 形态矩阵增量（池字段族，读写闸双向一致）**：`entries[i].credentialRefs === null` 拒绝（`必须是数组`）；非数组拒绝；元素非字符串或 trim 后空白拒绝（`credentialRefs[j] 必须是非空白字符串`）；元素 trim 后归一（去首尾空白）；池内元素 trim 后重复拒绝；超出 `POOL_MAX`（8）拒绝；`bing` 类型配置非空 `credentialRefs` 拒绝；与非空 `credentialRef` 共存拒绝（互斥，两字段不得同现）。归一化输出仅当池非空时携带 `credentialRefs`（空数组省略该键）。
+- **CFG-W-003 闭集不变、数组深度递归**：明文清理字段名闭集维持 `SECRET_FIELD` 八名（`apikey`/`api_key`/`key`/`secret`/`token`/`password`/`auth`/`authorization`，`/i`）；`stripSecrets` 对数组按元素递归，面板全部保存路径（含新增的池槽位提交）走同一闭集。**池只存引用名、明文凭据永入 credentials 服务不进配置 → 闭集无需新增字段名**。代码 `stripSecrets` 处已加 #88 闭集注册点注释：#88 收敛为共享「字段名闭集 + 递归」helper 时以此清单对表。
+- **新 key 顺序约束（CFG-W-004 预检语义增量）**：池内每个新 key 生成全新受控唯一引用（`SEARCH_CHAIN_CREDENTIAL_<id>_<ts>_<seq>`），绝不复用或覆盖在效引用；同值槽位共享同一新引用（重复引用由终态预检 validate 拒）。流程序：终态裁决（credFormOf）→ 写闸 `validate` 预检 + `singleEntryDiff` 绑定守卫 → 全部新引用 `credentials/set` → `settings/mutate`；任一 `set` 失败即抛错：零 `settings/mutate`、旧池值/旧路由磁盘零变化（新引用未入效 = 无孤儿在效引用，无需孤儿清理备案）。

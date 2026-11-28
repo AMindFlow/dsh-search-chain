@@ -178,6 +178,9 @@ export const CONFIG_CODES = Object.freeze({
 /** FB-003 默认总预算（毫秒）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
 
+/** #86 POOL-001/003：单条目凭据池（credentialRefs）上限（镜像 src/constants.js POOL_MAX；lead 审阅批准 8）。 */
+export const POOL_MAX = 8;
+
 /**
  * A5 适配器能力声明——展示用途：chain/测试不消费本常量判 contentMode。
  * FB-002 contentMode 的实际判定在 src/search.js 链侧本地表 SOURCES_ONLY_TYPES（成员 bing：

@@ -59,6 +59,9 @@ export const CONFLICT_CODE = "CONFIG_CONFLICT";
 /** FB-003 默认总预算（镜像 contract.js DEFAULT_TIMEOUT_MS；面板不暴露该控件，仅读取时兜底）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
 
+/** #86 POOL-001/003：单条目凭据池（credentialRefs）上限（镜像 src/constants.js POOL_MAX）。 */
+export const POOL_MAX = 8;
+
 /**
  * CAT-001 目录（每类型一行）。
  * fields 语义（oracle 头注）：含 "credential" = 需要 key 字段；deepseek 两模式含 "mode"；
@@ -163,7 +166,9 @@ export const ADD_ACTION_LABEL = "添加搜索工具";
 export function entryStatus(entry) {
   if (!entry.enabled) return "已关闭";
   const hasRef = typeof entry.credentialRef === "string" && entry.credentialRef.length > 0;
-  if (!KEYLESS_TYPES.includes(entry.type) && !hasRef) return "缺凭据引用";
+  // #86 POOL-009：凭据池（credentialRefs 合法非空数组）与单引用等效视为有凭据（数据层不臆造「N 把」呈现）。
+  const hasPool = Array.isArray(entry.credentialRefs) && entry.credentialRefs.length > 0;
+  if (!KEYLESS_TYPES.includes(entry.type) && !hasRef && !hasPool) return "缺凭据引用";
   return "就绪";
 }
 

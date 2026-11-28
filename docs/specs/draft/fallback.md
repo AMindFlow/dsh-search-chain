@@ -53,3 +53,11 @@
 - **FB-006 裁决与生效**（draft，裁决日期 2026-11-25；lead 裁决27，源于 PR#35 审阅 P2-b）。本条待 WP7（#13）发布验收通过后随条款生效。
 - **FB-006 测试与代码路径** 条目执行期降级 oracle：`test/chain-coded-failure-policy.test.js` P2-b①–④；全局 `CONFIG_*` 裸上抛 oracle：同文件 P2-b⑤；`TRANSPORT_RELEASED` 裸上抛既有绿见 `test/transport-passthrough.test.js` P1-1 `raw` 行（该行现仅覆盖 `TRANSPORT_RELEASED`）。条目执行期可降级码集：`src/search.js` 的 `isEntryPhaseCode`（`ENTRY_PHASE_CODE_VALUES` = `ENTRY_CODES ∪ CONFIG_CODES`）。
 - **FB-006 open 期现状** `src/transport.js:125-134` 的 `classifyProxy` 分支抛 `CONFIG_INVALID`；`src/search.js:360` 的 `transport.open(entry)` 位于条目 `try` 之外，当前实现尚未按本条降级。修复在 `feat/open-degrade` 并行落地，本规格先行。CFG-005 只规定报阶段，条目执行期弹性归 FB 家族，本条为该补位。
+
+## #86 POOL 修订注（多 key 池与顺序/预算交互，Refs #86）
+
+- **FB-001 单查询语义细化**：条目池（`credentialRefs` 非空）时，「每个条目最多向其供应商提交一次查询」细化为**每个凭据候选（key）最多一次查询**——同一查询串按槽序轮转，条目整体仍计一条目（`attempts` 一行，失败明细携 `pool` 对象）；轮替码限凭据/权限、额度、限流三类（`CREDENTIALS`/`QUOTA`/`RATE_LIMITED`），其他可降级失败不轮替直接计条目失败；每次切换恰一条 `warn`「轮替」日志事件（含 `entryId`/`fromIndex`/`toIndex`/`code`）。
+- **FB-003 预算与池共享**：池内候选共享条目总预算，逐候选传入**剩余**预算（`race budgetMs = remaining`）；适配器收到的名义 `ctx.budgetMs` 不变（POOL-004① 钉 3000）。预算耗尽时刻的超时：发出前发现耗尽 → 该候选**不计** tried；在途超时 → **计** tried（`code: TIMEOUT`）后条目超时终态。池全缺席（所有引用解析不到）时回落既有下层解析链（环境变量/托管记录/legacy YAML），各读一次；池命中时零下层读取（POOL-007）。
+- **FB-004 失败明细增量**：条目级 `attempts` 失败记录在池条目上附加 `pool = { size, tried, outcomes: [{ index, code }] }`（A1/A2：`size`=池规模，`tried`=已试候选数，`outcomes` 按轮转序携各候选原码）；单凭据链（legacy 形态）零感知、记录逐字节不变。
+- **FB-005 原因文案增量**：池条目多 key 全部失败（`fromPool` 且 `tried ≥ 2`）时排查原因前置「全部 N 把 key 失败：」，其余条目（含单凭据、含 TIMEOUT）文案不变（TIMEOUT 永不池措辞）。
+- **FB-002 接管提示增量**：池条目发生 key 切换后成功（`fromPool` 且 `switched` 且 `poolSize > 1`）时，`content` 首行前置「已使用第 N/M 把 key」（N=实际生效槽位 1 基序号，M=池规模；既有提示在其后一行）。

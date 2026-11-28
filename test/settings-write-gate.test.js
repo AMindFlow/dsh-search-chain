@@ -138,14 +138,17 @@ test("CFG-W-001 / CFG-W-002 两闸等价钉：恶意/边角样本与 null 形态
     ["timeoutMs 为 MAX_SAFE_INTEGER（合法）", { timeoutMs: Number.MAX_SAFE_INTEGER }],
   ];
 
+  // #86 分叉规则（同 #88 PX 修订注）：validate 成功直返归一化配置（≡ 读闸 normalizeConfig 输出，
+  // 本矩阵全部为 legacy 形态，成功形态断言随之改为对返回值本体比对）；legacy 违规维持 { ok:false, code, issues }
+  // 返回形态不变。新契约字段族（credentialRefs）违规改预检抛错，形态钉归 test/pool-oracle-gates.test.js。
   for (const [label, sample] of matrix) {
     const readRes = outcomeOfNormalize(sample);
     const writeRes = validate(clone(sample));
-    assert.equal(writeRes.ok, readRes.ok, `两闸裁决不一致 [${label}]：read=${JSON.stringify(readRes)} write=${JSON.stringify(writeRes)}`);
     if (readRes.ok) {
-      assert.deepEqual(writeRes.config, readRes.config, `两闸归一化产物不一致 [${label}]`);
+      assert.deepEqual(writeRes, readRes.config, `两闸归一化产物不一致 [${label}]`);
       assert.doesNotThrow(() => toOps(clone(sample), {}), `合法形态 toOps 不得拒 [${label}]`);
     } else {
+      assert.equal(writeRes.ok, false, `写闸裁决须为拒绝 [${label}]：write=${JSON.stringify(writeRes)}`);
       assert.equal(writeRes.code, "CONFIG_INVALID", `写闸拒绝码须为 CONFIG_INVALID [${label}]`);
       assert.ok(writeRes.issues?.[0]?.message?.length > 0, `写闸拒绝文案不得为空 [${label}]`);
       assert.throws(() => toOps(clone(sample), {}), (err) => err?.code === "CONFIG_INVALID", `toOps 必须拒非法形态 [${label}]`);

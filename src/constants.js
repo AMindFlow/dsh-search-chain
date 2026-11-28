@@ -92,6 +92,12 @@ export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 /** FB-003 默认总预算（毫秒）。 */
 export const DEFAULT_TIMEOUT_MS = 25000;
 
+/**
+ * POOL-001/003（#86 多 key 池轮替）：单条目凭据池（credentialRefs）上限（lead 审阅批准）。
+ * 镜像同步义务：src/settings/catalog.js、src/client-entry.js 内联镜像、test/helpers/contract.js。
+ */
+export const POOL_MAX = 8;
+
 /** 传输层释放语义码（src/transport.js fetch() 的 closed 分支）。 */
 export const TRANSPORT_CODES = Object.freeze({
   RELEASED: "TRANSPORT_RELEASED",
