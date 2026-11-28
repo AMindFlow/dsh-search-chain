@@ -29,3 +29,4 @@
 | DeepSeek Search API 与 Agentic Search | [deepseek.md](draft/deepseek.md) |
 | 顺序、预算与错误 | [fallback.md](draft/fallback.md) |
 | PAC worker OS 级最小权限沙箱 | [pac-worker-os-sandbox.md](draft/pac-worker-os-sandbox.md) |
+| 全局 proxy 升级与条目钉死 | [proxy-escalation.md](draft/proxy-escalation.md) |
